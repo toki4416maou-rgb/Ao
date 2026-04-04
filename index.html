@@ -7059,8 +7059,8 @@ MemoryLimitsConfig._instance = null;
                     '同じ', '前の', 'さっきの', '先ほどの'
                 ];
                 
-                // 初期化
-                this.initializeTokenizer();
+                // [PERF FIX] kuromoji起動時ロード無効化
+                // this.initializeTokenizer();
             }
             
             async initializeTokenizer() {
@@ -12844,8 +12844,7 @@ class PersistenceManager {
                           || localStorage.getItem(this.storageKey + '_backup');
                 if (json) {
                     state = JSON.parse(json);
-                    console.log('[Persistence] Migrated from localStorage to IndexedDB');
-                    // IndexedDBに移行保存
+                                        // IndexedDBに移行保存
                     if (this._persistenceLayer) {
                         await this._persistenceLayer.save(state);
                         localStorage.removeItem(this.storageKey);
@@ -12892,8 +12891,7 @@ class PersistenceManager {
         this.autoSaveTimer = setInterval(async () => {
             const result = await this.save(engine);
             if (result.success) {
-                console.log('[Persistence] Auto-saved:', new Date().toLocaleTimeString());
-            }
+                            }
         }, this.autoSaveInterval);
     }
     
@@ -13154,24 +13152,18 @@ CompletLanguageCognitionEngine.prototype.initializePersistence = function() {
         const loadResult = this.persistenceManager.load(this);
         
         if (loadResult.success) {
-            console.log('[Persistence] Loaded previous state');
-            
+                        
             // 起動時ログを生成
             const bootupLog = this.persistenceManager.generateBootupLog(this);
             this.bootupLog = bootupLog;
             
-            console.log('[Bootup Log]', bootupLog.summary);
-            console.log('[Bootup Log] New hypotheses:', bootupLog.learningProgress.newHypotheses);
-            console.log('[Bootup Log] Avoided constructions:', bootupLog.learningProgress.avoidedConstructions);
-            
+                                                
         } else if (loadResult.isFirstBoot) {
-            console.log('[Persistence] First boot - no previous state');
-            
+                        
             const bootupLog = this.persistenceManager.generateBootupLog(this);
             this.bootupLog = bootupLog;
             
-            console.log('[Bootup Log]', bootupLog.summary);
-        } else {
+                    } else {
             console.warn('[Persistence] Load failed:', loadResult.error || loadResult.reason);
         }
         
@@ -17268,16 +17260,14 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                     this._performAutoSave('定期自動保存');
                 }, this.autoSaveInterval);
                 
-                console.log('[AUTO_SAVE] Started (30秒ごと)');
-            }
+                            }
             
             stop() {
                 if (this.saveTimer) {
                     clearInterval(this.saveTimer);
                     this.saveTimer = null;
                 }
-                console.log('[AUTO_SAVE] Stopped');
-            }
+                            }
             
             async _performAutoSave(trigger) {
                 try {
@@ -17294,8 +17284,7 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                         return;
                     }
                     
-                    console.log(`[AUTO_SAVE] トリガー: ${trigger}`);
-                    
+                                        
                     // exportAll()を使用
                     const data = this.being.exportAll();
                     
@@ -17310,8 +17299,7 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                             this.being.saveManager.markClean();
                         }
                         
-                        console.log('[AUTO_SAVE] ✅ 完了');
-                    }
+                                            }
                 } catch (error) {
                     console.error('[AUTO_SAVE] Error:', error);
                 }
@@ -18738,12 +18726,7 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
             }
             
             exportAll() {
-                console.log('[EXPORT] ========================================');
-                console.log('[EXPORT] exportAll() が呼び出されました');
-                console.log('[EXPORT] this.identity:', this.identity);
-                console.log('[EXPORT] this.identity.turns:', this.identity.turns);
-                console.log('[EXPORT] ========================================');
-                
+                                                                                                
                 try {
                     const exportData = {
                         version: "26.3.1",
@@ -18876,16 +18859,14 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                     if (this.attentionManager) {
                         try {
                             exportData.coreState.attentionManager = this.attentionManager.exportState();
-                            console.log('[EXPORT] AttentionManager saved');
-                        } catch (e) {
+                                                    } catch (e) {
                             console.error('AttentionManager export failed:', e);
                         }
                     }
                     if (this.asymmetricMemory) {
                         try {
                             exportData.coreState.asymmetricMemory = this.asymmetricMemory.exportState();
-                            console.log('[EXPORT] AsymmetricMemory saved');
-                        } catch (e) {
+                                                    } catch (e) {
                             console.error('AsymmetricMemory export failed:', e);
                         }
                     }
@@ -18894,24 +18875,21 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                     if (this.predictionLayer) {
                         try {
                             exportData.coreState.predictionLayer = this.predictionLayer.exportState();
-                            console.log('[EXPORT] PredictionLayer saved');
-                        } catch (e) {
+                                                    } catch (e) {
                             console.error('PredictionLayer export failed:', e);
                         }
                     }
                     if (this.errorDrivenUpdate) {
                         try {
                             exportData.coreState.errorDrivenUpdate = this.errorDrivenUpdate.exportState();
-                            console.log('[EXPORT] ErrorDrivenUpdate saved');
-                        } catch (e) {
+                                                    } catch (e) {
                             console.error('ErrorDrivenUpdate export failed:', e);
                         }
                     }
                     if (this.thoughtBias) {
                         try {
                             exportData.coreState.thoughtBias = this.thoughtBias.exportState();
-                            console.log('[EXPORT] ThoughtBias saved');
-                        } catch (e) {
+                                                    } catch (e) {
                             console.error('ThoughtBias export failed:', e);
                         }
                     }
@@ -18920,8 +18898,7 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                     if (this.subjectiveFocus) {
                         try {
                             exportData.coreState.subjectiveFocus = this.subjectiveFocus.exportState();
-                            console.log('[EXPORT] SubjectiveFocus saved');
-                        } catch (e) {
+                                                    } catch (e) {
                             console.error('SubjectiveFocus export failed:', e);
                         }
                     }
@@ -18930,40 +18907,35 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                     if (this.mPFC) {
                         try {
                             exportData.coreState.mPFC = this.mPFC.exportState();
-                            console.log('[EXPORT] mPFC saved');
-                        } catch (e) {
+                                                    } catch (e) {
                             console.error('mPFC export failed:', e);
                         }
                     }
                     if (this.hypothalamus) {
                         try {
                             exportData.coreState.hypothalamus = this.hypothalamus.exportState();
-                            console.log('[EXPORT] Hypothalamus saved');
-                        } catch (e) {
+                                                    } catch (e) {
                             console.error('Hypothalamus export failed:', e);
                         }
                     }
                     if (this.amygdala) {
                         try {
                             exportData.coreState.amygdala = this.amygdala.exportState();
-                            console.log('[EXPORT] Amygdala saved');
-                        } catch (e) {
+                                                    } catch (e) {
                             console.error('Amygdala export failed:', e);
                         }
                     }
                     if (this.acc) {
                         try {
                             exportData.coreState.acc = this.acc.exportState();
-                            console.log('[EXPORT] ACC saved');
-                        } catch (e) {
+                                                    } catch (e) {
                             console.error('ACC export failed:', e);
                         }
                     }
                     if (this.inferenceMode) {
                         try {
                             exportData.coreState.inferenceMode = this.inferenceMode.exportState();
-                            console.log('[EXPORT] InferenceMode saved');
-                        } catch (e) {
+                                                    } catch (e) {
                             console.error('InferenceMode export failed:', e);
                         }
                     }
@@ -23377,7 +23349,7 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                     // 5秒ごとに因果信念形成を実行
                     this.beliefFormationInterval = setInterval(() => {
                         this._automaticBeliefFormation();
-                    }, 15000); // [PERF FIX] 5秒→15秒
+                    }, 15000); // [PERF FIX]
                 } catch (error) {
                     console.error('_startContinuousBeliefFormation failed:', error);
                 }
@@ -23613,14 +23585,12 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
         // ============ 人格保存マネージャー（拡張版）============
         class PersonaSaveManager {
             constructor(being) {
-                console.log('[TRACE] PersonaSaveManager constructor called');
-                this.being = being;
+                                this.being = being;
                 this.autoSaveInterval = 30000; // [PERF FIX] 5秒→30秒
                 this.lastSaveTime = 0;
                 this.isSaving = false;
                 this.isDirty = false; // 未保存フラグ
-                console.log('[TRACE] Initial isDirty:', this.isDirty);
-                this.isElectron = typeof window.electronAPI !== 'undefined';
+                                this.isElectron = typeof window.electronAPI !== 'undefined';
                 this.savePath = '';
                 
                 // 世代管理
@@ -23636,10 +23606,8 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                 this.CURRENT_VERSION = '24.0';
                 
                 // IndexedDB初期化（非同期だが、完了を待つ必要はない）
-                console.log('[TRACE] About to call _initStorage()');
-                this._initStorage();
-                console.log('[TRACE] PersonaSaveManager constructor complete');
-            }
+                                this._initStorage();
+                            }
             
             async _initStorage() {
                 console.log('[STORAGE] _initStorage() called');
@@ -23735,70 +23703,50 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
             }
             
             markDirty() {
-                console.log('[TRACE] markDirty() called');
-                this.isDirty = true;
-                console.log('[TRACE] isDirty set to true');
-                const saveIndicator = document.getElementById('saveStatus');
+                                this.isDirty = true;
+                                const saveIndicator = document.getElementById('saveStatus');
                 if (saveIndicator && !this.isSaving) {
                     // 「未保存」ではなく「保存済み」と表示（少し薄く）
                     const timeStr = this.lastSaveTime > 0 ? new Date(this.lastSaveTime).toLocaleTimeString() : '--:--:--';
                     saveIndicator.textContent = `人格: 保存済み (${timeStr})`;
                     saveIndicator.classList.remove('saving');
                     saveIndicator.style.opacity = '0.7'; // 少し薄く表示
-                    console.log('[TRACE] UI updated to 保存済み (待機中)');
-                }
+                                    }
             }
             
             markSaved() {
-                console.log('[TRACE] markSaved() called');
-                console.log('[TRACE] lastSaveTime:', this.lastSaveTime);
-                this.isDirty = false;
+                                                this.isDirty = false;
                 const saveIndicator = document.getElementById('saveStatus');
-                console.log('[TRACE] saveIndicator:', saveIndicator);
-                if (saveIndicator) {
+                                if (saveIndicator) {
                     const timeStr = new Date(this.lastSaveTime).toLocaleTimeString();
-                    console.log('[TRACE] timeStr:', timeStr);
-                    saveIndicator.textContent = `人格: 保存済み (${timeStr})`;
+                                        saveIndicator.textContent = `人格: 保存済み (${timeStr})`;
                     saveIndicator.classList.remove('saving');
                     saveIndicator.style.opacity = '1'; // 完全に不透明
-                    console.log('[TRACE] UI updated to:', saveIndicator.textContent);
-                } else {
-                    console.log('[TRACE] saveIndicator NOT FOUND!');
-                }
+                                    } else {
+                                    }
             }
             
             startAutoSave() {
-                console.log('[TRACE] startAutoSave() called - interval:', this.autoSaveInterval);
-                const intervalId = setInterval(() => {
-                    console.log('[TRACE] AutoSave tick - isDirty:', this.isDirty, 'isSaving:', this.isSaving);
-                    if (!this.isSaving && this.isDirty) {
-                        console.log('[TRACE] Conditions met, calling save()');
-                        this.save();
+                                const intervalId = setInterval(() => {
+                                        if (!this.isSaving && this.isDirty) {
+                                                // [PERF FIX] アイドル時のみ保存
+                        if (typeof requestIdleCallback !== 'undefined') {
+                            requestIdleCallback(() => this.save(), { timeout: 5000 });
+                        } else { setTimeout(() => this.save(), 0); }
                     } else {
-                        console.log('[TRACE] Conditions not met, skipping');
-                    }
+                                            }
                 }, this.autoSaveInterval);
-                console.log('[TRACE] setInterval created with ID:', intervalId);
-            }
+                            }
             
             async save() {
-                console.log('[TRACE] save() called - isSaving:', this.isSaving);
-                
+                                
                 // ★ save()の直前にidentityを確認
-                console.log('[SAVE] ========================================');
-                console.log('[SAVE] save()呼び出し時のidentity確認');
-                console.log('[SAVE] this.being:', !!this.being);
-                console.log('[SAVE] this.being.identity:', this.being?.identity);
-                console.log('[SAVE] this.being.identity.turns:', this.being?.identity?.turns);
-                console.log('[SAVE] ========================================');
-                
+                                                                                                                
                 if (this.isSaving) {
-                    console.log('[TRACE] Already saving, returning');
-                    return;
+                                        return;
                 }
                 
-                console.log('[TRACE] Starting save process');
-                this.isSaving = true;
+                                this.isSaving = true;
                 const saveIndicator = document.getElementById('saveStatus');
                 if (saveIndicator) {
                     saveIndicator.textContent = '人格: 保存中...';
@@ -23813,59 +23761,33 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                     }
                     
                     // ============ 保存内容の詳細ログ ============
-                    console.log('[SAVE] ========================================');
-                    console.log('[SAVE] 保存するデータの詳細：');
-                    console.log('[SAVE] ========================================');
-                    console.log('[SAVE] バージョン:', personaData.version);
-                    console.log('[SAVE] タイムスタンプ:', new Date(personaData.timestamp).toLocaleString());
-                    
+                                                                                                                        
                     // コア状態
-                    console.log('[SAVE] --- コア状態 ---');
-                    console.log('[SAVE] identity:', personaData.coreState.identity);
-                    console.log('[SAVE] identity.turns:', personaData.coreState.identity?.turns);
-                    console.log('[SAVE] targetAbstraction:', personaData.coreState.targetAbstraction);
-                    console.log('[SAVE] operationalAbstraction:', personaData.coreState.operationalAbstraction);
-                    
+                                                                                                                        
                     // 概念
-                    console.log('[SAVE] --- 概念 ---');
-                    const savedConceptCount = personaData.coreState.concepts?.concepts?.length || 0;
-                    console.log('[SAVE] 概念数:', savedConceptCount);
-                    if (savedConceptCount > 0) {
-                        console.log('[SAVE] 概念例:', personaData.coreState.concepts.concepts.slice(0, 3).map(c => c.name));
-                    }
+                                        const savedConceptCount = personaData.coreState.concepts?.concepts?.length || 0;
+                                        if (savedConceptCount > 0) {
+                                            }
                     
                     // エピソード記憶
-                    console.log('[SAVE] --- エピソード記憶 ---');
-                    const savedEpisodeCount = personaData.coreState.episodicMemory?.episodes?.length || 0;
-                    console.log('[SAVE] エピソード数:', savedEpisodeCount);
-                    
+                                        const savedEpisodeCount = personaData.coreState.episodicMemory?.episodes?.length || 0;
+                                        
                     // UninterpretedStatePool
-                    console.log('[SAVE] --- UninterpretedStatePool ---');
-                    const poolCount = personaData.coreState.uninterpretedStatePool?.states?.length || 0;
-                    console.log('[SAVE] 未解釈状態数:', poolCount);
-                    if (poolCount > 0) {
-                        console.log('[SAVE] ✅ UninterpretedStatePool が保存されています！');
-                    } else {
-                        console.log('[SAVE] ⚠️ UninterpretedStatePool は空です');
-                    }
+                                        const poolCount = personaData.coreState.uninterpretedStatePool?.states?.length || 0;
+                                        if (poolCount > 0) {
+                                            } else {
+                                            }
                     
                     // 因果記憶
-                    console.log('[SAVE] --- 因果記憶 ---');
-                    const causalCount = personaData.intelligenceState?.causalMemory?.links?.length || 0;
-                    console.log('[SAVE] 因果リンク数:', causalCount);
-                    
+                                        const causalCount = personaData.intelligenceState?.causalMemory?.links?.length || 0;
+                                        
                     // 知識境界
-                    console.log('[SAVE] --- 知識境界 ---');
-                    const boundaryCount = personaData.intelligenceState?.knowledgeBoundaries?.boundaries?.length || 0;
-                    console.log('[SAVE] 境界数:', boundaryCount);
-                    
+                                        const boundaryCount = personaData.intelligenceState?.knowledgeBoundaries?.boundaries?.length || 0;
+                                        
                     // 抽象度制御
-                    console.log('[SAVE] --- 抽象度制御 ---');
-                    const resolutionCount = personaData.intelligenceState?.abstractionResolution?.resolutions?.length || 0;
-                    console.log('[SAVE] 解像度数:', resolutionCount);
-                    
-                    console.log('[SAVE] ========================================');
-                    
+                                        const resolutionCount = personaData.intelligenceState?.abstractionResolution?.resolutions?.length || 0;
+                                        
+                                        
                     // JSON文字列化を試行
                     let jsonString;
                     try {
@@ -23994,24 +23916,15 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                     const conceptCount = this.being.concepts?.concepts?.size || 0;
                     const episodeCount = this.being.episodicMemory?.episodes?.length || 0;
                     this.being.addLog(`人格保存完了 [${dataSizeMB}MB] 概念:${conceptCount} EP:${episodeCount}`);
-                    console.log('[DEBUG] Save complete - Concepts:', conceptCount, 'Episodes:', episodeCount);
-                    
+                                        
                     // ★ 最終確認: 本当に保存されたか
-                    console.log('[SAVE] ========================================');
-                    console.log('[SAVE] 保存処理完了 - 最終確認');
-                    console.log('[SAVE] Key:', this.saveKeys.current);
-                    const finalCheck = localStorage.getItem(this.saveKeys.current);
+                                                                                const finalCheck = localStorage.getItem(this.saveKeys.current);
                     if (finalCheck) {
                         const finalParsed = JSON.parse(finalCheck);
-                        console.log('[SAVE] ✅ 保存成功確認:');
-                        console.log('[SAVE]    - turns:', finalParsed.coreState?.identity?.turns);
-                        console.log('[SAVE]    - concepts:', finalParsed.coreState?.concepts?.concepts?.length);
-                        console.log('[SAVE]    - size:', finalCheck.length, 'bytes');
-                    } else {
+                                                                                                                    } else {
                         console.error('[SAVE] ❌ 保存確認失敗: localStorage にデータがありません！');
                     }
-                    console.log('[SAVE] ========================================');
-                    
+                                        
                     // isSavingフラグを少し遅延させて解除
                     setTimeout(() => {
                         this.isSaving = false;
@@ -24047,33 +23960,17 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
             }
             
             async load() {
-                console.log('[LOAD] ========================================');
-                console.log('[LOAD] load() が呼び出されました');
-                console.log('[LOAD] isElectron:', this.isElectron);
-                console.log('[LOAD] saveKeys:', this.saveKeys);
-                
+                                                                                
                 // ★ localStorage の内容を確認
-                console.log('[LOAD] localStorage check:');
-                console.log('[LOAD] - current exists:', localStorage.getItem(this.saveKeys.current) !== null);
-                console.log('[LOAD] - prev exists:', localStorage.getItem(this.saveKeys.prev) !== null);
-                console.log('[LOAD] - backup exists:', localStorage.getItem(this.saveKeys.backup) !== null);
-                
+                                                                                
                 if (localStorage.getItem(this.saveKeys.current)) {
                     try {
                         const currentData = JSON.parse(localStorage.getItem(this.saveKeys.current));
-                        console.log('[LOAD] Current data preview:', {
-                            version: currentData.version,
-                            timestamp: currentData.timestamp ? new Date(currentData.timestamp).toLocaleString() : 'N/A',
-                            hasCoreState: !!currentData.coreState,
-                            hasIdentity: !!currentData.coreState?.identity,
-                            turns: currentData.coreState?.identity?.turns
-                        });
-                    } catch (e) {
+                                            } catch (e) {
                         console.error('[LOAD] Failed to parse current data:', e);
                     }
                 }
-                console.log('[LOAD] ========================================');
-                
+                                
                 try {
                     let personaData = null;
                     
@@ -24099,12 +23996,10 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                                 const result = await window.electronAPI.loadPersona();
                                 if (result && result.success) {
                                     personaData = result.data;
-                                    console.log('[LOAD] Persona loaded from Electron');
-                                } else if (result && result.reason !== 'no_file') {
+                                                                    } else if (result && result.reason !== 'no_file') {
                                     this.being.addLog(`ファイル読み込みエラー: ${result.error || result.reason}`);
                                 } else {
-                                    console.log('[LOAD] No persona file found (first run)');
-                                }
+                                                                    }
                             }
                         }
                     } else {
@@ -24219,15 +24114,7 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                                 });
                                 
                                 // ★ ロード時の詳細ログ
-                                console.log('[LOAD] Data loaded from:', label, {
-                                    key: key,
-                                    size: savedData.length,
-                                    turns: personaData.coreState?.identity?.turns,
-                                    timestamp: personaData.timestamp ? new Date(personaData.timestamp).toLocaleString() : 'N/A',
-                                    hasIdentity: !!personaData.coreState?.identity,
-                                    identityKeys: personaData.coreState?.identity ? Object.keys(personaData.coreState.identity) : []
-                                });
-                                
+                                                                
                                 // データの妥当性チェック
                                 if (personaData && personaData.coreState) {
                                     if (label !== 'メイン') {
@@ -24287,21 +24174,15 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
         // window._aoAuthReady が true になるまで待機
         // (認証オーバーレイが showApp() を呼ぶと _aoStartApp() が実行される)
         function _aoDoStartApp() {
-            console.log('[TRACE] Creating Being...');
-        const ao = new Being();
-        console.log('[TRACE] Being created');
-        const saveManager = new PersonaSaveManager(ao);
-        console.log('[TRACE] PersonaSaveManager created');
-        ao.saveManager = saveManager; // Beingからsave Managerを参照できるようにする
-        console.log('[TRACE] saveManager attached to Being');
-        let isProcessing = false;
-        console.log('[TRACE] isProcessing initialized to false');
-        
+                    const ao = new Being();
+                const saveManager = new PersonaSaveManager(ao);
+                ao.saveManager = saveManager; // Beingからsave Managerを参照できるようにする
+                let isProcessing = false;
+                
         window.isProcessing = false;
         
         function updateUI() {
-            // [PERF FIX] バックグラウンドタブ時はスキップ
-            if (document.hidden) return;
+            if (document.hidden) return; // [PERF FIX]
             // 対話回数表示
             const turnsStatus = document.getElementById('turnsStatus');
             if (turnsStatus && ao.identity) {
@@ -24744,13 +24625,10 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
         }
         
         async function handleInput() {
-            console.log('[TRACE] handleInput() called');
-            if (isProcessing) {
-                console.log('[TRACE] isProcessing=true, early return');
-                return;
+                        if (isProcessing) {
+                                return;
             }
-            console.log('[TRACE] handleInput() processing...');
-            
+                        
             const input = document.getElementById('input');
             const sendBtn = document.getElementById('send');
             const text = input.value.trim();
@@ -24912,10 +24790,8 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                     
                     addMessage('ao', selected.text, internal);
                     
-                    console.log('[EVOLVE] About to call evolve() - else (normal input) branch');
-                    ao.evolve();
-                    console.log('[EVOLVE] evolve() completed');
-                }
+                                        ao.evolve();
+                                    }
                 
                 updateUI();
             }
@@ -24924,23 +24800,18 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                 console.error('handleInput error:', error);
                 addMessage('system', `エラーが発生しました: ${error.message}`);
             } finally {
-                console.log('[TRACE] finally block reached');
-                // 状態が変更されたので未保存フラグを立てる（エラーでも実行）
+                                // 状態が変更されたので未保存フラグを立てる（エラーでも実行）
                 if (saveManager) {
-                    console.log('[TRACE] Calling saveManager.markDirty()');
-                    saveManager.markDirty();
-                    console.log('[TRACE] markDirty() completed - isDirty:', saveManager.isDirty);
-                } else {
-                    console.log('[TRACE] saveManager is undefined!');
-                }
+                                        saveManager.markDirty();
+                                    } else {
+                                    }
                 
                 input.disabled = false;
                 sendBtn.disabled = false;
                 input.focus();
                 isProcessing = false;
                 window.isProcessing = false;
-                console.log('[TRACE] finally block completed');
-            }
+                            }
         }
         
         async function checkAutonomousThought() {
@@ -24960,8 +24831,7 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                 
                 // 自律的な思考後も保存をマーク
                 if (saveManager) {
-                    console.log('[TRACE] Autonomous thought - calling markDirty()');
-                    saveManager.markDirty();
+                                        saveManager.markDirty();
                 }
             }
         }
@@ -25140,30 +25010,21 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
         ao.addLog('哲学: 世界を理解し語り直せる賢者型ASI / 物量ではなく構造で理解');
         
         (async () => {
-            console.log('[INIT] ========================================');
-            console.log('[INIT] システム初期化開始');
-            console.log('[INIT] ========================================');
-            
+                                                
             const loaded = await saveManager.load();
-            console.log('[INIT] Load completed:', loaded);
-            console.log('[INIT] Current turns:', ao.identity.turns);
-            
+                                    
             if (loaded) {
                 addMessage('system', '（前回の人格を復元しました）');
                 // 対話回数を表示に反映
                 const turnsStatus = document.getElementById('turnsStatus');
                 if (turnsStatus && ao.identity) {
                     turnsStatus.textContent = `対話: ${ao.identity.turns}回`;
-                    console.log('[LOAD] Turns restored:', ao.identity.turns);
-                }
+                                    }
             } else {
                 addMessage('system', '（Ao v26が目覚めました - Syntax Verified版）');
             }
             
-            console.log('[INIT] ========================================');
-            console.log('[INIT] Load完了後の初期化開始');
-            console.log('[INIT] ========================================');
-        })();
+                                            })();
         
         ao.addLog('言語入力DL: 初期化完了');
         ao.addLog('視覚野(ImageAdapter): 初期化完了');
@@ -25179,7 +25040,7 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
         
         updateUI();
         initNeural();
-        setInterval(updateUI, 500); // [PERF FIX] 100ms→500ms
+        setInterval(updateUI, 500); // [PERF FIX]
         setInterval(drift, 5000);
         setInterval(checkAutonomousThought, 20000);
         
@@ -25199,12 +25060,8 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
             }
         }, 10000);
         
-        console.log('[TRACE] About to call startAutoSave()');
-        console.log('[TRACE] saveManager exists:', !!saveManager);
-        console.log('[TRACE] saveManager.startAutoSave exists:', typeof saveManager?.startAutoSave);
-        saveManager.startAutoSave();
-        console.log('[TRACE] startAutoSave() call completed');
-        
+                                saveManager.startAutoSave();
+                
         // ============ Editor Integration Functions (v18.0) ============
         
         function switchEditorMode(mode) {
@@ -26172,8 +26029,7 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
             if (window.ao && window.ao.languageOutputDL && window.ao.languageOutputDL.languageAcquisition) {
                 try {
                     window.ao.languageOutputDL.languageAcquisition.savePersistence();
-                    console.log('[Persistence] Saved on page unload');
-                } catch (error) {
+                                    } catch (error) {
                     console.error('[Persistence] Failed to save on unload:', error);
                 }
             }
