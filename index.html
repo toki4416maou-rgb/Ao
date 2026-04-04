@@ -951,8 +951,10 @@ function aoBackToEmail() {
 
 // ── アプリ表示 ──
 async function showApp() {
+  // 二重起動防止
+  if (window._aoAppStarted) return;
+  window._aoAppStarted = true;
   document.getElementById('ao-auth-overlay').style.display = 'none';
-  // GitHub Pages で直接起動 → localStorage が使えるのでblobリダイレクト不要
   window._aoAuthReady = true;
   if (typeof window._aoStartApp === 'function') window._aoStartApp();
 }
@@ -12806,8 +12808,9 @@ class PersistenceManager {
             this.currentState = state;
 
             // 毎回動的にキーを取得（初回ログイン後もメール付きキーで保存できる）
-            // キーは固定（メールアドレスに依存しない）
-            const storageKey = 'ao_persona_v24_0';
+            const storageKey = (typeof getUserStorageKey === 'function')
+                ? getUserStorageKey('ao_v26_6_0_state')
+                : this.storageKey;
 
             // IndexedDB / localStorage に保存（PersistenceLayer経由）
             if (this._persistenceLayer) {
@@ -12817,7 +12820,7 @@ class PersistenceManager {
                 // PersistenceLayer未初期化時のフォールバック
                 const json = JSON.stringify(state);
                 localStorage.setItem(storageKey, json);
-                localStorage.setItem(storageKey + '_backup', json + '_backup');
+                localStorage.setItem(storageKey + '_backup', json);
             }
 
             // ☁️ クラウド保存は無効化（localStorageで完結）
@@ -12846,10 +12849,13 @@ class PersistenceManager {
             // IndexedDBにデータがない場合、旧localStorageから移行
             if (!state) {
                 // 毎回動的にキーを取得（初回ログイン後もメール付きキーで読み込める）
-                // キーは固定（メールアドレスに依存しない）
-                const storageKey = 'ao_persona_v24_0';
+                const storageKey = (typeof getUserStorageKey === 'function')
+                    ? getUserStorageKey('ao_v26_6_0_state')
+                    : this.storageKey;
                 const json = localStorage.getItem(storageKey)
-                          || localStorage.getItem(storageKey + '_backup');
+                          || localStorage.getItem(storageKey + '_backup')
+                          || localStorage.getItem(this.storageKey)
+                          || localStorage.getItem(this.storageKey + '_backup');
                 if (json) {
                     state = JSON.parse(json);
                     // IndexedDBに移行保存
