@@ -19,7 +19,7 @@
          （Google Cloud Console・クレジットカード不要）
     ================================================================ -->
     <script>
-      const GAS_URL    = 'https://script.google.com/macros/s/AKfycbwusJwrTUbu3ppUwupXHyJMUH1ptcK2EZ6aPnjeR_mdHGtdHz5MyNK6eTLCGo1KldeX/exec'; // ← GASデプロイURLに変更
+      const GAS_URL    = 'https://script.google.com/macros/s/AKfycbz4PYn0ZslurQ2MqIFGvvqJ4ub34ztR_gzGeMMb6PopIpcSNc2r-LxhpMvtNMkC5rk/exec'; // ← GASデプロイURLに変更
       // PayPal購読完了後にこのページに戻ってくる（subscription_idが付いてくる）
       const _aoPageUrl  = location.origin + location.pathname;
       const PAYPAL_LINK =
@@ -1007,7 +1007,7 @@ async function saveCloudData(dataObj) {
     const { email, sessionToken } = window._aoUser;
     await fetch(GAS_URL + '?action=save', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'text/plain' },
       body: JSON.stringify({ email, sessionToken, data: dataObj })
     });
     console.log('[Cloud] 保存完了:', email);
