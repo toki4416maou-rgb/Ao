@@ -23377,7 +23377,7 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                     // 5秒ごとに因果信念形成を実行
                     this.beliefFormationInterval = setInterval(() => {
                         this._automaticBeliefFormation();
-                    }, 5000);
+                    }, 15000); // [PERF FIX] 5秒→15秒
                 } catch (error) {
                     console.error('_startContinuousBeliefFormation failed:', error);
                 }
@@ -23615,7 +23615,7 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
             constructor(being) {
                 console.log('[TRACE] PersonaSaveManager constructor called');
                 this.being = being;
-                this.autoSaveInterval = 5000; // 5秒ごとに自動保存
+                this.autoSaveInterval = 30000; // [PERF FIX] 5秒→30秒
                 this.lastSaveTime = 0;
                 this.isSaving = false;
                 this.isDirty = false; // 未保存フラグ
@@ -24300,6 +24300,8 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
         window.isProcessing = false;
         
         function updateUI() {
+            // [PERF FIX] バックグラウンドタブ時はスキップ
+            if (document.hidden) return;
             // 対話回数表示
             const turnsStatus = document.getElementById('turnsStatus');
             if (turnsStatus && ao.identity) {
@@ -25177,7 +25179,7 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
         
         updateUI();
         initNeural();
-        setInterval(updateUI, 100);
+        setInterval(updateUI, 500); // [PERF FIX] 100ms→500ms
         setInterval(drift, 5000);
         setInterval(checkAutonomousThought, 20000);
         
