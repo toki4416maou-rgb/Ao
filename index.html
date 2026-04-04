@@ -5,6 +5,38 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Ao v26.5.0 - Acoustic Perception Layer</title>
     
+    <!-- ================================================================
+         ローカルキャッシュ起動（GitHubをスルー）
+         IndexedDBにキャッシュがあれば即BlobURLにリダイレクト
+         → GitHubのJS実行を回避してクラッシュを防ぐ
+    ================================================================ -->
+    <script>
+    (async function _aoCheckLocalCache() {
+        if (location.protocol === 'blob:') return; // すでにローカル起動中
+        try {
+            const html = await new Promise(resolve => {
+                const req = indexedDB.open('AoHtmlCacheDB', 1);
+                req.onupgradeneeded = e =>
+                    e.target.result.createObjectStore('cache', { keyPath: 'id' });
+                req.onsuccess = e => {
+                    const g = e.target.result
+                        .transaction('cache', 'readonly')
+                        .objectStore('cache')
+                        .get('appHtml');
+                    g.onsuccess = () => resolve(g.result ? g.result.html : null);
+                    g.onerror   = () => resolve(null);
+                };
+                req.onerror = () => resolve(null);
+            });
+            if (html) {
+                const blob = new Blob([html], { type: 'text/html' });
+                location.replace(URL.createObjectURL(blob));
+                // ここで処理停止 → GitHubのJSは実行されない
+            }
+        } catch(e) { /* キャッシュ失敗は無視して通常起動 */ }
+    })();
+    </script>
+
     <!-- kuromoji.js for morphological analysis -->
     <script src="https://cdn.jsdelivr.net/npm/kuromoji@0.1.2/build/kuromoji.js"></script>
     
@@ -922,6 +954,15 @@ function aoBackToEmail() {
 
 // ── セッション復元（ページリロード時）──
 (function restoreSession() {
+  // Blob起動時: セッションがHTMLに埋め込まれている場合
+  if (window._aoUser && window._aoUser.email) {
+    setAuthStatus('セッション復元中...', true);
+    document.getElementById('ao-step-email').classList.add('ao-auth-hidden');
+    document.getElementById('ao-auth-logout').style.display = 'block';
+    try { localStorage.setItem('ao_user', JSON.stringify(window._aoUser)); } catch(_) {}
+    loadCloudData().then(() => showApp());
+    return;
+  }
   const saved = localStorage.getItem('ao_user');
   if (!saved) return;
   try {
@@ -936,8 +977,22 @@ function aoBackToEmail() {
 })();
 
 // ── アプリ表示 ──
-function showApp() {
+async function showApp() {
   document.getElementById('ao-auth-overlay').style.display = 'none';
+
+  // GitHubから起動している場合 → キャッシュ保存してBlobにリダイレクト
+  if (location.protocol !== 'blob:') {
+    setAuthStatus('ローカルキャッシュを保存中...', true);
+    await _aoSaveHtmlCache();
+    const cached = await _aoGetHtmlCache();
+    if (cached) {
+      const blob = new Blob([cached], { type: 'text/html' });
+      location.replace(URL.createObjectURL(blob));
+      return; // GitHubでは_aoStartAppを呼ばない
+    }
+  }
+
+  // Blob起動時（または保存失敗時）→ 通常通り起動
   window._aoAuthReady = true;
   if (typeof window._aoStartApp === 'function') window._aoStartApp();
 }
@@ -1046,7 +1101,74 @@ async function aoActivateAfterPaypal() {
   }
 }
 
-// ── ページ読み込み時: PayPalリダイレクト検出 ──
+// ================================================================
+//  ローカルキャッシュ用IndexedDB操作
+// ================================================================
+
+// HTMLをセッション情報込みでIndexedDBに保存
+async function _aoSaveHtmlCache() {
+  try {
+    // window._aoUserをHTMLに埋め込む（Blob起動時の自動ログイン用）
+    const sessionJson = JSON.stringify(window._aoUser || null);
+    const html = document.documentElement.outerHTML.replace(
+      'window._aoUser      = null;',
+      `window._aoUser      = ${sessionJson};`
+    );
+    await new Promise((resolve, reject) => {
+      const req = indexedDB.open('AoHtmlCacheDB', 1);
+      req.onupgradeneeded = e =>
+        e.target.result.createObjectStore('cache', { keyPath: 'id' });
+      req.onsuccess = e => {
+        const tx = e.target.result.transaction('cache', 'readwrite');
+        tx.objectStore('cache').put({ id: 'appHtml', html, savedAt: Date.now() });
+        tx.oncomplete = resolve;
+        tx.onerror    = reject;
+      };
+      req.onerror = reject;
+    });
+  } catch(e) {
+    console.warn('[Cache] HTML保存失敗:', e);
+  }
+}
+
+// IndexedDBからHTMLを取得
+async function _aoGetHtmlCache() {
+  try {
+    return await new Promise(resolve => {
+      const req = indexedDB.open('AoHtmlCacheDB', 1);
+      req.onupgradeneeded = e =>
+        e.target.result.createObjectStore('cache', { keyPath: 'id' });
+      req.onsuccess = e => {
+        const g = e.target.result
+          .transaction('cache', 'readonly')
+          .objectStore('cache')
+          .get('appHtml');
+        g.onsuccess = () => resolve(g.result ? g.result.html : null);
+        g.onerror   = () => resolve(null);
+      };
+      req.onerror = () => resolve(null);
+    });
+  } catch(e) { return null; }
+}
+
+// キャッシュを削除（強制的にGitHubから再取得させたい場合）
+async function _aoClearHtmlCache() {
+  try {
+    await new Promise((resolve, reject) => {
+      const req = indexedDB.open('AoHtmlCacheDB', 1);
+      req.onsuccess = e => {
+        const tx = e.target.result.transaction('cache', 'readwrite');
+        tx.objectStore('cache').delete('appHtml');
+        tx.oncomplete = resolve;
+        tx.onerror    = reject;
+      };
+      req.onerror = reject;
+    });
+    alert('キャッシュを削除しました。GitHubから再読み込みします。');
+    location.reload();
+  } catch(e) { console.warn('[Cache] 削除失敗:', e); }
+}
+
 (function detectPaypalReturn() {
   const params = new URLSearchParams(location.search);
   if (params.get('pp_cancel') === '1') {
