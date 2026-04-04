@@ -1007,7 +1007,7 @@ async function saveCloudData(dataObj) {
     const { email, sessionToken } = window._aoUser;
     await fetch(GAS_URL + '?action=save', {
       method: 'POST',
-      headers: { 'Content-Type': 'text/plain' },
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ email, sessionToken, data: dataObj })
     });
     console.log('[Cloud] 保存完了:', email);
@@ -12789,9 +12789,8 @@ class BootupRecognitionLog {
 class PersistenceManager {
     constructor() {
         // ユーザー別のストレージキー (ログインユーザーのメールアドレスを使用)
-        this.storageKey = (typeof getUserStorageKey === 'function')
-            ? getUserStorageKey('ao_v26_6_0_state')
-            : 'ao_v26_6_0_state';
+        // ※ コンストラクタ時点ではまだ_aoUserがnullの場合があるため固定値で初期化
+        this.storageKey = 'ao_v26_6_0_state';
         this.serializer = new StateSerializer();
         this.diffDetector = new DiffDetector();
         this.bootupLog = new BootupRecognitionLog();
@@ -12816,6 +12815,11 @@ class PersistenceManager {
             const state = this.serializer.serialize(engine);
             this.currentState = state;
 
+            // 毎回動的にキーを取得（初回ログイン後もメール付きキーで保存できる）
+            const storageKey = (typeof getUserStorageKey === 'function')
+                ? getUserStorageKey('ao_v26_6_0_state')
+                : this.storageKey;
+
             // IndexedDB / localStorage に保存（PersistenceLayer経由）
             if (this._persistenceLayer) {
                 const result = await this._persistenceLayer.save(state);
@@ -12823,8 +12827,8 @@ class PersistenceManager {
             } else {
                 // PersistenceLayer未初期化時のフォールバック
                 const json = JSON.stringify(state);
-                localStorage.setItem(this.storageKey, json);
-                localStorage.setItem(this.storageKey + '_backup', json);
+                localStorage.setItem(storageKey, json);
+                localStorage.setItem(storageKey + '_backup', json);
             }
 
             // ☁️ クラウド(Google Sheets)にも非同期で保存
@@ -12855,15 +12859,21 @@ class PersistenceManager {
 
             // IndexedDBにデータがない場合、旧localStorageから移行
             if (!state) {
-                const json = localStorage.getItem(this.storageKey)
+                // 毎回動的にキーを取得（初回ログイン後もメール付きキーで読み込める）
+                const storageKey = (typeof getUserStorageKey === 'function')
+                    ? getUserStorageKey('ao_v26_6_0_state')
+                    : this.storageKey;
+                const json = localStorage.getItem(storageKey)
+                          || localStorage.getItem(storageKey + '_backup')
+                          || localStorage.getItem(this.storageKey)
                           || localStorage.getItem(this.storageKey + '_backup');
                 if (json) {
                     state = JSON.parse(json);
-                                        // IndexedDBに移行保存
+                    // IndexedDBに移行保存
                     if (this._persistenceLayer) {
                         await this._persistenceLayer.save(state);
-                        localStorage.removeItem(this.storageKey);
-                        localStorage.removeItem(this.storageKey + '_backup');
+                        localStorage.removeItem(storageKey);
+                        localStorage.removeItem(storageKey + '_backup');
                     }
                 }
             }
