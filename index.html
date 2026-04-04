@@ -10,35 +10,8 @@
          IndexedDBにキャッシュがあれば即BlobURLにリダイレクト
          → GitHubのJS実行を回避してクラッシュを防ぐ
     ================================================================ -->
-    <script>
-    (async function _aoCheckLocalCache() {
-        if (location.protocol === 'blob:') return; // すでにローカル起動中
-        try {
-            const html = await new Promise(resolve => {
-                const req = indexedDB.open('AoHtmlCacheDB', 1);
-                req.onupgradeneeded = e =>
-                    e.target.result.createObjectStore('cache', { keyPath: 'id' });
-                req.onsuccess = e => {
-                    const g = e.target.result
-                        .transaction('cache', 'readonly')
-                        .objectStore('cache')
-                        .get('appHtml');
-                    g.onsuccess = () => resolve(g.result ? g.result.html : null);
-                    g.onerror   = () => resolve(null);
-                };
-                req.onerror = () => resolve(null);
-            });
-            if (html) {
-                const blob = new Blob([html], { type: 'text/html' });
-                location.replace(URL.createObjectURL(blob));
-                // ここで処理停止 → GitHubのJSは実行されない
-            }
-        } catch(e) { /* キャッシュ失敗は無視して通常起動 */ }
-    })();
-    </script>
+    <!-- blob redirect removed: localStorage works on github.io origin -->
 
-    <!-- kuromoji.js for morphological analysis -->
-    <script src="https://cdn.jsdelivr.net/npm/kuromoji@0.1.2/build/kuromoji.js"></script>
     
     <!-- ================================================================
          認証 & 課金ゲート設定
@@ -979,20 +952,7 @@ function aoBackToEmail() {
 // ── アプリ表示 ──
 async function showApp() {
   document.getElementById('ao-auth-overlay').style.display = 'none';
-
-  // GitHubから起動している場合 → キャッシュ保存してBlobにリダイレクト
-  if (location.protocol !== 'blob:') {
-    setAuthStatus('ローカルキャッシュを保存中...', true);
-    await _aoSaveHtmlCache();
-    const cached = await _aoGetHtmlCache();
-    if (cached) {
-      const blob = new Blob([cached], { type: 'text/html' });
-      location.replace(URL.createObjectURL(blob));
-      return; // GitHubでは_aoStartAppを呼ばない
-    }
-  }
-
-  // Blob起動時（または保存失敗時）→ 通常通り起動
+  // GitHub Pages で直接起動 → localStorage が使えるのでblobリダイレクト不要
   window._aoAuthReady = true;
   if (typeof window._aoStartApp === 'function') window._aoStartApp();
 }
@@ -1106,68 +1066,7 @@ async function aoActivateAfterPaypal() {
 // ================================================================
 
 // HTMLをセッション情報込みでIndexedDBに保存
-async function _aoSaveHtmlCache() {
-  try {
-    // window._aoUserをHTMLに埋め込む（Blob起動時の自動ログイン用）
-    const sessionJson = JSON.stringify(window._aoUser || null);
-    const html = document.documentElement.outerHTML.replace(
-      'window._aoUser      = null;',
-      `window._aoUser      = ${sessionJson};`
-    );
-    await new Promise((resolve, reject) => {
-      const req = indexedDB.open('AoHtmlCacheDB', 1);
-      req.onupgradeneeded = e =>
-        e.target.result.createObjectStore('cache', { keyPath: 'id' });
-      req.onsuccess = e => {
-        const tx = e.target.result.transaction('cache', 'readwrite');
-        tx.objectStore('cache').put({ id: 'appHtml', html, savedAt: Date.now() });
-        tx.oncomplete = resolve;
-        tx.onerror    = reject;
-      };
-      req.onerror = reject;
-    });
-  } catch(e) {
-    console.warn('[Cache] HTML保存失敗:', e);
-  }
-}
-
-// IndexedDBからHTMLを取得
-async function _aoGetHtmlCache() {
-  try {
-    return await new Promise(resolve => {
-      const req = indexedDB.open('AoHtmlCacheDB', 1);
-      req.onupgradeneeded = e =>
-        e.target.result.createObjectStore('cache', { keyPath: 'id' });
-      req.onsuccess = e => {
-        const g = e.target.result
-          .transaction('cache', 'readonly')
-          .objectStore('cache')
-          .get('appHtml');
-        g.onsuccess = () => resolve(g.result ? g.result.html : null);
-        g.onerror   = () => resolve(null);
-      };
-      req.onerror = () => resolve(null);
-    });
-  } catch(e) { return null; }
-}
-
-// キャッシュを削除（強制的にGitHubから再取得させたい場合）
-async function _aoClearHtmlCache() {
-  try {
-    await new Promise((resolve, reject) => {
-      const req = indexedDB.open('AoHtmlCacheDB', 1);
-      req.onsuccess = e => {
-        const tx = e.target.result.transaction('cache', 'readwrite');
-        tx.objectStore('cache').delete('appHtml');
-        tx.oncomplete = resolve;
-        tx.onerror    = reject;
-      };
-      req.onerror = reject;
-    });
-    alert('キャッシュを削除しました。GitHubから再読み込みします。');
-    location.reload();
-  } catch(e) { console.warn('[Cache] 削除失敗:', e); }
-}
+// HTML cache functions removed - running directly on GitHub Pages
 
 (function detectPaypalReturn() {
   const params = new URLSearchParams(location.search);
@@ -1208,6 +1107,20 @@ async function _aoClearHtmlCache() {
         </div>
         <div style="display: flex; gap: 0.5rem;">
             <div class="save-indicator" id="saveStatus">人格: 起動中...</div>
+            <button id="debugSaveBtn" onclick="(async()=>{
+                const sm = window.ao && window.ao.saveManager;
+                if(!sm){ alert('saveManager未初期化'); return; }
+                const ind = document.getElementById('saveStatus');
+                ind.textContent = '人格: 保存中...';
+                sm.isDirty = true;
+                try {
+                    await sm.save();
+                    ind.textContent = '人格: 保存完了 (' + new Date().toLocaleTimeString() + ')';
+                } catch(e) {
+                    ind.textContent = '人格: 保存失敗 ' + e.message;
+                    console.error('[DEBUG SAVE]', e);
+                }
+            })()" style="padding:0.2rem 0.6rem;background:rgba(168,85,247,0.3);border:1px solid rgba(168,85,247,0.6);border-radius:9999px;color:#e9d5ff;font-size:0.7rem;cursor:pointer;white-space:nowrap;">💾 今すぐ保存</button>
             <div class="metabolism-indicator" id="metabolismStatus">代謝: 待機</div>
             <div class="gpu-indicator" id="gpuStatus">感覚野: 待機中</div>
             <div class="turns-indicator" id="turnsStatus">対話: 0回</div>
@@ -7186,28 +7099,8 @@ MemoryLimitsConfig._instance = null;
             }
             
             async initializeTokenizer() {
-                try {
-                    if (typeof kuromoji === 'undefined') {
-                        console.warn('[AdvancedLanguageInputDL] kuromoji.js not loaded, using fallback');
-                        this.tokenizerReady = false;
-                        return;
-                    }
-                    
-                    kuromoji.builder({ dicPath: "https://cdn.jsdelivr.net/npm/kuromoji@0.1.2/dict" }).build((err, tokenizer) => {
-                        if (err) {
-                            console.error('[AdvancedLanguageInputDL] Tokenizer build failed:', err);
-                            this.tokenizerReady = false;
-                            return;
-                        }
-                        
-                        this.tokenizer = tokenizer;
-                        this.tokenizerReady = true;
-                        console.log('[AdvancedLanguageInputDL] Tokenizer ready');
-                    });
-                } catch (error) {
-                    console.error('[AdvancedLanguageInputDL] Tokenizer initialization failed:', error);
-                    this.tokenizerReady = false;
-                }
+                // kuromoji無効化 - フォールバック形態素解析を使用
+                this.tokenizerReady = false;
             }
             
             initializeCoreConcepts() {
@@ -13266,12 +13159,12 @@ class CompletLanguageCognitionEngine extends HumanLikeLanguageAcquisitionEngine 
 }
 // ============ CompletLanguageCognitionEngineに永続化を統合 ============
 
-CompletLanguageCognitionEngine.prototype.initializePersistence = function() {
+CompletLanguageCognitionEngine.prototype.initializePersistence = async function() {
     if (!this.persistenceManager) {
         this.persistenceManager = new PersistenceManager();
         
         // 起動時に自動ロード
-        const loadResult = this.persistenceManager.load(this);
+        const loadResult = await this.persistenceManager.load(this);
         
         if (loadResult.success) {
                         
@@ -18845,6 +18738,7 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                     globalLogManager.log(`Qualia Field initialization failed: ${error.message}`, 'error');
                     this.qualiaField = null;
                 }
+                
             }
             
             exportAll() {
@@ -23707,12 +23601,14 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
         // ============ 人格保存マネージャー（拡張版）============
         class PersonaSaveManager {
             constructor(being) {
-                                this.being = being;
-                this.autoSaveInterval = 30000; // [PERF FIX] 5秒→30秒
+                console.log('[TRACE] PersonaSaveManager constructor called');
+                this.being = being;
+                this.autoSaveInterval = 5000; // 5秒ごとに自動保存
                 this.lastSaveTime = 0;
                 this.isSaving = false;
                 this.isDirty = false; // 未保存フラグ
-                                this.isElectron = typeof window.electronAPI !== 'undefined';
+                console.log('[TRACE] Initial isDirty:', this.isDirty);
+                this.isElectron = typeof window.electronAPI !== 'undefined';
                 this.savePath = '';
                 
                 // 世代管理
@@ -23728,8 +23624,10 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                 this.CURRENT_VERSION = '24.0';
                 
                 // IndexedDB初期化（非同期だが、完了を待つ必要はない）
-                                this._initStorage();
-                            }
+                console.log('[TRACE] About to call _initStorage()');
+                this._initStorage();
+                console.log('[TRACE] PersonaSaveManager constructor complete');
+            }
             
             async _initStorage() {
                 console.log('[STORAGE] _initStorage() called');
@@ -23825,50 +23723,70 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
             }
             
             markDirty() {
-                                this.isDirty = true;
-                                const saveIndicator = document.getElementById('saveStatus');
+                console.log('[TRACE] markDirty() called');
+                this.isDirty = true;
+                console.log('[TRACE] isDirty set to true');
+                const saveIndicator = document.getElementById('saveStatus');
                 if (saveIndicator && !this.isSaving) {
                     // 「未保存」ではなく「保存済み」と表示（少し薄く）
                     const timeStr = this.lastSaveTime > 0 ? new Date(this.lastSaveTime).toLocaleTimeString() : '--:--:--';
                     saveIndicator.textContent = `人格: 保存済み (${timeStr})`;
                     saveIndicator.classList.remove('saving');
                     saveIndicator.style.opacity = '0.7'; // 少し薄く表示
-                                    }
+                    console.log('[TRACE] UI updated to 保存済み (待機中)');
+                }
             }
             
             markSaved() {
-                                                this.isDirty = false;
+                console.log('[TRACE] markSaved() called');
+                console.log('[TRACE] lastSaveTime:', this.lastSaveTime);
+                this.isDirty = false;
                 const saveIndicator = document.getElementById('saveStatus');
-                                if (saveIndicator) {
+                console.log('[TRACE] saveIndicator:', saveIndicator);
+                if (saveIndicator) {
                     const timeStr = new Date(this.lastSaveTime).toLocaleTimeString();
-                                        saveIndicator.textContent = `人格: 保存済み (${timeStr})`;
+                    console.log('[TRACE] timeStr:', timeStr);
+                    saveIndicator.textContent = `人格: 保存済み (${timeStr})`;
                     saveIndicator.classList.remove('saving');
                     saveIndicator.style.opacity = '1'; // 完全に不透明
-                                    } else {
-                                    }
+                    console.log('[TRACE] UI updated to:', saveIndicator.textContent);
+                } else {
+                    console.log('[TRACE] saveIndicator NOT FOUND!');
+                }
             }
             
             startAutoSave() {
-                                const intervalId = setInterval(() => {
-                                        if (!this.isSaving && this.isDirty) {
-                                                // [PERF FIX] アイドル時のみ保存
-                        if (typeof requestIdleCallback !== 'undefined') {
-                            requestIdleCallback(() => this.save(), { timeout: 5000 });
-                        } else { setTimeout(() => this.save(), 0); }
+                console.log('[TRACE] startAutoSave() called - interval:', this.autoSaveInterval);
+                const intervalId = setInterval(() => {
+                    console.log('[TRACE] AutoSave tick - isDirty:', this.isDirty, 'isSaving:', this.isSaving);
+                    if (!this.isSaving && this.isDirty) {
+                        console.log('[TRACE] Conditions met, calling save()');
+                        this.save();
                     } else {
-                                            }
+                        console.log('[TRACE] Conditions not met, skipping');
+                    }
                 }, this.autoSaveInterval);
-                            }
+                console.log('[TRACE] setInterval created with ID:', intervalId);
+            }
             
             async save() {
-                                
+                console.log('[TRACE] save() called - isSaving:', this.isSaving);
+                
                 // ★ save()の直前にidentityを確認
-                                                                                                                
+                console.log('[SAVE] ========================================');
+                console.log('[SAVE] save()呼び出し時のidentity確認');
+                console.log('[SAVE] this.being:', !!this.being);
+                console.log('[SAVE] this.being.identity:', this.being?.identity);
+                console.log('[SAVE] this.being.identity.turns:', this.being?.identity?.turns);
+                console.log('[SAVE] ========================================');
+                
                 if (this.isSaving) {
-                                        return;
+                    console.log('[TRACE] Already saving, returning');
+                    return;
                 }
                 
-                                this.isSaving = true;
+                console.log('[TRACE] Starting save process');
+                this.isSaving = true;
                 const saveIndicator = document.getElementById('saveStatus');
                 if (saveIndicator) {
                     saveIndicator.textContent = '人格: 保存中...';
@@ -23883,33 +23801,59 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                     }
                     
                     // ============ 保存内容の詳細ログ ============
-                                                                                                                        
+                    console.log('[SAVE] ========================================');
+                    console.log('[SAVE] 保存するデータの詳細：');
+                    console.log('[SAVE] ========================================');
+                    console.log('[SAVE] バージョン:', personaData.version);
+                    console.log('[SAVE] タイムスタンプ:', new Date(personaData.timestamp).toLocaleString());
+                    
                     // コア状態
-                                                                                                                        
+                    console.log('[SAVE] --- コア状態 ---');
+                    console.log('[SAVE] identity:', personaData.coreState.identity);
+                    console.log('[SAVE] identity.turns:', personaData.coreState.identity?.turns);
+                    console.log('[SAVE] targetAbstraction:', personaData.coreState.targetAbstraction);
+                    console.log('[SAVE] operationalAbstraction:', personaData.coreState.operationalAbstraction);
+                    
                     // 概念
-                                        const savedConceptCount = personaData.coreState.concepts?.concepts?.length || 0;
-                                        if (savedConceptCount > 0) {
-                                            }
+                    console.log('[SAVE] --- 概念 ---');
+                    const savedConceptCount = personaData.coreState.concepts?.concepts?.length || 0;
+                    console.log('[SAVE] 概念数:', savedConceptCount);
+                    if (savedConceptCount > 0) {
+                        console.log('[SAVE] 概念例:', personaData.coreState.concepts.concepts.slice(0, 3).map(c => c.name));
+                    }
                     
                     // エピソード記憶
-                                        const savedEpisodeCount = personaData.coreState.episodicMemory?.episodes?.length || 0;
-                                        
+                    console.log('[SAVE] --- エピソード記憶 ---');
+                    const savedEpisodeCount = personaData.coreState.episodicMemory?.episodes?.length || 0;
+                    console.log('[SAVE] エピソード数:', savedEpisodeCount);
+                    
                     // UninterpretedStatePool
-                                        const poolCount = personaData.coreState.uninterpretedStatePool?.states?.length || 0;
-                                        if (poolCount > 0) {
-                                            } else {
-                                            }
+                    console.log('[SAVE] --- UninterpretedStatePool ---');
+                    const poolCount = personaData.coreState.uninterpretedStatePool?.states?.length || 0;
+                    console.log('[SAVE] 未解釈状態数:', poolCount);
+                    if (poolCount > 0) {
+                        console.log('[SAVE] ✅ UninterpretedStatePool が保存されています！');
+                    } else {
+                        console.log('[SAVE] ⚠️ UninterpretedStatePool は空です');
+                    }
                     
                     // 因果記憶
-                                        const causalCount = personaData.intelligenceState?.causalMemory?.links?.length || 0;
-                                        
+                    console.log('[SAVE] --- 因果記憶 ---');
+                    const causalCount = personaData.intelligenceState?.causalMemory?.links?.length || 0;
+                    console.log('[SAVE] 因果リンク数:', causalCount);
+                    
                     // 知識境界
-                                        const boundaryCount = personaData.intelligenceState?.knowledgeBoundaries?.boundaries?.length || 0;
-                                        
+                    console.log('[SAVE] --- 知識境界 ---');
+                    const boundaryCount = personaData.intelligenceState?.knowledgeBoundaries?.boundaries?.length || 0;
+                    console.log('[SAVE] 境界数:', boundaryCount);
+                    
                     // 抽象度制御
-                                        const resolutionCount = personaData.intelligenceState?.abstractionResolution?.resolutions?.length || 0;
-                                        
-                                        
+                    console.log('[SAVE] --- 抽象度制御 ---');
+                    const resolutionCount = personaData.intelligenceState?.abstractionResolution?.resolutions?.length || 0;
+                    console.log('[SAVE] 解像度数:', resolutionCount);
+                    
+                    console.log('[SAVE] ========================================');
+                    
                     // JSON文字列化を試行
                     let jsonString;
                     try {
@@ -24038,15 +23982,24 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                     const conceptCount = this.being.concepts?.concepts?.size || 0;
                     const episodeCount = this.being.episodicMemory?.episodes?.length || 0;
                     this.being.addLog(`人格保存完了 [${dataSizeMB}MB] 概念:${conceptCount} EP:${episodeCount}`);
-                                        
+                    console.log('[DEBUG] Save complete - Concepts:', conceptCount, 'Episodes:', episodeCount);
+                    
                     // ★ 最終確認: 本当に保存されたか
-                                                                                const finalCheck = localStorage.getItem(this.saveKeys.current);
+                    console.log('[SAVE] ========================================');
+                    console.log('[SAVE] 保存処理完了 - 最終確認');
+                    console.log('[SAVE] Key:', this.saveKeys.current);
+                    const finalCheck = localStorage.getItem(this.saveKeys.current);
                     if (finalCheck) {
                         const finalParsed = JSON.parse(finalCheck);
-                                                                                                                    } else {
+                        console.log('[SAVE] ✅ 保存成功確認:');
+                        console.log('[SAVE]    - turns:', finalParsed.coreState?.identity?.turns);
+                        console.log('[SAVE]    - concepts:', finalParsed.coreState?.concepts?.concepts?.length);
+                        console.log('[SAVE]    - size:', finalCheck.length, 'bytes');
+                    } else {
                         console.error('[SAVE] ❌ 保存確認失敗: localStorage にデータがありません！');
                     }
-                                        
+                    console.log('[SAVE] ========================================');
+                    
                     // isSavingフラグを少し遅延させて解除
                     setTimeout(() => {
                         this.isSaving = false;
@@ -24082,17 +24035,33 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
             }
             
             async load() {
-                                                                                
+                console.log('[LOAD] ========================================');
+                console.log('[LOAD] load() が呼び出されました');
+                console.log('[LOAD] isElectron:', this.isElectron);
+                console.log('[LOAD] saveKeys:', this.saveKeys);
+                
                 // ★ localStorage の内容を確認
-                                                                                
+                console.log('[LOAD] localStorage check:');
+                console.log('[LOAD] - current exists:', localStorage.getItem(this.saveKeys.current) !== null);
+                console.log('[LOAD] - prev exists:', localStorage.getItem(this.saveKeys.prev) !== null);
+                console.log('[LOAD] - backup exists:', localStorage.getItem(this.saveKeys.backup) !== null);
+                
                 if (localStorage.getItem(this.saveKeys.current)) {
                     try {
                         const currentData = JSON.parse(localStorage.getItem(this.saveKeys.current));
-                                            } catch (e) {
+                        console.log('[LOAD] Current data preview:', {
+                            version: currentData.version,
+                            timestamp: currentData.timestamp ? new Date(currentData.timestamp).toLocaleString() : 'N/A',
+                            hasCoreState: !!currentData.coreState,
+                            hasIdentity: !!currentData.coreState?.identity,
+                            turns: currentData.coreState?.identity?.turns
+                        });
+                    } catch (e) {
                         console.error('[LOAD] Failed to parse current data:', e);
                     }
                 }
-                                
+                console.log('[LOAD] ========================================');
+                
                 try {
                     let personaData = null;
                     
@@ -24118,10 +24087,12 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                                 const result = await window.electronAPI.loadPersona();
                                 if (result && result.success) {
                                     personaData = result.data;
-                                                                    } else if (result && result.reason !== 'no_file') {
+                                    console.log('[LOAD] Persona loaded from Electron');
+                                } else if (result && result.reason !== 'no_file') {
                                     this.being.addLog(`ファイル読み込みエラー: ${result.error || result.reason}`);
                                 } else {
-                                                                    }
+                                    console.log('[LOAD] No persona file found (first run)');
+                                }
                             }
                         }
                     } else {
@@ -24236,7 +24207,15 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                                 });
                                 
                                 // ★ ロード時の詳細ログ
-                                                                
+                                console.log('[LOAD] Data loaded from:', label, {
+                                    key: key,
+                                    size: savedData.length,
+                                    turns: personaData.coreState?.identity?.turns,
+                                    timestamp: personaData.timestamp ? new Date(personaData.timestamp).toLocaleString() : 'N/A',
+                                    hasIdentity: !!personaData.coreState?.identity,
+                                    identityKeys: personaData.coreState?.identity ? Object.keys(personaData.coreState.identity) : []
+                                });
+                                
                                 // データの妥当性チェック
                                 if (personaData && personaData.coreState) {
                                     if (label !== 'メイン') {
@@ -24298,7 +24277,7 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
         function _aoDoStartApp() {
                     const ao = new Being();
                 const saveManager = new PersonaSaveManager(ao);
-                ao.saveManager = saveManager; // Beingからsave Managerを参照できるようにする
+                ao.saveManager = saveManager;
                 let isProcessing = false;
                 
         window.isProcessing = false;
@@ -26147,10 +26126,10 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
         
 
         // ============ v26.6.0 永続化: ページアンロード時に保存 ============
-        window.addEventListener('beforeunload', () => {
+        window.addEventListener('beforeunload', async () => {
             if (window.ao && window.ao.languageOutputDL && window.ao.languageOutputDL.languageAcquisition) {
                 try {
-                    window.ao.languageOutputDL.languageAcquisition.savePersistence();
+                    await window.ao.languageOutputDL.languageAcquisition.savePersistence();
                                     } catch (error) {
                     console.error('[Persistence] Failed to save on unload:', error);
                 }
