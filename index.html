@@ -1002,18 +1002,8 @@ async function loadCloudData() {
 
 // ── クラウドへデータ保存 ──
 async function saveCloudData(dataObj) {
-  if (!window._aoUser || GAS_URL === 'YOUR_GAS_WEB_APP_URL_HERE') return;
-  try {
-    const { email, sessionToken } = window._aoUser;
-    await fetch(GAS_URL + '?action=save', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ email, sessionToken, data: dataObj })
-    });
-    console.log('[Cloud] 保存完了:', email);
-  } catch(err) {
-    console.warn('[Cloud] 保存失敗:', err);
-  }
+  // GASへのクラウド保存は無効化（localStorageで完結）
+  return;
 }
 
 // ── UI ヘルパー ──
@@ -12831,10 +12821,7 @@ class PersistenceManager {
                 localStorage.setItem(storageKey + '_backup', json);
             }
 
-            // ☁️ クラウド(Google Sheets)にも非同期で保存
-            if (typeof saveCloudData === 'function' && window._aoUser) {
-                saveCloudData(state).catch(e => console.warn('[Cloud save]', e));
-            }
+            // ☁️ クラウド保存は無効化（localStorageで完結）
 
             return { success: true };
         } catch (error) {
@@ -12909,8 +12896,15 @@ class PersistenceManager {
      * 自動保存を開始
      */
     startAutoSave(engine) {
-        // 自動保存は PersonaSaveManager に一本化済みのため無効化
-        return;
+        if (this.autoSaveTimer) {
+            clearInterval(this.autoSaveTimer);
+        }
+
+        this.autoSaveTimer = setInterval(async () => {
+            const result = await this.save(engine);
+            if (result.success) {
+                            }
+        }, this.autoSaveInterval);
     }
     
     /**
@@ -17272,9 +17266,13 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
             }
             
             start() {
-                // 自動保存は PersonaSaveManager に一本化済みのため無効化
-                return;
-            }
+                if (!this.enabled) return;
+                
+                this.saveTimer = setInterval(() => {
+                    this._performAutoSave('定期自動保存');
+                }, this.autoSaveInterval);
+                
+                            }
             
             stop() {
                 if (this.saveTimer) {
