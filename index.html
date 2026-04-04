@@ -14,7 +14,7 @@
          （Google Cloud Console・クレジットカード不要）
     ================================================================ -->
     <script>
-      const GAS_URL    = 'https://script.google.com/macros/s/AKfycbzaZ-t17m0Y48ee8wwSgNs1UWtKLUQWf77bJuqSkaUZ4APMs6CIOxPTXfeNUrXeX6Pz/exec'; // ← GASデプロイURLに変更
+      const GAS_URL    = 'https://script.google.com/macros/s/AKfycbyIvnUnyMwHNLorGeGyZyoIb88zk48ijmnNhyxzj1HTnVS-bUsQcCc2-nPy4toop39v/exec'; // ← GASデプロイURLに変更
       // PayPal購読完了後にこのページに戻ってくる（subscription_idが付いてくる）
       const _aoPageUrl  = location.origin + location.pathname;
       const PAYPAL_LINK =
@@ -973,6 +973,12 @@ async function loadCloudData() {
       const key = getUserStorageKey('ao_v26_6_0_state');
       localStorage.setItem(key, JSON.stringify(data.data));
       console.log('[Cloud] データ読み込み完了:', email);
+    } else if (!data.ok && ['cancelled', 'expired', 'inactive', 'not_found'].includes(data.error)) {
+      localStorage.removeItem('ao_user');
+      window._aoUser = null;
+      document.getElementById('ao-auth-overlay').style.display = 'flex';
+      document.getElementById('ao-step-email').classList.add('ao-auth-hidden');
+      document.getElementById('ao-auth-paypal-wrap').classList.remove('ao-auth-hidden');
     }
   } catch(err) {
     console.warn('[Cloud] 読み込み失敗:', err);
