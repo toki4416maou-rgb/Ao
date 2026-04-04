@@ -974,7 +974,9 @@ function getUserStorageKey(base) {
 
 // ── クラウドからデータ読み込み ──
 async function loadCloudData() {
+  // GASが未設定・無効な場合はスキップ（無駄なfetchを防止）
   if (!window._aoUser || GAS_URL === 'YOUR_GAS_WEB_APP_URL_HERE') return;
+  if (!GAS_URL || !GAS_URL.startsWith('https://script.google.com')) return;
   try {
     const { email, sessionToken } = window._aoUser;
     const res  = await fetch(
@@ -13173,7 +13175,13 @@ CompletLanguageCognitionEngine.prototype.initializePersistence = async function(
     if (!this.persistenceManager) {
         this.persistenceManager = new PersistenceManager();
         
-        // 起動時に自動ロード
+        // 起動時に自動ロード（_aoLoadDone フラグで二重ロード防止）
+        if (window._aoLoadDone) {
+            console.log('[Persistence] ロード済みのためスキップ');
+            this.persistenceManager.startAutoSave(this);
+            return;
+        }
+        window._aoLoadDone = true;
         const loadResult = await this.persistenceManager.load(this);
         
         if (loadResult.success) {
@@ -18686,8 +18694,8 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                     // 自動保存開始
                     this.autoSaveManager.start();
                     
-                    // 起動時の自動ロード
-                    this._autoLoadOnStartup();
+                    // 起動時の自動ロードは saveManager.load() に一本化済みのためスキップ
+                    // this._autoLoadOnStartup(); // 重複ロード防止
                 } catch (error) {
                     console.error('Persistence systems initialization failed:', error);
                     this.persistenceLayer = null;
@@ -25121,7 +25129,8 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
         ao.addLog('哲学: 世界を理解し語り直せる賢者型ASI / 物量ではなく構造で理解');
         
         (async () => {
-                                                
+            // ロードは1回だけ（フラグ管理）
+            window._aoLoadDone = true;
             const loaded = await saveManager.load();
                                     
             if (loaded) {
