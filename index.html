@@ -8559,16 +8559,18 @@ class UnknownLanguageInputDL extends AdvancedLanguageInputDL {
         const tokenSequences = [analyzed.tokenCandidates];
         const grammarHypotheses = this.grammarHypothesisGen.generateHypotheses(tokenSequences);
         
-        // 4. 意味クラスタ化（未解釈プール経由で概念昇格 - 日本語と同じフロー）
+        // 4. 意味クラスタ化
         const semanticClusters = [];
         for (const token of analyzed.tokenCandidates) {
+            const conceptId = this.conceptNetwork.register(token.text, [text]);
+            const position = this.conceptNetwork.getSemanticPosition(conceptId);
+            
             semanticClusters.push({
                 token: token.text,
-                conceptId: null,
-                cluster: null,
-                nearestKnown: [],
-                description: token.text,
-                pendingToken: true
+                conceptId,
+                cluster: position.cluster,
+                nearestKnown: position.nearestKnown,
+                description: position.description
             });
         }
         
@@ -8595,10 +8597,13 @@ class UnknownLanguageInputDL extends AdvancedLanguageInputDL {
             confidence: analyzed.confidence,
             
             // 後方互換性
-            semantic_candidates: semanticClusters.map(sc => ({
-                concept: sc.conceptId,
-                weight: sc.nearestKnown[0]?.distance ? 1 - sc.nearestKnown[0].distance : 0.3
-            })),
+            semantic_candidates: semanticClusters
+                .filter(sc => sc.conceptId || sc.token)  // nullかつtokenもないものは除外
+                .map(sc => ({
+                    concept: sc.conceptId || sc.token,  // nullならtokenを使う
+                    weight: sc.nearestKnown[0]?.distance ? 1 - sc.nearestKnown[0].distance : 0.3,
+                    pendingToken: sc.pendingToken || false
+                })),
             emotion_hints: {
                 valence: 0,
                 arousal: 0.3
@@ -13928,11 +13933,10 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                 this.maxSize = 50;
             }
             
-            add(emotionVector, contextFragment, token = null) {
+            add(emotionVector, contextFragment) {
                 this.states.push({
                     emotion: {...emotionVector},
                     context: contextFragment,
-                    token: token,
                     timestamp: Date.now(),
                     attempts: 0
                 });
@@ -14019,19 +14023,8 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                 
                 const fragments = uninterpretedStates.map(s => s.context);
                 const proto = new ProtoConcept(fragments);
-
-                // tokenがあればラベルをトークンそのものにする
-                const tokens = uninterpretedStates
-                    .map(s => s.token)
-                    .filter(t => t && t.length > 0);
-                if (tokens.length > 0) {
-                    const freq = {};
-                    for (const t of tokens) freq[t] = (freq[t] || 0) + 1;
-                    const mostFrequent = Object.entries(freq).sort((a, b) => b[1] - a[1])[0][0];
-                    proto.label = mostFrequent;
-                }
-
                 this.protoConcepts.push(proto);
+                
                 return proto;
             }
             
@@ -19571,24 +19564,19 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                 const modalityStr = integrated.modalitiesUsed.join('+');
                 this.addLog(`統合完了: ${modalityStr} → ${integrated.semantic_candidates.length}概念`);
                 
-                const conceptIds = integrated.semantic_candidates.map(c => c.concept);
+                const conceptIds = integrated.semantic_candidates
+                    .map(c => c.concept)
+                    .filter(id => id != null && id !== 'undefined' && id !== 'null');
                 
                 if (Math.random() < 0.3) {
                     const contextFragment = inputs.text || 
                         (inputs.images ? '視覚入力' : '') + 
                         (inputs.audios ? '聴覚入力' : '') +
                         (inputs.videos ? '映像入力' : '');
-
-                    // 未知トークンがあれば一緒に渡す（日本語と同じフロー）
-                    const pendingTokens = integrated.semantic_candidates
-                        .filter(c => c.pendingToken)
-                        .map(c => c.concept);
-                    const token = pendingTokens.length > 0 ? pendingTokens[0] : null;
-
+                    
                     const result = this.uninterpreted.add(
                         this.state,
-                        contextFragment.substring(0, 50),
-                        token
+                        contextFragment.substring(0, 50)
                     );
                     
                     if (result.distorted) {
