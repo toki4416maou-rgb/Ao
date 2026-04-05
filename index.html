@@ -7070,6 +7070,9 @@ MemoryLimitsConfig._instance = null;
                 
                 // 未知語ログ
                 this.unknownTerms = new Map();
+
+                // v26.6.1: 未解釈プール送り待ちキュー（conceptDictionaryには書かない）
+                this.pendingTerms = new Map();
                 
                 // 学習ログ
                 this.learningLog = [];
@@ -7514,25 +7517,26 @@ MemoryLimitsConfig._instance = null;
                     polarity = -0.3;
                 }
                 
-                this.conceptDictionary.set(term, {
-                    weight: 0.5,
-                    category: category,
-                    polarity: polarity,
+                // v26.6.1: conceptDictionaryには書かない
+                // → extractSemantics()経由でgetOrCreate()に直接着弾するのを防ぐ
+                // → perceiveMultimodal()でbeing.uninterpreted.add()に渡す
+                this.pendingTerms.set(term, {
+                    category,
+                    polarity,
                     frequency: data.frequency,
-                    lastSeen: Date.now(),
-                    isCore: false,
-                    isProvisional: true
+                    contexts: data.contexts,
+                    registeredAt: Date.now()
                 });
                 
                 this.learningLog.push({
-                    type: 'provisional_concept_registered',
+                    type: 'provisional_concept_pending',
                     term: term,
                     category: category,
                     frequency: data.frequency,
                     timestamp: Date.now()
                 });
                 
-                console.log(`[AdvancedLanguageInputDL] Provisional concept registered: ${term} (${category})`);
+                console.log(`[AdvancedLanguageInputDL] Provisional concept pending (→uninterpreted): ${term} (${category})`);
             }
             
             calculateCertainty(tokens, text, polarityInfo) {
@@ -11255,6 +11259,8 @@ class LazySemanticizer {
                 const conceptMap = new Map();
                 allCandidates.forEach(c => {
                     const key = c.concept;
+                    // null/undefined/空文字/文字列"null""undefined"は概念として登録しない
+                    if (key == null || key === 'undefined' || key === 'null' || String(key).trim() === '') return;
                     if (conceptMap.has(key)) {
                         const existing = conceptMap.get(key);
                         existing.weight += c.weight * 0.5;
@@ -18991,6 +18997,12 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                     
                     // 1. ConceptSpace: Mapが正しく機能しているか確認
                     if (this.concepts && this.concepts.concepts instanceof Map) {
+                        // 汚染済み概念（null/undefined/空文字キー）を先に削除
+                        for (const id of this.concepts.concepts.keys()) {
+                            if (id == null || id === 'undefined' || id === 'null' || String(id).trim() === '') {
+                                this.concepts.concepts.delete(id);
+                            }
+                        }
                         // Conceptインスタンスのメソッドが機能するか確認
                         for (const [id, concept] of this.concepts.concepts.entries()) {
                             if (typeof concept.encounter !== 'function') {
@@ -19456,6 +19468,17 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                 if (inputs.text) {
                     const dlResult = await this.languageInputDL.parse(inputs.text);
                     sensoryResults.push(dlResult);
+
+                    // v26.6.1: pendingTermsを未解釈プールへ（直接概念昇格を防ぐ）
+                    if (this.languageInputDL.pendingTerms && this.languageInputDL.pendingTerms.size > 0) {
+                        for (const [term, data] of this.languageInputDL.pendingTerms) {
+                            this.uninterpreted.add(
+                                this.state,
+                                `${term}（${(data.contexts[0] || '').substring(0, 30)}）`.substring(0, 50)
+                            );
+                        }
+                        this.languageInputDL.pendingTerms.clear();
+                    }
                     
                     const valueUpdates = this.valueLayer.observe(inputs.text);
                     if (valueUpdates.length > 0) {
@@ -19536,6 +19559,7 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                                 // 概念候補を概念空間に追加
                                 if (this.concepts) {
                                     cognition.conceptCandidates.forEach(cc => {
+                                        if (!cc.label || cc.label === 'undefined' || cc.label === 'null') return;
                                         const concept = this.concepts.getOrCreate(cc.label);
                                         concept.encounter(this.state, 'video');
                                         this.addLog(`[動画概念] ${cc.label} (${cc.count}回)`);
@@ -19597,7 +19621,7 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                     }
                 }
                 
-                conceptIds.forEach((id, idx) => {
+                conceptIds.forEach((id) => {
                     const concept = this.concepts.getOrCreate(id);
                     const bias = this.failures.getBias(id);
                     
@@ -19606,8 +19630,9 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                         return;
                     }
                     
-                    const candidate = integrated.semantic_candidates[idx];
-                    const modality = candidate.modalities[0];
+                    // idで元の候補を検索（filterでインデックスがずれるため）
+                    const candidate = integrated.semantic_candidates.find(c => c.concept === id);
+                    const modality = candidate?.modalities?.[0] ?? 'language';
                     
                     concept.encounter(this.state, modality);
                     
@@ -19811,10 +19836,12 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                 }
                 
                 const primaryConcept = this.concepts.getOrCreate(conceptIds[0]);
-                const depth = primaryConcept.depth;
-                const relations = Array.from(primaryConcept.relations.entries())
-                    .sort((a, b) => b[1] - a[1])
-                    .slice(0, 2);
+                const depth = primaryConcept ? primaryConcept.depth : 0;
+                const relations = primaryConcept
+                    ? Array.from(primaryConcept.relations.entries())
+                        .sort((a, b) => b[1] - a[1])
+                        .slice(0, 2)
+                    : [];
                 
                 let intent = '説明したい';
                 
@@ -20406,8 +20433,10 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                 this.evolve();
                 
                 const primaryConcept = this.concepts.getOrCreate(conceptIds[0]);
-                const modalities = Array.from(primaryConcept.modalityOrigins).join('+');
-                const internal = `深度:${(primaryConcept.depth * 100).toFixed(0)}% モダリティ:${modalities} 未解釈:${this.uninterpreted.states.length}`;
+                const modalities = primaryConcept ? Array.from(primaryConcept.modalityOrigins).join('+') : '';
+                const internal = primaryConcept
+                    ? `深度:${(primaryConcept.depth * 100).toFixed(0)}% モダリティ:${modalities} 未解釈:${this.uninterpreted.states.length}`
+                    : `未解釈:${this.uninterpreted.states.length}`;
                 
                 // ============ 因果更新ループ完結 ============
                 
@@ -24836,8 +24865,10 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                         thinking.remove();
                         
                         const primaryConcept = ao.concepts.getOrCreate(conceptIds[0]);
-                        const modalities = Array.from(primaryConcept.modalityOrigins).join('+');
-                        const internal = `深度:${(primaryConcept.depth * 100).toFixed(0)}% モダリティ:${modalities}`;
+                        const modalities = primaryConcept ? Array.from(primaryConcept.modalityOrigins).join('+') : '';
+                        const internal = primaryConcept
+                            ? `深度:${(primaryConcept.depth * 100).toFixed(0)}% モダリティ:${modalities}`
+                            : '';
                         
                         addMessage('ao', selected.text, internal);
                         
@@ -24852,7 +24883,9 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                     ao.taskManager.updateFocus(0.9);
                     
                     const dlResult = await ao.languageInputDL.parse(text);
-                    const conceptIds = dlResult.semantic_candidates.map(c => c.concept);
+                    const conceptIds = dlResult.semantic_candidates
+                        .map(c => c.concept)
+                        .filter(id => id != null && id !== 'undefined' && id !== 'null' && String(id).trim().length > 0);
                     const topConcepts = conceptIds.slice(0, 3);
                     
                     const videoResult = await ao.videoGenerator.generateFromConcepts(
@@ -24894,8 +24927,10 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                     thinking.remove();
                     
                     const primaryConcept = ao.concepts.getOrCreate(conceptIds[0]);
-                    const modalities = Array.from(primaryConcept.modalityOrigins).join('+');
-                    const internal = `深度:${(primaryConcept.depth * 100).toFixed(0)}% モダリティ:${modalities}`;
+                    const modalities = primaryConcept ? Array.from(primaryConcept.modalityOrigins).join('+') : '';
+                    const internal = primaryConcept
+                        ? `深度:${(primaryConcept.depth * 100).toFixed(0)}% モダリティ:${modalities}`
+                        : '';
                     
                     addMessage('ao', selected.text, internal);
                     
