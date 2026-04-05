@@ -8288,19 +8288,8 @@ class ProvisionalConceptNetwork {
      * 仮概念を登録
      */
     register(token, contexts) {
-        // トークンそのものをIDとして使用（重複防止・UNKプレフィックス不要）
-        const conceptId = token;
-        if (this.concepts.has(conceptId)) {
-            // 既存概念に文脈を追加して返す
-            const existing = this.concepts.get(conceptId);
-            for (const ctx of contexts) {
-                if (!existing.contexts.includes(ctx)) {
-                    existing.contexts.push(ctx);
-                }
-            }
-            return conceptId;
-        }
-
+        const conceptId = `UNK_${this.nextId++}`;
+        
         const concept = {
             id: conceptId,
             token,
@@ -8310,8 +8299,12 @@ class ProvisionalConceptNetwork {
             createdAt: Date.now()
         };
         
+        // 既知概念との距離を計算
         this.calculateDistanceToKnown(concept);
+        
+        // クラスタ化
         this.assignToCluster(concept);
+        
         this.concepts.set(conceptId, concept);
         
         return conceptId;
@@ -8566,18 +8559,16 @@ class UnknownLanguageInputDL extends AdvancedLanguageInputDL {
         const tokenSequences = [analyzed.tokenCandidates];
         const grammarHypotheses = this.grammarHypothesisGen.generateHypotheses(tokenSequences);
         
-        // 4. 意味クラスタ化
+        // 4. 意味クラスタ化（未解釈プール経由で概念昇格 - 日本語と同じフロー）
         const semanticClusters = [];
         for (const token of analyzed.tokenCandidates) {
-            const conceptId = this.conceptNetwork.register(token.text, [text]);
-            const position = this.conceptNetwork.getSemanticPosition(conceptId);
-            
             semanticClusters.push({
                 token: token.text,
-                conceptId,
-                cluster: position.cluster,
-                nearestKnown: position.nearestKnown,
-                description: position.description
+                conceptId: null,
+                cluster: null,
+                nearestKnown: [],
+                description: token.text,
+                pendingToken: true
             });
         }
         
@@ -13937,10 +13928,11 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                 this.maxSize = 50;
             }
             
-            add(emotionVector, contextFragment) {
+            add(emotionVector, contextFragment, token = null) {
                 this.states.push({
                     emotion: {...emotionVector},
                     context: contextFragment,
+                    token: token,
                     timestamp: Date.now(),
                     attempts: 0
                 });
@@ -14027,8 +14019,19 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                 
                 const fragments = uninterpretedStates.map(s => s.context);
                 const proto = new ProtoConcept(fragments);
+
+                // tokenがあればラベルをトークンそのものにする
+                const tokens = uninterpretedStates
+                    .map(s => s.token)
+                    .filter(t => t && t.length > 0);
+                if (tokens.length > 0) {
+                    const freq = {};
+                    for (const t of tokens) freq[t] = (freq[t] || 0) + 1;
+                    const mostFrequent = Object.entries(freq).sort((a, b) => b[1] - a[1])[0][0];
+                    proto.label = mostFrequent;
+                }
+
                 this.protoConcepts.push(proto);
-                
                 return proto;
             }
             
@@ -19575,10 +19578,17 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                         (inputs.images ? '視覚入力' : '') + 
                         (inputs.audios ? '聴覚入力' : '') +
                         (inputs.videos ? '映像入力' : '');
-                    
+
+                    // 未知トークンがあれば一緒に渡す（日本語と同じフロー）
+                    const pendingTokens = integrated.semantic_candidates
+                        .filter(c => c.pendingToken)
+                        .map(c => c.concept);
+                    const token = pendingTokens.length > 0 ? pendingTokens[0] : null;
+
                     const result = this.uninterpreted.add(
                         this.state,
-                        contextFragment.substring(0, 50)
+                        contextFragment.substring(0, 50),
+                        token
                     );
                     
                     if (result.distorted) {
