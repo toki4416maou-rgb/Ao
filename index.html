@@ -11255,6 +11255,8 @@ class LazySemanticizer {
                 const conceptMap = new Map();
                 allCandidates.forEach(c => {
                     const key = c.concept;
+                    // null/undefined/空文字/文字列"null""undefined"は概念として登録しない
+                    if (key == null || key === 'undefined' || key === 'null' || String(key).trim() === '') return;
                     if (conceptMap.has(key)) {
                         const existing = conceptMap.get(key);
                         existing.weight += c.weight * 0.5;
@@ -18991,6 +18993,12 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                     
                     // 1. ConceptSpace: Mapが正しく機能しているか確認
                     if (this.concepts && this.concepts.concepts instanceof Map) {
+                        // 汚染済み概念（null/undefined/空文字キー）を先に削除
+                        for (const id of this.concepts.concepts.keys()) {
+                            if (id == null || id === 'undefined' || id === 'null' || String(id).trim() === '') {
+                                this.concepts.concepts.delete(id);
+                            }
+                        }
                         // Conceptインスタンスのメソッドが機能するか確認
                         for (const [id, concept] of this.concepts.concepts.entries()) {
                             if (typeof concept.encounter !== 'function') {
@@ -19536,6 +19544,7 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                                 // 概念候補を概念空間に追加
                                 if (this.concepts) {
                                     cognition.conceptCandidates.forEach(cc => {
+                                        if (!cc.label || cc.label === 'undefined' || cc.label === 'null') return;
                                         const concept = this.concepts.getOrCreate(cc.label);
                                         concept.encounter(this.state, 'video');
                                         this.addLog(`[動画概念] ${cc.label} (${cc.count}回)`);
@@ -19597,7 +19606,7 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                     }
                 }
                 
-                conceptIds.forEach((id, idx) => {
+                conceptIds.forEach((id) => {
                     const concept = this.concepts.getOrCreate(id);
                     const bias = this.failures.getBias(id);
                     
@@ -19606,8 +19615,9 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                         return;
                     }
                     
-                    const candidate = integrated.semantic_candidates[idx];
-                    const modality = candidate.modalities[0];
+                    // idで元の候補を検索（filterでインデックスがずれるため）
+                    const candidate = integrated.semantic_candidates.find(c => c.concept === id);
+                    const modality = candidate?.modalities?.[0] ?? 'language';
                     
                     concept.encounter(this.state, modality);
                     
@@ -24852,7 +24862,9 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                     ao.taskManager.updateFocus(0.9);
                     
                     const dlResult = await ao.languageInputDL.parse(text);
-                    const conceptIds = dlResult.semantic_candidates.map(c => c.concept);
+                    const conceptIds = dlResult.semantic_candidates
+                        .map(c => c.concept)
+                        .filter(id => id != null && id !== 'undefined' && id !== 'null' && String(id).trim().length > 0);
                     const topConcepts = conceptIds.slice(0, 3);
                     
                     const videoResult = await ao.videoGenerator.generateFromConcepts(
