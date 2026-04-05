@@ -7070,6 +7070,9 @@ MemoryLimitsConfig._instance = null;
                 
                 // 未知語ログ
                 this.unknownTerms = new Map();
+
+                // v26.6.1: 未解釈プール送り待ちキュー（conceptDictionaryには書かない）
+                this.pendingTerms = new Map();
                 
                 // 学習ログ
                 this.learningLog = [];
@@ -7514,25 +7517,26 @@ MemoryLimitsConfig._instance = null;
                     polarity = -0.3;
                 }
                 
-                this.conceptDictionary.set(term, {
-                    weight: 0.5,
-                    category: category,
-                    polarity: polarity,
+                // v26.6.1: conceptDictionaryには書かない
+                // → extractSemantics()経由でgetOrCreate()に直接着弾するのを防ぐ
+                // → perceiveMultimodal()でbeing.uninterpreted.add()に渡す
+                this.pendingTerms.set(term, {
+                    category,
+                    polarity,
                     frequency: data.frequency,
-                    lastSeen: Date.now(),
-                    isCore: false,
-                    isProvisional: true
+                    contexts: data.contexts,
+                    registeredAt: Date.now()
                 });
                 
                 this.learningLog.push({
-                    type: 'provisional_concept_registered',
+                    type: 'provisional_concept_pending',
                     term: term,
                     category: category,
                     frequency: data.frequency,
                     timestamp: Date.now()
                 });
                 
-                console.log(`[AdvancedLanguageInputDL] Provisional concept registered: ${term} (${category})`);
+                console.log(`[AdvancedLanguageInputDL] Provisional concept pending (→uninterpreted): ${term} (${category})`);
             }
             
             calculateCertainty(tokens, text, polarityInfo) {
@@ -15949,6 +15953,17 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
             }
             
             getOrCreate(id) {
+                // v26.6.1: 無効IDを全部ここで弾く
+                if (
+                    id == null ||
+                    id === 'null' ||
+                    id === 'undefined' ||
+                    typeof id !== 'string' ||
+                    id.trim().length === 0
+                ) {
+                    return null;
+                }
+
                 if (!this.concepts.has(id)) {
                     // v23.0: 上限チェック
                     if (this.concepts.size >= this.maxConcepts) {
@@ -19464,6 +19479,17 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                 if (inputs.text) {
                     const dlResult = await this.languageInputDL.parse(inputs.text);
                     sensoryResults.push(dlResult);
+
+                    // v26.6.1: pendingTermsを未解釈プールへ（直接概念昇格を防ぐ）
+                    if (this.languageInputDL.pendingTerms && this.languageInputDL.pendingTerms.size > 0) {
+                        for (const [term, data] of this.languageInputDL.pendingTerms) {
+                            this.uninterpreted.add(
+                                this.state,
+                                `${term}（${(data.contexts[0] || '').substring(0, 30)}）`.substring(0, 50)
+                            );
+                        }
+                        this.languageInputDL.pendingTerms.clear();
+                    }
                     
                     const valueUpdates = this.valueLayer.observe(inputs.text);
                     if (valueUpdates.length > 0) {
@@ -19546,6 +19572,7 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                                     cognition.conceptCandidates.forEach(cc => {
                                         if (!cc.label || cc.label === 'undefined' || cc.label === 'null') return;
                                         const concept = this.concepts.getOrCreate(cc.label);
+                                        if (!concept) return;
                                         concept.encounter(this.state, 'video');
                                         this.addLog(`[動画概念] ${cc.label} (${cc.count}回)`);
                                     });
@@ -19608,6 +19635,7 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                 
                 conceptIds.forEach((id) => {
                     const concept = this.concepts.getOrCreate(id);
+                    if (!concept) return;
                     const bias = this.failures.getBias(id);
                     
                     if (bias > 0.3 && Math.random() < bias) {
@@ -19630,6 +19658,7 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                     for (let i = 0; i < conceptIds.length - 1; i++) {
                         const c1 = this.concepts.getOrCreate(conceptIds[i]);
                         const c2 = this.concepts.getOrCreate(conceptIds[i + 1]);
+                        if (!c1 || !c2) continue;
                         c1.relate(c2.id, 0.2);
                         c2.relate(c1.id, 0.2);
                     }
@@ -19727,6 +19756,7 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                         
                         const c1 = this.concepts.getOrCreate(pair.concept1);
                         const c2 = this.concepts.getOrCreate(pair.concept2);
+                        if (!c1 || !c2) return;
                         c1.relate(c2.id, 0.7);
                         c2.relate(c1.id, 0.7);
                     }
@@ -19821,10 +19851,12 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                 }
                 
                 const primaryConcept = this.concepts.getOrCreate(conceptIds[0]);
-                const depth = primaryConcept.depth;
-                const relations = Array.from(primaryConcept.relations.entries())
-                    .sort((a, b) => b[1] - a[1])
-                    .slice(0, 2);
+                const depth = primaryConcept ? primaryConcept.depth : 0;
+                const relations = primaryConcept
+                    ? Array.from(primaryConcept.relations.entries())
+                        .sort((a, b) => b[1] - a[1])
+                        .slice(0, 2)
+                    : [];
                 
                 let intent = '説明したい';
                 
@@ -20416,8 +20448,10 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                 this.evolve();
                 
                 const primaryConcept = this.concepts.getOrCreate(conceptIds[0]);
-                const modalities = Array.from(primaryConcept.modalityOrigins).join('+');
-                const internal = `深度:${(primaryConcept.depth * 100).toFixed(0)}% モダリティ:${modalities} 未解釈:${this.uninterpreted.states.length}`;
+                const modalities = primaryConcept ? Array.from(primaryConcept.modalityOrigins).join('+') : '';
+                const internal = primaryConcept
+                    ? `深度:${(primaryConcept.depth * 100).toFixed(0)}% モダリティ:${modalities} 未解釈:${this.uninterpreted.states.length}`
+                    : `未解釈:${this.uninterpreted.states.length}`;
                 
                 // ============ 因果更新ループ完結 ============
                 
@@ -24846,8 +24880,10 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                         thinking.remove();
                         
                         const primaryConcept = ao.concepts.getOrCreate(conceptIds[0]);
-                        const modalities = Array.from(primaryConcept.modalityOrigins).join('+');
-                        const internal = `深度:${(primaryConcept.depth * 100).toFixed(0)}% モダリティ:${modalities}`;
+                        const modalities = primaryConcept ? Array.from(primaryConcept.modalityOrigins).join('+') : '';
+                        const internal = primaryConcept
+                            ? `深度:${(primaryConcept.depth * 100).toFixed(0)}% モダリティ:${modalities}`
+                            : '';
                         
                         addMessage('ao', selected.text, internal);
                         
@@ -24906,8 +24942,10 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                     thinking.remove();
                     
                     const primaryConcept = ao.concepts.getOrCreate(conceptIds[0]);
-                    const modalities = Array.from(primaryConcept.modalityOrigins).join('+');
-                    const internal = `深度:${(primaryConcept.depth * 100).toFixed(0)}% モダリティ:${modalities}`;
+                    const modalities = primaryConcept ? Array.from(primaryConcept.modalityOrigins).join('+') : '';
+                    const internal = primaryConcept
+                        ? `深度:${(primaryConcept.depth * 100).toFixed(0)}% モダリティ:${modalities}`
+                        : '';
                     
                     addMessage('ao', selected.text, internal);
                     
