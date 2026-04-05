@@ -8288,8 +8288,19 @@ class ProvisionalConceptNetwork {
      * 仮概念を登録
      */
     register(token, contexts) {
-        const conceptId = `UNK_${this.nextId++}`;
-        
+        // トークンそのものをIDとして使用（重複防止・UNKプレフィックス不要）
+        const conceptId = token;
+        if (this.concepts.has(conceptId)) {
+            // 既存概念に文脈を追加して返す
+            const existing = this.concepts.get(conceptId);
+            for (const ctx of contexts) {
+                if (!existing.contexts.includes(ctx)) {
+                    existing.contexts.push(ctx);
+                }
+            }
+            return conceptId;
+        }
+
         const concept = {
             id: conceptId,
             token,
@@ -8299,12 +8310,8 @@ class ProvisionalConceptNetwork {
             createdAt: Date.now()
         };
         
-        // 既知概念との距離を計算
         this.calculateDistanceToKnown(concept);
-        
-        // クラスタ化
         this.assignToCluster(concept);
-        
         this.concepts.set(conceptId, concept);
         
         return conceptId;
