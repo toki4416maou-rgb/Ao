@@ -8580,6 +8580,17 @@ class UnknownLanguageInputDL extends AdvancedLanguageInputDL {
                 description: token.text,
                 pendingToken: true
             });
+
+            // pendingTokenはsemantic_candidatesに出さずpendingTermsに積む
+            if (token.text && token.text.trim().length > 0) {
+                this.pendingTerms.set(token.text, {
+                    category: 'unknown',
+                    polarity: 0,
+                    frequency: 1,
+                    contexts: [],
+                    registeredAt: Date.now()
+                });
+            }
         }
         
         // 5. 最良解釈の選択
@@ -8605,12 +8616,14 @@ class UnknownLanguageInputDL extends AdvancedLanguageInputDL {
             confidence: analyzed.confidence,
             
             // 後方互換性
+            // pendingToken=trueのトークンはsemantic_candidatesに出さない
+            // → perceiveMultimodal()でpendingTerms経由・uninterpreted.add()に流す
             semantic_candidates: semanticClusters
-                .filter(sc => sc.conceptId || sc.token)  // nullかつtokenもないものは除外
+                .filter(sc => !sc.pendingToken && (sc.conceptId || sc.token))
                 .map(sc => ({
-                    concept: sc.conceptId || sc.token,  // nullならtokenを使う
+                    concept: sc.conceptId || sc.token,
                     weight: sc.nearestKnown[0]?.distance ? 1 - sc.nearestKnown[0].distance : 0.3,
-                    pendingToken: sc.pendingToken || false
+                    pendingToken: false
                 })),
             emotion_hints: {
                 valence: 0,
