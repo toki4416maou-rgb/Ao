@@ -814,6 +814,152 @@
             width: 100%;
             border-radius: 8px;
         }
+
+        /* ============================================================
+           📱 スマホ対応 レスポンシブCSS
+        ============================================================ */
+
+        /* モバイルパネル切替ボタン（PCでは非表示） */
+        #mobile-panel-toggle {
+            display: none;
+        }
+
+        @media (max-width: 768px) {
+            /* ヘッダー: 縦並びに */
+            .header {
+                flex-direction: column;
+                align-items: flex-start;
+                gap: 0.5rem;
+                padding: 0.75rem 1rem;
+            }
+            .title {
+                font-size: 1.1rem;
+            }
+            /* ヘッダー右側のインジケーター群: 横スクロール可能に */
+            .header > div:last-child {
+                display: flex;
+                flex-wrap: wrap;
+                gap: 0.3rem;
+                width: 100%;
+            }
+            .header > div:last-child > * {
+                margin-left: 0 !important;
+                font-size: 0.65rem;
+                padding: 0.2rem 0.5rem;
+            }
+
+            /* メインコンテナ: 1カラム縦積みに */
+            .container {
+                grid-template-columns: 1fr;
+                height: auto;
+                overflow: visible;
+                padding: 0.5rem;
+                gap: 0.5rem;
+            }
+
+            /* body のスクロールを許可 */
+            body {
+                overflow: auto;
+            }
+
+            /* 左パネル: デフォルト非表示（モバイルトグルで開閉） */
+            .left-panel {
+                display: none;
+                height: auto;
+                max-height: 70vh;
+            }
+            .left-panel.mobile-open {
+                display: block;
+            }
+
+            /* チャットエリア: 高さをビューポートに合わせる */
+            .chat {
+                height: calc(100svh - 200px);
+                min-height: 400px;
+            }
+
+            /* メッセージバブル: 最大幅を広げる */
+            .bubble {
+                max-width: 88%;
+                font-size: 0.8rem;
+            }
+
+            /* 入力エリア: ボタンを小さく */
+            .input-area {
+                padding: 0.5rem;
+                gap: 0.35rem;
+            }
+            .input-area button {
+                padding: 0.65rem 0.75rem;
+                font-size: 0.8rem;
+            }
+            .file-label {
+                padding: 0.65rem 0.75rem;
+                font-size: 1rem;
+            }
+            input[type="text"] {
+                padding: 0.65rem 0.75rem;
+                font-size: 0.85rem;
+            }
+
+            /* モバイルパネル切替ボタン */
+            #mobile-panel-toggle {
+                display: flex;
+                align-items: center;
+                justify-content: space-between;
+                width: 100%;
+                padding: 0.6rem 1rem;
+                background: rgba(168, 85, 247, 0.15);
+                border: 1px solid rgba(168, 85, 247, 0.35);
+                border-radius: 0.5rem;
+                color: #c084fc;
+                font-size: 0.8rem;
+                font-weight: 600;
+                cursor: pointer;
+                margin-bottom: 0.25rem;
+            }
+            #mobile-panel-toggle:hover {
+                background: rgba(168, 85, 247, 0.25);
+            }
+
+            /* モーダル: スマホ向けに調整 */
+            .modal-content {
+                width: 95%;
+                max-height: 85vh;
+            }
+            .modal-footer {
+                flex-wrap: wrap;
+                gap: 0.4rem;
+            }
+            .modal-btn-cancel,
+            .modal-btn-create,
+            .modal-btn-export {
+                flex: 1;
+                text-align: center;
+                padding: 0.65rem 0.5rem;
+            }
+
+            /* 認証オーバーレイ */
+            #ao-auth-box {
+                padding: 2rem 1.25rem;
+            }
+            #ao-auth-title {
+                font-size: 1.6rem;
+            }
+        }
+
+        /* 極小画面（〜480px）向け追加調整 */
+        @media (max-width: 480px) {
+            .title {
+                font-size: 0.95rem;
+            }
+            .chat {
+                height: calc(100svh - 220px);
+            }
+            .bubble {
+                max-width: 92%;
+            }
+        }
     </style>
 </head>
 <body>
@@ -1122,6 +1268,15 @@ async function aoActivateAfterPaypal() {
     </div>
     
     <div class="container">
+        <!-- 📱 モバイル用: 左パネル開閉ボタン -->
+        <button id="mobile-panel-toggle" onclick="(function(){
+            const lp = document.querySelector('.left-panel');
+            const btn = document.getElementById('mobile-panel-toggle');
+            const isOpen = lp.classList.toggle('mobile-open');
+            btn.innerHTML = isOpen
+                ? '📊 内部状態パネルを閉じる ▲'
+                : '📊 内部状態パネルを開く ▼';
+        })()">📊 内部状態パネルを開く ▼</button>
         <div class="left-panel">
             <div class="panel"><div class="panel-title">内部状態の波形</div><canvas id="neural"></canvas></div>
             <div class="panel">
