@@ -11972,6 +11972,346 @@ class ConceptBinding {
     }
 }
 
+
+// ============ ゼロ学習型文法獲得エンジン ============
+// 設計思想: 主語・述語・助詞をラベルなしでデータから統計的に発見する
+
+class FunctionWordDetector {
+    constructor() {
+        this.tokenFrequency = new Map();
+        this.totalTokens = 0;
+        this.functionWordCache = new Set();
+        this.cacheValid = false;
+        this.FREQ_THRESHOLD = 0.03;
+        this.LENGTH_THRESHOLD = 3;
+    }
+    observe(tokens) {
+        for (const token of tokens) {
+            const s = typeof token === 'string' ? token : token.surface;
+            const count = this.tokenFrequency.get(s) || 0;
+            this.tokenFrequency.set(s, count + 1);
+            this.totalTokens++;
+        }
+        this.cacheValid = false;
+    }
+    isFunctionWord(surface) {
+        if (!this.cacheValid) this._rebuildCache();
+        return this.functionWordCache.has(surface);
+    }
+    _rebuildCache() {
+        this.functionWordCache.clear();
+        if (this.totalTokens < 10) { this.cacheValid = true; return; }
+        for (const [surface, count] of this.tokenFrequency) {
+            const freq = count / this.totalTokens;
+            if (surface.length <= this.LENGTH_THRESHOLD && freq >= this.FREQ_THRESHOLD) {
+                this.functionWordCache.add(surface);
+            }
+        }
+        this.cacheValid = true;
+    }
+    getTopFunctionWords(n = 10) {
+        if (!this.cacheValid) this._rebuildCache();
+        return Array.from(this.functionWordCache)
+            .map(w => ({ word: w, freq: (this.tokenFrequency.get(w) || 0) / Math.max(1, this.totalTokens) }))
+            .sort((a, b) => b.freq - a.freq).slice(0, n);
+    }
+    exportState() {
+        return { tokenFrequency: Array.from(this.tokenFrequency.entries()), totalTokens: this.totalTokens };
+    }
+    importState(data) {
+        if (data.tokenFrequency) this.tokenFrequency = new Map(data.tokenFrequency);
+        this.totalTokens = data.totalTokens || 0;
+        this.cacheValid = false;
+    }
+}
+
+class RichSyntaxHypothesis {
+    constructor(richPattern) {
+        this.richPattern = richPattern;
+        this.slots = richPattern.filter(p => p.type === 'slot').map(p => p.id);
+        this.exampleSurfaces = {};
+        this.usageCount = 0;
+        this.successCount = 0;
+        this.confidence = 0.5;
+        this.createdAt = Date.now();
+        this.lastUsed = Date.now();
+        for (const id of this.slots) this.exampleSurfaces[id] = [];
+    }
+    get signature() {
+        return this.richPattern.map(p =>
+            p.type === 'slot' ? '[' + p.id + ']' : '"' + p.surface + '"'
+        ).join('-');
+    }
+    recordUsage(slotValues, success) {
+        this.usageCount++;
+        this.lastUsed = Date.now();
+        if (success) this.successCount++;
+        for (const [id, surface] of Object.entries(slotValues)) {
+            if (!this.exampleSurfaces[id]) this.exampleSurfaces[id] = [];
+            if (!this.exampleSurfaces[id].includes(surface)) {
+                this.exampleSurfaces[id].push(surface);
+                if (this.exampleSurfaces[id].length > 30) this.exampleSurfaces[id].shift();
+            }
+        }
+        const k = 2;
+        const smoothed = (this.successCount + k) / (this.usageCount + 2 * k);
+        this.confidence = 0.2 + smoothed * 0.8;
+    }
+    realize(conceptSlots) {
+        return this.richPattern.map(part => {
+            if (part.type === 'func') return part.surface;
+            const surface = conceptSlots[part.id];
+            if (surface !== undefined) return surface;
+            return (this.exampleSurfaces[part.id] || [])[0] || '';
+        }).join('');
+    }
+    exportState() {
+        return {
+            richPattern: this.richPattern, exampleSurfaces: this.exampleSurfaces,
+            usageCount: this.usageCount, successCount: this.successCount,
+            confidence: this.confidence, createdAt: this.createdAt, lastUsed: this.lastUsed
+        };
+    }
+    static fromState(d) {
+        const h = new RichSyntaxHypothesis(d.richPattern);
+        h.exampleSurfaces = d.exampleSurfaces || {};
+        h.usageCount = d.usageCount || 0;
+        h.successCount = d.successCount || 0;
+        h.confidence = d.confidence || 0.5;
+        h.createdAt = d.createdAt || Date.now();
+        h.lastUsed = d.lastUsed || Date.now();
+        return h;
+    }
+}
+
+class RichSyntaxHypothesisGenerator {
+    constructor(functionWordDetector) {
+        this.funcDetector = functionWordDetector;
+        this.hypotheses = [];
+    }
+    learnFromTokens(tokens) {
+        if (!tokens || tokens.length < 2) return null;
+        const surfaces = tokens.map(t => typeof t === 'string' ? t : t.surface);
+        const richPattern = [];
+        const slotValues = {};
+        let slotIdx = 0;
+        for (const surface of surfaces) {
+            if (this.funcDetector.isFunctionWord(surface)) {
+                richPattern.push({ type: 'func', surface });
+            } else {
+                const id = String.fromCharCode(65 + slotIdx);
+                richPattern.push({ type: 'slot', id });
+                slotValues[id] = surface;
+                slotIdx++;
+                if (slotIdx >= 26) break;
+            }
+        }
+        const slots = richPattern.filter(p => p.type === 'slot');
+        if (slots.length === 0) return null;
+        const sig = richPattern.map(p =>
+            p.type === 'slot' ? '[' + p.id + ']' : '"' + p.surface + '"'
+        ).join('-');
+        let hypothesis = this.hypotheses.find(h => h.signature === sig);
+        if (!hypothesis) {
+            hypothesis = new RichSyntaxHypothesis(richPattern);
+            this.hypotheses.push(hypothesis);
+        }
+        hypothesis.recordUsage(slotValues, true);
+        return hypothesis;
+    }
+    findForConceptCount(n) {
+        return this.hypotheses
+            .filter(h => h.slots.length === n)
+            .sort((a, b) => b.confidence - a.confidence);
+    }
+    prune() {
+        const cutoff = Date.now() - 3600000;
+        this.hypotheses = this.hypotheses.filter(h =>
+            !(h.confidence < 0.3 && h.lastUsed < cutoff)
+        );
+        if (this.hypotheses.length > 100) {
+            this.hypotheses.sort((a, b) => b.confidence - a.confidence);
+            this.hypotheses = this.hypotheses.slice(0, 100);
+        }
+    }
+    exportState() { return { hypotheses: this.hypotheses.map(h => h.exportState()) }; }
+    importState(data) {
+        if (data.hypotheses) this.hypotheses = data.hypotheses.map(h => RichSyntaxHypothesis.fromState(h));
+    }
+}
+
+
+// ---- 形態変化学習器 ----
+// 「走る」「走った」「走ります」などを同一語幹のバリアントとして統計的に発見・選択する
+class MorphVariantLearner {
+    constructor() {
+        // surface → { count, contextCounts, variants: Set }
+        this.wordForms = new Map();
+        // 語末文字列 → 出現回数
+        this.endingFrequency = new Map();
+        this.MIN_PREFIX_LEN = 1;
+    }
+
+    // トークン列 + 文脈ヒントから学習
+    learnFromTokens(tokens, contextHints = {}) {
+        for (const token of tokens) {
+            const surface = typeof token === 'string' ? token : token.surface;
+            if (!surface || surface.length < 2) continue;
+
+            // 語末を登録（1〜3文字）
+            for (let endLen = 1; endLen <= Math.min(3, surface.length - 1); endLen++) {
+                const ending = surface.slice(-endLen);
+                this.endingFrequency.set(ending, (this.endingFrequency.get(ending) || 0) + 1);
+            }
+
+            this._registerForm(surface, contextHints);
+        }
+        this._updateVariantGroups();
+    }
+
+    // 文字列自体から文脈を自動推定（外部ヒントがない場合）
+    inferContext(surface) {
+        if (!surface) return {};
+        const s = surface;
+        return {
+            isPast:     s.endsWith('た') || s.endsWith('だ') || s.endsWith('たい'),
+            isPolite:   s.endsWith('ます') || s.endsWith('です') || s.endsWith('ました'),
+            isNegative: s.endsWith('ない') || s.endsWith('ません') || s.endsWith('なかった'),
+        };
+    }
+
+    _registerForm(surface, contextHints) {
+        if (!this.wordForms.has(surface)) {
+            this.wordForms.set(surface, {
+                count: 0,
+                contextCounts: { past: 0, polite: 0, negative: 0, base: 0 },
+                variants: new Set([surface])
+            });
+        }
+        const entry = this.wordForms.get(surface);
+        entry.count++;
+
+        if (contextHints.isPast)     entry.contextCounts.past++;
+        else if (contextHints.isPolite)   entry.contextCounts.polite++;
+        else if (contextHints.isNegative) entry.contextCounts.negative++;
+        else                               entry.contextCounts.base++;
+    }
+
+    _updateVariantGroups() {
+        const forms = Array.from(this.wordForms.keys());
+        // O(n^2) だが最大300語程度なので許容
+        for (let i = 0; i < forms.length; i++) {
+            for (let j = i + 1; j < forms.length; j++) {
+                const a = forms[i];
+                const b = forms[j];
+                if (this._commonPrefix(a, b).length >= this.MIN_PREFIX_LEN) {
+                    this.wordForms.get(a).variants.add(b);
+                    this.wordForms.get(b).variants.add(a);
+                }
+            }
+        }
+    }
+
+    _commonPrefix(a, b) {
+        let i = 0;
+        while (i < a.length && i < b.length && a[i] === b[i]) i++;
+        return a.slice(0, i);
+    }
+
+    // 文脈に最適なバリアントを選択して返す
+    selectVariant(surface, contextHints = {}) {
+        const entry = this.wordForms.get(surface);
+        if (!entry || entry.variants.size <= 1) return surface;
+
+        let bestVariant = surface;
+        let bestScore = -1;
+
+        for (const variant of entry.variants) {
+            const varEntry = this.wordForms.get(variant);
+            if (!varEntry) continue;
+
+            const c = varEntry.contextCounts;
+            const total = Math.max(1, c.past + c.polite + c.negative + c.base);
+            let score = 0;
+
+            if (contextHints.isPast)          score = c.past    / total;
+            else if (contextHints.isPolite)   score = c.polite  / total;
+            else if (contextHints.isNegative) score = c.negative / total;
+            else                               score = c.base    / total;
+
+            // 出現回数で信頼性補正
+            score *= Math.log(1 + varEntry.count);
+
+            if (score > bestScore) { bestScore = score; bestVariant = variant; }
+        }
+        return bestVariant;
+    }
+
+    getTopEndings(n = 10) {
+        return Array.from(this.endingFrequency.entries())
+            .sort((a, b) => b[1] - a[1]).slice(0, n)
+            .map(([ending, count]) => ({ ending, count }));
+    }
+
+    exportState() {
+        return {
+            wordForms: Array.from(this.wordForms.entries()).map(([k, v]) => [k, {
+                count: v.count,
+                contextCounts: v.contextCounts,
+                variants: Array.from(v.variants)
+            }]),
+            endingFrequency: Array.from(this.endingFrequency.entries())
+        };
+    }
+    importState(data) {
+        if (data.wordForms) {
+            this.wordForms = new Map(data.wordForms.map(([k, v]) => [k, {
+                count: v.count,
+                contextCounts: v.contextCounts,
+                variants: new Set(v.variants)
+            }]));
+        }
+        if (data.endingFrequency) {
+            this.endingFrequency = new Map(data.endingFrequency);
+        }
+    }
+}
+
+class RichSurfaceRealizer {
+    constructor(richHypothesisGenerator, morphVariantLearner) {
+        this.richGen = richHypothesisGenerator;
+        this.morphLearner = morphVariantLearner || null;
+    }
+
+    // conceptSlots の各スロット値に活用変換を適用する
+    _applyMorph(conceptSlots, contextHints) {
+        if (!this.morphLearner) return conceptSlots;
+        const result = {};
+        for (const [id, surface] of Object.entries(conceptSlots)) {
+            result[id] = this.morphLearner.selectVariant(surface, contextHints);
+        }
+        return result;
+    }
+
+    realize(conceptSlots, contextHints = {}) {
+        const morphed = this._applyMorph(conceptSlots, contextHints);
+        const n = Object.keys(morphed).length;
+        const candidates = this.richGen.findForConceptCount(n);
+        if (candidates.length === 0) return Object.values(morphed).join('');
+        return candidates[0].realize(morphed);
+    }
+
+    realizeMultiple(conceptSlots, limit = 3, contextHints = {}) {
+        const morphed = this._applyMorph(conceptSlots, contextHints);
+        const n = Object.keys(morphed).length;
+        return this.richGen.findForConceptCount(n).slice(0, limit).map(h => ({
+            surface: h.realize(morphed),
+            confidence: h.confidence,
+            pattern: h.signature
+        }));
+    }
+}
+
 // ============ 統合層: HumanLikeLanguageAcquisitionEngine ============
 class HumanLikeLanguageAcquisitionEngine {
     constructor() {
@@ -11980,6 +12320,12 @@ class HumanLikeLanguageAcquisitionEngine {
         this.hypothesisGenerator = new SyntaxHypothesisGenerator();
         this.errorLearner = new PredictionErrorLearner(this.hypothesisGenerator);
         this.surfaceRealizer = new SurfaceRealizer(this.hypothesisGenerator);
+
+        // ゼロ学習型文法獲得エンジン（助詞・主語述語・活用をデータから発見）
+        this.functionWordDetector = new FunctionWordDetector();
+        this.richHypothesisGenerator = new RichSyntaxHypothesisGenerator(this.functionWordDetector);
+        this.morphVariantLearner = new MorphVariantLearner();
+        this.richSurfaceRealizer = new RichSurfaceRealizer(this.richHypothesisGenerator, this.morphVariantLearner);
         
         // 意味との疎結合
         this.conceptBindings = [];  // ConceptBinding配列
@@ -12055,6 +12401,26 @@ class HumanLikeLanguageAcquisitionEngine {
                 }
             });
             
+            // Layer 2b: ゼロ学習型文法獲得（助詞・主語述語・活用をデータから発見）
+            // Step 1: まずトークン全体を機能語検出器に学習させる
+            this.functionWordDetector.observe(tokens);
+
+            // Step 2: 形態変化学習（文脈ヒントを自動推定して各語形を登録）
+            if (this.morphVariantLearner) {
+                // 文末トークンから時制・丁寧度を自動推定
+                const lastSurface = tokens.length > 0
+                    ? (tokens[tokens.length - 1].surface || '')
+                    : '';
+                const contextHints = this.morphVariantLearner.inferContext(lastSurface);
+                this.morphVariantLearner.learnFromTokens(tokens, contextHints);
+            }
+
+            // Step 3: 機能語が十分蓄積されたらリッチ仮説を生成
+            // （データが少ない段階では機能語の判定が不安定なので10発話以降から）
+            if (this.stats.totalUtterances >= 10) {
+                this.richHypothesisGenerator.learnFromTokens(tokens);
+            }
+
             // Layer 3: 予測誤差学習
             traceEntry.steps.push({ layer: 3, name: 'Prediction Error Learning', status: 'start' });
             this.errorLearner.learn(tokens);
@@ -12085,6 +12451,10 @@ class HumanLikeLanguageAcquisitionEngine {
         
         // 仮説の刈り込み
         this.hypothesisGenerator.pruneHypotheses();
+        // リッチ仮説も同時に刈り込む
+        if (this.richHypothesisGenerator) {
+            this.richHypothesisGenerator.prune();
+        }
     }
     
     /**
@@ -12211,7 +12581,19 @@ class HumanLikeLanguageAcquisitionEngine {
                 confidence: b.confidence,
                 observationCount: b.observationCount
             })),
-            stats: this.stats
+            stats: this.stats,
+            // ゼロ学習型文法獲得エンジンの永続化
+            richGrammar: {
+                functionWords: this.functionWordDetector
+                    ? this.functionWordDetector.exportState()
+                    : null,
+                richHypotheses: this.richHypothesisGenerator
+                    ? this.richHypothesisGenerator.exportState()
+                    : null,
+                morphVariants: this.morphVariantLearner
+                    ? this.morphVariantLearner.exportState()
+                    : null
+            }
         };
     }
     
@@ -12251,6 +12633,19 @@ class HumanLikeLanguageAcquisitionEngine {
         
         if (data.stats) {
             this.stats = data.stats;
+        }
+
+        // ゼロ学習型文法獲得エンジンの復元
+        if (data.richGrammar) {
+            if (this.functionWordDetector && data.richGrammar.functionWords) {
+                this.functionWordDetector.importState(data.richGrammar.functionWords);
+            }
+            if (this.richHypothesisGenerator && data.richGrammar.richHypotheses) {
+                this.richHypothesisGenerator.importState(data.richGrammar.richHypotheses);
+            }
+            if (this.morphVariantLearner && data.richGrammar.morphVariants) {
+                this.morphVariantLearner.importState(data.richGrammar.morphVariants);
+            }
         }
     }
 }
@@ -13377,6 +13772,7 @@ class CompletLanguageCognitionEngine extends HumanLikeLanguageAcquisitionEngine 
             this.embodiedSim.noiseLevel = data.embodiedSettings.noiseLevel;
             this.embodiedSim.dropoutRate = data.embodiedSettings.dropoutRate;
         }
+        // richGrammarはsuper.importState(data)内で処理済み（基底クラスに委譲）
     }
 }
 // ============ CompletLanguageCognitionEngineに永続化を統合 ============
@@ -13708,14 +14104,32 @@ Object.defineProperty(HumanLikeLanguageAcquisitionEngine.prototype, 'syntaxPatte
 });
 
 // generateSentenceメソッド（互換性）
-HumanLikeLanguageAcquisitionEngine.prototype.generateSentence = function(concepts, intent) {
+HumanLikeLanguageAcquisitionEngine.prototype.generateSentence = function(concepts, intent, toneHints) {
     try {
-        // 概念をスロットに変換
         const slots = {};
         for (let i = 0; i < Math.min(concepts.length, 3); i++) {
-            slots[String.fromCharCode(65 + i)] = concepts[i]; // A, B, C...
+            slots[String.fromCharCode(65 + i)] = concepts[i];
         }
-        
+
+        // intentとtoneHintsから活用の文脈ヒントを決定
+        const contextHints = {
+            isPast:     (toneHints && toneHints.certainty > 0.6),
+            isPolite:   (toneHints && toneHints.hesitation < 0.3),
+            isNegative: (toneHints && toneHints.certainty < 0.2),
+        };
+
+        // リッチ生成器（助詞込み＋活用選択）が使えるか試みる
+        const richCandidates = this.richSurfaceRealizer
+            ? this.richSurfaceRealizer.realizeMultiple(slots, 3, contextHints)
+            : [];
+
+        // 信頼度0.55以上のリッチ候補があればそちらを優先
+        const bestRich = richCandidates.find(c => c.confidence >= 0.55);
+        if (bestRich) {
+            return bestRich.surface;
+        }
+
+        // フォールバック: 旧来のjoin生成
         return this.generateUtterance(slots);
     } catch (error) {
         console.error('generateSentence error:', error);
@@ -13882,7 +14296,7 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                     
                     // 学習パターンがあれば追加（補助的）
                     if (this.languageAcquisition.syntaxPatterns.length > 0) {
-                        const learnedSentence = this.languageAcquisition.generateSentence(concepts, intent);
+                        const learnedSentence = this.languageAcquisition.generateSentence(concepts, intent, { certainty: certaintyLevel, hesitation: hesitationLevel });
                         if (learnedSentence) {
                             candidates.push(learnedSentence);
                         }
@@ -13911,7 +14325,7 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                 
                 // 学習パターンを優先
                 if (this.languageAcquisition.syntaxPatterns.length > 0) {
-                    const learnedSentence = this.languageAcquisition.generateSentence(concepts, intent);
+                    const learnedSentence = this.languageAcquisition.generateSentence(concepts, intent, { certainty: certaintyLevel, hesitation: hesitationLevel });
                     if (learnedSentence) {
                         candidates.push(learnedSentence);
                     }
