@@ -11661,7 +11661,7 @@ class PerceptualParser {
     
     detectBoundaries(utterance) {
         // 完全に言語非依存の境界検出
-        const boundaries = [];
+        const boundaries = new Set();
         const chars = utterance.split('');
         
         for (let i = 1; i < chars.length; i++) {
@@ -11672,19 +11672,49 @@ class PerceptualParser {
             const score = this.calculateBoundaryScore(leftContext, rightContext);
             
             if (score > 0.4) {  // 閾値
-                boundaries.push(i);
+                boundaries.add(i);
+            }
+        }
+        
+        // FIX: 文字種変化による境界（コールドスタート用ブートストラップ）
+        // 学習前でも日本語の文字種遷移を手がかりに粗い分割を行う
+        for (let i = 1; i < chars.length; i++) {
+            const prev = utterance.charCodeAt(i - 1);
+            const curr = utterance.charCodeAt(i);
+            if (this._isCharTypeBoundary(prev, curr)) {
+                boundaries.add(i);
             }
         }
         
         // 完全に統計ベースの境界検出のみ
         // 言語知識（句読点・スペース）は使用しない
         
-        return boundaries.sort((a, b) => a - b);
+        return Array.from(boundaries).sort((a, b) => a - b);
+    }
+    
+    // FIX: 文字種境界判定（日本語・英語に対応）
+    _isCharTypeBoundary(prev, curr) {
+        const isKanji = c => c >= 0x4E00 && c <= 0x9FFF;
+        const isHira  = c => c >= 0x3040 && c <= 0x309F;
+        const isKata  = c => c >= 0x30A0 && c <= 0x30FF;
+        const isLatin = c => (c >= 0x0041 && c <= 0x005A) || (c >= 0x0061 && c <= 0x007A);
+        const isSpace = c => c === 0x0020 || c === 0x3000 || c === 0x000A;
+        const isPunct = c => c === 0x3002 || c === 0xFF01 || c === 0xFF1F || c === 0x002E || c === 0x002C;
+        
+        if (isSpace(curr) || isSpace(prev)) return true;
+        if (isPunct(prev)) return true;
+        if (isKanji(prev) && isHira(curr)) return true;   // 走|った → 走 | った
+        if (isHira(prev) && isKanji(curr)) return true;   // が|猫 → が | 猫
+        if (isKanji(prev) && isKata(curr)) return true;
+        if (isKata(prev) && isKanji(curr)) return true;
+        if (isLatin(prev) && !isLatin(curr) && !isSpace(curr)) return true;
+        if (!isLatin(prev) && isLatin(curr) && !isSpace(prev)) return true;
+        return false;
     }
     
     calculateBoundaryScore(leftContext, rightContext) {
         const key = `${leftContext}|${rightContext}`;
-        return this.boundaryScores.get(key) || 0.5;
+        return this.boundaryScores.get(key) || 0.1;  // FIX: 0.5→0.1（閾値0.4以下でコールドスタート過剰分割を防ぐ）
     }
     
     segmentByBoundaries(utterance, boundaries) {
@@ -11996,6 +12026,18 @@ class HumanLikeLanguageAcquisitionEngine {
                 traceEntry.success = false;
                 traceEntry.error = 'No tokens parsed';
                 return;
+            }
+            
+            // FIX: 境界統計を更新（学習ループを閉じる）
+            // 今回の分割結果をもとにboundaryScoresを強化し、次回以降の分割精度を上げる
+            const boundaryPositions = [];
+            let charPos = 0;
+            for (let i = 0; i < tokens.length - 1; i++) {
+                charPos += tokens[i].surface.length;
+                boundaryPositions.push(charPos);
+            }
+            if (boundaryPositions.length > 0) {
+                this.perceptualParser.updateBoundaryStatistics(utterance, boundaryPositions);
             }
             
             // Layer 2: 構文仮説生成（役割=振る舞いのみ）
