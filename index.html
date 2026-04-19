@@ -25132,50 +25132,62 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
             async _initStorage() {
                 console.log('[STORAGE] _initStorage() called');
                 
-                // ============ localStorage 動作テスト ============
+                // ============ IndexedDB を優先使用 ============
                 try {
-                    const testKey = 'ao_storage_test';
-                    const testValue = 'test_' + Date.now();
-                    console.log('[STORAGE] Testing localStorage...');
-                    localStorage.setItem(testKey, testValue);
-                    const retrieved = localStorage.getItem(testKey);
-                    if (retrieved === testValue) {
-                        console.log('[STORAGE] ✅ localStorage is working!');
-                        localStorage.removeItem(testKey);
-                    } else {
-                        console.error('[STORAGE] ❌ localStorage test failed - retrieved value does not match');
-                    }
-                } catch (localStorageError) {
-                    console.error('[STORAGE] ❌ localStorage is NOT available:', localStorageError);
-                    console.error('[STORAGE] Possible reasons:');
-                    console.error('[STORAGE] - Private/Incognito mode');
-                    console.error('[STORAGE] - Browser settings blocking storage');
-                    console.error('[STORAGE] - Storage quota exceeded');
+                    this.indexedDB = new IndexedDBHelper('AoPersonaDB', 1);
+                    await this.indexedDB.init();
+                    this.useIndexedDB = true;
+                    console.log('[STORAGE] ✅ IndexedDB initialized successfully');
+                    this.being.addLog('ストレージ: IndexedDB使用（大容量対応）');
+                    
+                    // localStorageに既存データがあればIndexedDBに移行
+                    await this._migrateFromLocalStorage();
+                    
+                } catch (idbError) {
+                    console.error('[STORAGE] ❌ IndexedDB failed, falling back to localStorage:', idbError);
+                    this.indexedDB = null;
+                    this.useIndexedDB = false;
+                    this.being.addLog('ストレージ: localStorage使用（フォールバック）');
                 }
-                
-                // ============ IndexedDB を完全に無効化 ============
-                console.log('[STORAGE] IndexedDB disabled - using localStorage only');
-                this.indexedDB = null;
-                this.useIndexedDB = false;
-                
-                // ============ 古いIndexedDBを削除 ============
+            }
+            
+            async _migrateFromLocalStorage() {
                 try {
-                    const deleteRequest = indexedDB.deleteDatabase('ao_persona_db');
-                    deleteRequest.onsuccess = () => {
-                        console.log('[STORAGE] Old IndexedDB deleted');
-                    };
-                    deleteRequest.onerror = () => {
-                        console.log('[STORAGE] IndexedDB delete failed or not exists');
-                    };
+                    const keys = [this.saveKeys.current, this.saveKeys.prev, this.saveKeys.backup];
+                    let migrated = false;
+                    for (const key of keys) {
+                        const data = localStorage.getItem(key);
+                        if (data) {
+                            await this.indexedDB.set(key, data);
+                            localStorage.removeItem(key);
+                            migrated = true;
+                            console.log('[MIGRATE] Moved', key, 'from localStorage to IndexedDB');
+                        }
+                    }
+                    if (migrated) {
+                        this.being.addLog('既存データをIndexedDBに移行しました');
+                    }
                 } catch (e) {
-                    console.log('[STORAGE] IndexedDB not available');
+                    console.error('[MIGRATE] Migration from localStorage failed:', e);
                 }
             }
             
             async _migrateToIndexedDB() {
-                // IndexedDB無効化により、このメソッドは使用されません
-                console.log('[STORAGE] IndexedDB migration disabled');
-                return;
+                // localStorageからIndexedDBへのデータ移行
+                try {
+                    const keys = [this.saveKeys.current, this.saveKeys.prev, this.saveKeys.backup];
+                    for (const key of keys) {
+                        const data = localStorage.getItem(key);
+                        if (data) {
+                            await this.indexedDB.set(key, data);
+                            localStorage.removeItem(key);
+                        }
+                    }
+                    this.useIndexedDB = true;
+                    console.log('[STORAGE] Migration to IndexedDB complete');
+                } catch (e) {
+                    console.error('[STORAGE] Migration failed:', e);
+                }
             }
             
             _migrateVersion(data) {
@@ -25488,15 +25500,23 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                     console.log('[SAVE] ========================================');
                     console.log('[SAVE] 保存処理完了 - 最終確認');
                     console.log('[SAVE] Key:', this.saveKeys.current);
-                    const finalCheck = localStorage.getItem(this.saveKeys.current);
-                    if (finalCheck) {
-                        const finalParsed = JSON.parse(finalCheck);
-                        console.log('[SAVE] ✅ 保存成功確認:');
-                        console.log('[SAVE]    - turns:', finalParsed.coreState?.identity?.turns);
-                        console.log('[SAVE]    - concepts:', finalParsed.coreState?.concepts?.concepts?.length);
-                        console.log('[SAVE]    - size:', finalCheck.length, 'bytes');
-                    } else {
-                        console.error('[SAVE] ❌ 保存確認失敗: localStorage にデータがありません！');
+                    try {
+                        let finalCheck = null;
+                        if (this.useIndexedDB && this.indexedDB) {
+                            finalCheck = await this.indexedDB.get(this.saveKeys.current);
+                        } else {
+                            finalCheck = localStorage.getItem(this.saveKeys.current);
+                        }
+                        if (finalCheck) {
+                            const finalParsed = JSON.parse(finalCheck);
+                            console.log('[SAVE] ✅ 保存成功確認:');
+                            console.log('[SAVE]    - turns:', finalParsed.coreState?.identity?.turns);
+                            console.log('[SAVE]    - size:', finalCheck.length, 'bytes');
+                        } else {
+                            console.error('[SAVE] ❌ 保存確認失敗: データが見つかりません');
+                        }
+                    } catch (verifyErr) {
+                        console.error('[SAVE] 確認エラー:', verifyErr);
                     }
                     console.log('[SAVE] ========================================');
                     
