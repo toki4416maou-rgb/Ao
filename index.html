@@ -19971,6 +19971,12 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                 this.imageAdapter = new ImageAdapter();
                 this.audioAdapter = new AudioAdapter();
                 this.videoAdapter = new VideoAdapter();
+
+                this.languageOutputDL = new LanguageOutputDL();
+                this.videoGenerator = new VideoGenerator();
+                this.imageGenerator = new ImageGenerator();  // v26.3.2
+                this.audioGenerator = new AudioGenerator();  // v26.3.2
+
                 // v27.0: AudioAdapterにAcousticHypothesisTableを注入（AudioGeneratorと共有）
                 this.audioAdapter.hypothesisTable = this.audioGenerator.hypothesisTable;
                 // v27.0: VideoAdapterにImageAdapterを注入（フレームを160次元で解析）
@@ -19987,11 +19993,6 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                 // 前頭前野意思決定回路（v26.9.0 追加）
                 this.prefrontalCore = new PrefrontalDecisionCore();  // v1.0
                 this.prefrontalCoreV1_1 = new PrefrontalDecisionCoreV1_1();  // v1.1 (世界モデル変更)
-                
-                this.languageOutputDL = new LanguageOutputDL();
-                this.videoGenerator = new VideoGenerator();
-                this.imageGenerator = new ImageGenerator();  // v26.3.2
-                this.audioGenerator = new AudioGenerator();  // v26.3.2
                 this.videoEventCognition = new VideoEventCognitionSystem();  // v26.5.0
                 
                 this.taskManager = new TaskManager();
@@ -20912,10 +20913,12 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
             async metabolismTick() {
                 await this.humanBrainMetabolism.tick();
                 
-                // 代謝処理後も保存をマーク
-                if (this.saveManager) {
-                    this.saveManager.markDirty();
-                }
+                // 代謝処理後も保存をマーク（saveManager初期化済みの場合のみ）
+                try {
+                    if (this.saveManager) {
+                        this.saveManager.markDirty();
+                    }
+                } catch(e) {}
             }
             
             async perceiveMultimodal(inputs) {
