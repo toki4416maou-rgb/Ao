@@ -4895,127 +4895,143 @@ MemoryLimitsConfig._instance = null;
         class VideoAdapter {
             constructor() {
                 this.processing = false;
+                // v27.0: ImageAdapterを内包（画像と同じ色・明度・形の解析をフレームに適用）
+                this.imageAdapter = null; // ao初期化後に ao.imageAdapter を注入する
             }
-            
+
             async extractMeaning(videoFile, mode = 'normal') {
                 this.processing = true;
-                
+
                 const video = document.createElement('video');
                 video.src = URL.createObjectURL(videoFile);
                 video.muted = true;
-                
+
                 await new Promise((resolve, reject) => {
                     video.onloadedmetadata = resolve;
                     video.onerror = reject;
                 });
-                
-                const duration = video.duration;
+
+                const duration      = video.duration;
                 const frameInterval = mode === 'fast' ? 5 : (mode === 'focused' ? 1 : 3);
-                const totalFrames = Math.floor(duration / frameInterval);
-                
+                const totalFrames   = Math.floor(duration / frameInterval);
+
                 const scenes = [];
                 const canvas = document.createElement('canvas');
-                const ctx = canvas.getContext('2d');
-                
+                const ctx    = canvas.getContext('2d');
+
                 for (let i = 0; i < totalFrames; i++) {
                     const time = i * frameInterval;
                     video.currentTime = time;
-                    
-                    await new Promise(resolve => {
-                        video.onseeked = resolve;
-                    });
-                    
-                    canvas.width = 160;
+
+                    await new Promise(resolve => { video.onseeked = resolve; });
+
+                    canvas.width  = 160;
                     canvas.height = 90;
                     ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-                    
-                    const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-                    const data = imageData.data;
-                    
-                    let avgBrightness = 0;
-                    let avgR = 0, avgG = 0, avgB = 0;
-                    let edgeCount = 0;
-                    
-                    for (let j = 0; j < data.length; j += 4) {
-                        avgR += data[j];
-                        avgG += data[j + 1];
-                        avgB += data[j + 2];
-                        avgBrightness += (data[j] + data[j + 1] + data[j + 2]) / 3;
-                        
-                        if (j < data.length - 640) {
-                            const diff = Math.abs(data[j] - data[j + 640]);
-                            if (diff > 50) edgeCount++;
-                        }
-                    }
-                    
-                    const pixelCount = data.length / 4;
-                    avgBrightness /= pixelCount;
-                    avgR /= pixelCount;
-                    avgG /= pixelCount;
-                    avgB /= pixelCount;
-                    
-                    const scene = {
-                        time,
-                        brightness: avgBrightness / 255,
-                        color: { r: avgR, g: avgG, b: avgB },
-                        complexity: edgeCount / pixelCount,
-                        meanings: []
-                    };
-                    
-                    if (avgBrightness < 80) {
-                        scene.meanings.push({ concept: '暗いシーン', weight: 0.7 });
-                    } else if (avgBrightness > 180) {
-                        scene.meanings.push({ concept: '明るいシーン', weight: 0.7 });
-                    }
-                    
-                    if (edgeCount > pixelCount * 0.3) {
-                        scene.meanings.push({ concept: '動きのあるシーン', weight: 0.6 });
+
+                    // ── v27.0: ImageAdapterで色・明度・形を160次元に分解 ──
+                    let scene;
+                    if (this.imageAdapter) {
+                        // canvasのDataURLをImageAdapterに渡して完全解析
+                        const dataUrl     = canvas.toDataURL('image/jpeg', 0.9);
+                        const imageResult = await this.imageAdapter.extractMeaning(dataUrl);
+
+                        // VisualChangeDetectorが使うフィールドに変換
+                        const brightnessGrid = imageResult.features.brightness_grid;
+                        const avgBrightness  = brightnessGrid
+                            ? brightnessGrid.reduce((s, v) => s + v, 0) / brightnessGrid.length
+                            : imageResult.features.brightness || 0.5;
+
+                        // エッジ量をHOGブロックから推定（spatialの合計値）
+                        const hogBlocks   = imageResult.features.hog_blocks || [];
+                        const complexity  = hogBlocks.length
+                            ? Math.min(1, hogBlocks.reduce((s, v) => s + v, 0) / hogBlocks.length * 4)
+                            : 0.3;
+
+                        scene = {
+                            time,
+                            brightness:    avgBrightness,
+                            color:         { r: 128, g: 128, b: 128 }, // 後方互換用ダミー
+                            complexity,
+                            meanings:      imageResult.semantic_candidates || [],
+                            visual_vector: imageResult.visual_vector,   // 160次元ベクトル
+                            features:      imageResult.features          // 仮説学習に使う
+                        };
+
                     } else {
-                        scene.meanings.push({ concept: '静的なシーン', weight: 0.5 });
+                        // ImageAdapterなし時のフォールバック（従来処理）
+                        const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+                        const data      = imageData.data;
+                        let avgBrightness = 0, avgR = 0, avgG = 0, avgB = 0, edgeCount = 0;
+                        for (let j = 0; j < data.length; j += 4) {
+                            avgR += data[j]; avgG += data[j+1]; avgB += data[j+2];
+                            avgBrightness += (data[j] + data[j+1] + data[j+2]) / 3;
+                            if (j < data.length - 640) {
+                                if (Math.abs(data[j] - data[j+640]) > 50) edgeCount++;
+                            }
+                        }
+                        const pixelCount = data.length / 4;
+                        avgBrightness /= pixelCount; avgR /= pixelCount;
+                        avgG /= pixelCount; avgB /= pixelCount;
+
+                        scene = {
+                            time,
+                            brightness: avgBrightness / 255,
+                            color:      { r: avgR, g: avgG, b: avgB },
+                            complexity: edgeCount / pixelCount,
+                            meanings:   []
+                        };
+                        if (avgBrightness < 80)  scene.meanings.push({ concept: '暗いシーン', weight: 0.7 });
+                        else if (avgBrightness > 180) scene.meanings.push({ concept: '明るいシーン', weight: 0.7 });
+                        if (edgeCount > pixelCount * 0.3) scene.meanings.push({ concept: '動きのあるシーン', weight: 0.6 });
+                        else scene.meanings.push({ concept: '静的なシーン', weight: 0.5 });
+                        if (avgR > Math.max(avgG, avgB) * 1.2) scene.meanings.push({ concept: '赤系の映像', weight: 0.6 });
+                        else if (avgB > Math.max(avgR, avgG) * 1.2) scene.meanings.push({ concept: '青系の映像', weight: 0.6 });
                     }
-                    
-                    if (avgR > Math.max(avgG, avgB) * 1.2) {
-                        scene.meanings.push({ concept: '赤系の映像', weight: 0.6 });
-                    } else if (avgB > Math.max(avgR, avgG) * 1.2) {
-                        scene.meanings.push({ concept: '青系の映像', weight: 0.6 });
-                    }
-                    
+
                     scenes.push(scene);
-                    
+
                     if (window.taskManager) {
                         window.taskManager.updateProgress('watch', (i + 1) / totalFrames);
                     }
                 }
-                
+
                 URL.revokeObjectURL(video.src);
-                
+
+                // シーン横断で意味を集約（定義済み概念を優先）
                 const allMeanings = [];
                 scenes.forEach(scene => {
                     scene.meanings.forEach(m => {
                         const existing = allMeanings.find(am => am.concept === m.concept);
                         if (existing) {
-                            existing.weight += m.weight * 0.5;
+                            existing.weight    += m.weight * 0.5;
+                            existing.fromHypothesis = existing.fromHypothesis || m.fromHypothesis;
                         } else {
                             allMeanings.push({ ...m });
                         }
                     });
                 });
-                
-                allMeanings.sort((a, b) => b.weight - a.weight);
-                
+
+                // 定義済み仮説からの概念を上位に
+                allMeanings.sort((a, b) => {
+                    const aBonus = a.fromHypothesis ? 0.3 : 0;
+                    const bBonus = b.fromHypothesis ? 0.3 : 0;
+                    return (b.weight + bBonus) - (a.weight + aBonus);
+                });
+
                 this.processing = false;
-                
+
                 return {
                     semantic_candidates: allMeanings.slice(0, 6),
-                    modality: 'video',
+                    modality:    'video',
                     duration,
-                    sceneCount: scenes.length,
+                    sceneCount:  scenes.length,
                     features: {
-                        avgBrightness: scenes.reduce((sum, s) => sum + s.brightness, 0) / scenes.length,
-                        avgComplexity: scenes.reduce((sum, s) => sum + s.complexity, 0) / scenes.length
+                        avgBrightness: scenes.reduce((s, sc) => s + sc.brightness, 0) / scenes.length,
+                        avgComplexity: scenes.reduce((s, sc) => s + sc.complexity, 0) / scenes.length
                     },
                     raw_descriptor: `${duration.toFixed(1)}秒 ${scenes.length}シーン ${mode}モード`,
-                    _scenes: scenes   // v26.5.0: VideoEventCognitionSystem 用にシーン列を公開
+                    _scenes: scenes
                 };
             }
         }
@@ -5106,58 +5122,126 @@ MemoryLimitsConfig._instance = null;
             }
         }
 
-        // ─── 2. 音声変化検出器（AcousticPercept を活用）──────────────────
+        // ─── 2. 音声変化検出器（フレーム列対応版）──────────────────────────
+        // v27.0: percept._frames を使って時間方向の変化を検出
+        // 「おおきな」の「お」が2回来る等、同音連続・音素境界を捉える
         class AudioChangeDetector {
+            constructor() {
+                this.changeThreshold  = 0.15; // フレーム間変化の閾値（VisualChangeDetectorと同値）
+                this.silenceThreshold = 0.01; // 無音とみなすRMS閾値
+            }
+
             /**
-             * AcousticPercept から音声イベント候補を生成
-             * @param {AcousticPercept} percept - AudioAdapter が返す percept
-             * @param {number} videoStartTime - 動画内でのオフセット（秒）
+             * AcousticPercept（フレーム列付き）から音声イベント候補を生成
+             * @param {AcousticPercept} percept - fromAudioBlob() が返す percept
+             * @param {number} startTime - タイムライン上のオフセット（秒）
              * @returns {Array} AudioEventCandidate[]
              */
-            detect(percept, videoStartTime = 0) {
+            detect(percept, startTime = 0) {
                 if (!percept) return [];
 
+                // フレーム列がなければ従来の単一イベント生成にフォールバック
+                if (!percept._frames || percept._frames.length < 2) {
+                    return [this._singleEvent(percept, startTime)];
+                }
+
+                return this._detectFromFrames(percept, startTime);
+            }
+
+            // ---- フレーム列から変化点を検出してイベント列を生成 ----
+            _detectFromFrames(percept, startTime) {
+                const frames     = percept._frames;
                 const candidates = [];
-                const dur = percept.duration.total;
+                let segStart     = 0;
+                let prevPitch    = frames[0].pitchHz;
+                let prevRms      = frames[0].rms;
 
-                // Onset検出: Envelopeの attack が短い → 突発音
-                const isOnset = percept.envelope.attack < 0.07;
+                for (let i = 1; i < frames.length; i++) {
+                    const f = frames[i];
 
-                // 音源分類（Timbre + Pitch から推定）
-                const sourceClass = this._classifySource(percept);
+                    // 無音フレームはスキップ
+                    if (f.rms < this.silenceThreshold) {
+                        prevPitch = f.pitchHz;
+                        prevRms   = f.rms;
+                        continue;
+                    }
 
-                // リズム・持続性
-                const rhythmic = percept.duration.rhythm !== 'even';
+                    // ピッチ変化 + 音量変化の合算でmagnitiude計算
+                    const pitchDelta = Math.abs(f.pitchHz - prevPitch) / (prevPitch + 1);
+                    const rmsDelta   = Math.abs(f.rms - prevRms) / (prevRms + 0.001);
+                    const magnitude  = (pitchDelta + rmsDelta) / 2;
 
-                candidates.push({
-                    timestamp_start: videoStartTime,
-                    timestamp_end: videoStartTime + dur,
-                    pitchHz: percept.pitch.hz,
-                    amplitude: percept.amplitude.level,
-                    timbreRoughness: percept.timbre.roughness,
-                    sourceClass,
-                    isOnset,
-                    rhythmic,
-                    prosodyIntent: percept.prosody.intent,
-                    emotionHint: percept.prosody.emotionHint,
-                    valence: percept.prosody.valence,
-                    arousal: percept.prosody.arousal,
-                    meanings: percept.semantics.candidates,
-                    modality: 'audio'
-                });
+                    if (magnitude >= this.changeThreshold) {
+                        // セグメント確定
+                        const seg = frames.slice(segStart, i);
+                        candidates.push(this._segmentToEvent(seg, percept, startTime));
+                        segStart = i;
+                    }
+
+                    prevPitch = f.pitchHz;
+                    prevRms   = f.rms;
+                }
+
+                // 末尾セグメント
+                if (segStart < frames.length) {
+                    const seg = frames.slice(segStart);
+                    candidates.push(this._segmentToEvent(seg, percept, startTime));
+                }
 
                 return candidates;
             }
 
-            _classifySource(percept) {
-                const hz = percept.pitch.hz;
-                const rough = percept.timbre.roughness;
-                // 声域（80〜300Hz）＋ 中程度の粗さ → 声
+            // ---- セグメント（フレーム列）→ AudioEventCandidate ----
+            _segmentToEvent(seg, percept, startTime) {
+                const tStart  = startTime + seg[0].timeMs / 1000;
+                const tEnd    = startTime + seg[seg.length - 1].timeMs / 1000;
+                const avgHz   = seg.reduce((s, f) => s + f.pitchHz, 0) / seg.length;
+                const avgRms  = seg.reduce((s, f) => s + f.rms,     0) / seg.length;
+                const avgRough= seg.reduce((s, f) => s + f.roughness,0) / seg.length;
+                const isOnset = seg.length <= 3; // 短いセグメント = 突発音
+
+                return {
+                    timestamp_start: tStart,
+                    timestamp_end:   tEnd,
+                    pitchHz:         avgHz,
+                    amplitude:       Math.min(1, avgRms * 10),
+                    timbreRoughness: avgRough,
+                    sourceClass:     this._classifySource(avgHz, avgRough),
+                    isOnset,
+                    rhythmic:        percept.duration.rhythm !== 'even',
+                    prosodyIntent:   percept.prosody.intent,
+                    emotionHint:     percept.prosody.emotionHint,
+                    valence:         percept.prosody.valence,
+                    arousal:         percept.prosody.arousal,
+                    meanings:        percept.semantics.candidates,
+                    modality:        'audio'
+                };
+            }
+
+            // ---- フレームなし時のフォールバック ----
+            _singleEvent(percept, startTime) {
+                return {
+                    timestamp_start: startTime,
+                    timestamp_end:   startTime + percept.duration.total,
+                    pitchHz:         percept.pitch.hz,
+                    amplitude:       percept.amplitude.level,
+                    timbreRoughness: percept.timbre.roughness,
+                    sourceClass:     this._classifySource(percept.pitch.hz, percept.timbre.roughness),
+                    isOnset:         percept.envelope.attack < 0.07,
+                    rhythmic:        percept.duration.rhythm !== 'even',
+                    prosodyIntent:   percept.prosody.intent,
+                    emotionHint:     percept.prosody.emotionHint,
+                    valence:         percept.prosody.valence,
+                    arousal:         percept.prosody.arousal,
+                    meanings:        percept.semantics.candidates,
+                    modality:        'audio'
+                };
+            }
+
+            _classifySource(hz, rough) {
                 if (hz >= 80 && hz <= 350 && rough < 0.5) return 'voice';
-                // 高音＋鋭い → 物音（金属・衝撃）
-                if (hz > 500 && rough > 0.6) return 'impact';
-                // 低音＋粗い → 環境音
-                if (hz < 200 && rough > 0.4) return 'environment';
+                if (hz > 500 && rough > 0.6)              return 'impact';
+                if (hz < 200 && rough > 0.4)              return 'environment';
                 return 'unknown';
             }
         }
@@ -5490,6 +5574,26 @@ MemoryLimitsConfig._instance = null;
                     (b.value?.totalValue || 0) - (a.value?.totalValue || 0))[0];
 
                 const summary = this._buildSummary(scoredEvents, conceptCandidates, topEvent);
+
+                // ── v27.0: 因果特定済みイベントをエピソード記憶に保存
+                // confidence が高いイベントのみ記憶する価値あり
+                if (this._episodicMemory) {
+                    scoredEvents
+                        .filter(evt => (evt.confidence || 0) > 0.5 && evt.type !== '変化')
+                        .forEach(evt => {
+                            this._episodicMemory.store({
+                                type:       'video_event',
+                                eventType:  evt.type,
+                                modalities: evt.modalities,
+                                concepts:   evt.concepts || [],
+                                confidence: evt.confidence,
+                                value:      evt.value?.totalValue || 0,
+                                timestamp_start: evt.timestamp_start,
+                                timestamp_end:   evt.timestamp_end,
+                                summary:    summary.descriptor
+                            });
+                        });
+                }
 
                 return { events: scoredEvents, conceptCandidates, summary, topEvent };
             }
@@ -7078,29 +7182,172 @@ MemoryLimitsConfig._instance = null;
                 return percept;
             }
 
-            // 知覚方向: audioBlob → 低次特徴を推定（Web Audio APIなしで近似）
-            fromAudioBlob(audioBlob) {
+            // 知覚方向: audioBlob → 低次特徴を実解析（Web Audio API使用）
+            // フレーム分割して時間変化を捉える（「おおきな」の「お」が2つ重なる等を検出）
+            async fromAudioBlob(audioBlob) {
                 const percept = new AcousticPercept();
-                // サイズとMIMEから物理特徴を近似推定（実解析なし環境での暫定）
-                const byteRate = 16000;
-                const duration = Math.max(0.1, audioBlob.size / byteRate);
-                const sizeRatio = Math.min(1, audioBlob.size / 80000); // 80KB基準
+                try {
+                    const arrayBuffer = await audioBlob.arrayBuffer();
+                    const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+                    const audioBuffer = await audioCtx.decodeAudioData(arrayBuffer);
+                    await audioCtx.close();
 
-                percept.pitch.hz = 100 + sizeRatio * 400;
-                percept.pitch.stability = 0.5 + Math.random() * 0.4;
-                percept.pitch.contour = sizeRatio > 0.7 ? 'peaking' : sizeRatio > 0.4 ? 'rising' : 'flat';
+                    const channelData = audioBuffer.getChannelData(0); // モノラル化
+                    const sampleRate  = audioBuffer.sampleRate;
+                    const duration    = audioBuffer.duration;
 
-                percept.amplitude.level = 0.3 + sizeRatio * 0.5;
-                percept.amplitude.dynamic = sizeRatio > 0.6 ? 'accented' : 'even';
+                    // フレーム列を生成して時間方向の特徴を取る
+                    const frames = this._extractFrames(channelData, sampleRate);
 
-                const roughness = Math.random() * 0.5;
-                percept.timbre.roughness = roughness;
-                percept.timbre.brightness = roughness;
-                percept.timbre.waveform = roughness > 0.4 ? 'sawtooth' : 'sine';
+                    // フレーム列全体から代表値を集約
+                    const pitchHz     = this._medianPitch(frames);
+                    const ampLevel    = this._meanAmplitude(frames);
+                    const roughness   = this._meanRoughness(frames);
+                    const contour     = this._detectContour(frames);
+                    const dynamic     = this._detectDynamic(frames);
 
-                percept.duration.total = duration;
+                    percept.pitch.hz        = pitchHz;
+                    percept.pitch.stability = this._pitchStability(frames);
+                    percept.pitch.contour   = contour;
 
+                    percept.amplitude.level   = ampLevel;
+                    percept.amplitude.dynamic = dynamic;
+
+                    percept.timbre.roughness  = roughness;
+                    percept.timbre.brightness = roughness;
+                    percept.timbre.waveform   = roughness > 0.6 ? 'square'
+                                              : roughness > 0.4 ? 'sawtooth'
+                                              : roughness > 0.2 ? 'triangle'
+                                              : 'sine';
+
+                    percept.duration.total     = duration;
+                    percept.duration.noteCount = frames.length;
+
+                    // フレーム列を付加（AcousticChangeDetectorやAcousticHypothesisTableが使う）
+                    percept._frames = frames;
+
+                } catch (e) {
+                    // Web Audio API失敗時はサイズ近似にフォールバック
+                    console.warn('[AcousticFeatureExtractor] Web Audio失敗、近似にフォールバック', e);
+                    const byteRate  = 16000;
+                    const duration  = Math.max(0.1, audioBlob.size / byteRate);
+                    const sizeRatio = Math.min(1, audioBlob.size / 80000);
+                    percept.pitch.hz        = 100 + sizeRatio * 400;
+                    percept.pitch.stability = 0.5;
+                    percept.pitch.contour   = 'flat';
+                    percept.amplitude.level = 0.3 + sizeRatio * 0.5;
+                    percept.timbre.roughness = 0.3;
+                    percept.timbre.brightness = 0.3;
+                    percept.duration.total  = duration;
+                }
                 return percept;
+            }
+
+            // ---- フレーム分割: 20ms窓でスライド ----
+            // 「おおきな」→ [お][お][き][な] の変化を捉える粒度
+            _extractFrames(channelData, sampleRate) {
+                const FRAME_MS   = 20;   // 20ms窓
+                const HOP_MS     = 10;   // 10msホップ（50%オーバーラップ）
+                const frameSize  = Math.floor(sampleRate * FRAME_MS / 1000);
+                const hopSize    = Math.floor(sampleRate * HOP_MS  / 1000);
+                const frames     = [];
+
+                for (let start = 0; start + frameSize <= channelData.length; start += hopSize) {
+                    const frame  = channelData.slice(start, start + frameSize);
+                    const timeMs = start / sampleRate * 1000;
+
+                    // RMS振幅
+                    let sumSq = 0;
+                    for (let i = 0; i < frame.length; i++) sumSq += frame[i] * frame[i];
+                    const rms = Math.sqrt(sumSq / frame.length);
+
+                    // 自己相関でピッチ推定（80〜800Hz）
+                    const pitchHz = this._autocorrPitch(frame, sampleRate);
+
+                    // ゼロ交差率（粗さの近似）
+                    let crossings = 0;
+                    for (let i = 1; i < frame.length; i++) {
+                        if ((frame[i] >= 0) !== (frame[i-1] >= 0)) crossings++;
+                    }
+                    const zcr = crossings / frame.length;
+                    const roughness = Math.min(1, zcr * 5); // 0〜1に正規化
+
+                    frames.push({ timeMs, rms, pitchHz, roughness });
+                }
+                return frames;
+            }
+
+            // ---- 自己相関によるピッチ推定 ----
+            _autocorrPitch(frame, sampleRate) {
+                const minLag = Math.floor(sampleRate / 800); // 800Hz上限
+                const maxLag = Math.floor(sampleRate / 80);  // 80Hz下限
+                let bestLag = minLag, bestCorr = -1;
+
+                for (let lag = minLag; lag <= Math.min(maxLag, frame.length - 1); lag++) {
+                    let corr = 0;
+                    for (let i = 0; i < frame.length - lag; i++) {
+                        corr += frame[i] * frame[i + lag];
+                    }
+                    if (corr > bestCorr) { bestCorr = corr; bestLag = lag; }
+                }
+                return sampleRate / bestLag;
+            }
+
+            // ---- フレーム列からの集約 ----
+            _medianPitch(frames) {
+                const pitches = frames.map(f => f.pitchHz).filter(p => p > 0).sort((a, b) => a - b);
+                return pitches.length ? pitches[Math.floor(pitches.length / 2)] : 220;
+            }
+
+            _meanAmplitude(frames) {
+                if (!frames.length) return 0.5;
+                return Math.min(1, frames.reduce((s, f) => s + f.rms, 0) / frames.length * 10);
+            }
+
+            _meanRoughness(frames) {
+                if (!frames.length) return 0.3;
+                return frames.reduce((s, f) => s + f.roughness, 0) / frames.length;
+            }
+
+            _pitchStability(frames) {
+                if (frames.length < 2) return 0.5;
+                const pitches = frames.map(f => f.pitchHz);
+                const mean    = pitches.reduce((s, v) => s + v, 0) / pitches.length;
+                const variance = pitches.reduce((s, v) => s + (v - mean) ** 2, 0) / pitches.length;
+                return Math.max(0, 1 - Math.sqrt(variance) / (mean + 1));
+            }
+
+            // ピッチの時間変化からcontourを判定
+            _detectContour(frames) {
+                if (frames.length < 4) return 'flat';
+                const first = frames.slice(0, Math.floor(frames.length / 3));
+                const last  = frames.slice(Math.floor(frames.length * 2 / 3));
+                const avgFirst = first.reduce((s, f) => s + f.pitchHz, 0) / first.length;
+                const avgLast  = last.reduce((s,  f) => s + f.pitchHz, 0) / last.length;
+                const diff = avgLast - avgFirst;
+                if (diff >  40) return 'rising';
+                if (diff < -40) return 'falling';
+                // 中間が両端より高い → peaking
+                const mid    = frames.slice(Math.floor(frames.length / 3), Math.floor(frames.length * 2 / 3));
+                const avgMid = mid.reduce((s, f) => s + f.pitchHz, 0) / mid.length;
+                if (avgMid > avgFirst + 30 && avgMid > avgLast + 30) return 'peaking';
+                return 'flat';
+            }
+
+            // 音量の時間変化からdynamicを判定
+            _detectDynamic(frames) {
+                if (frames.length < 4) return 'even';
+                const first = frames.slice(0, Math.floor(frames.length / 3));
+                const last  = frames.slice(Math.floor(frames.length * 2 / 3));
+                const avgFirst = first.reduce((s, f) => s + f.rms, 0) / first.length;
+                const avgLast  = last.reduce((s,  f) => s + f.rms, 0) / last.length;
+                const diff = avgLast - avgFirst;
+                if (diff >  0.02) return 'crescendo';
+                if (diff < -0.02) return 'decrescendo';
+                const maxRms = Math.max(...frames.map(f => f.rms));
+                const meanRms = frames.reduce((s, f) => s + f.rms, 0) / frames.length;
+                if (maxRms > meanRms * 2) return 'accented';
+                return 'even';
             }
         }
 
@@ -7238,6 +7485,18 @@ MemoryLimitsConfig._instance = null;
 
                 candidates.push({ concept: '聴覚情報', weight: 0.3 });
 
+                // [v27.0] 仮説テーブル照合（定義済み概念を優先）ImageAdapterと対称
+                if (this._hypothesisTable) {
+                    const hypothesisMatches = this._hypothesisTable.matchHypotheses(percept);
+                    hypothesisMatches.forEach(m => {
+                        if (m.defined && m.weight > 0.5) {
+                            candidates.unshift({ concept: m.concept, weight: m.weight, fromHypothesis: true, channel: m.channel });
+                        } else if (m.weight > 0.55) {
+                            candidates.push({ concept: m.concept, weight: m.weight, fromHypothesis: true, channel: m.channel });
+                        }
+                    });
+                }
+
                 percept.semantics.candidates = candidates.slice(0, 5);
                 percept.semantics.descriptor = this._buildDescriptor(percept);
                 return percept;
@@ -7263,6 +7522,257 @@ MemoryLimitsConfig._instance = null;
         }
 
         // ============================================================
+        // AcousticHypothesisTable - 音声概念仮説テーブル
+        //
+        // 設計思想:
+        //   VisualHypothesisTable と同じ原理を音声に適用。
+        //   「高い」「荒い」「大きい」などの言葉を
+        //   ハードコードせず、音声とテキストのペアから
+        //   帰納的に定義する。
+        //
+        //   音声を3チャンネルに分解:
+        //     pitch     (4次元)  = ピッチ特徴
+        //     amplitude (3次元)  = 音量特徴
+        //     timbre    (4次元)  = 音色特徴
+        //
+        //   テキスト「高い」が来るたびに:
+        //     → 3チャンネルそれぞれとの共起を蓄積
+        //     → どのチャンネルに最も一貫した信号があるか計算
+        //     → 信頼度が閾値を超えたら「定義済み」に昇格
+        //
+        //   NNなし・GPUなし・四則演算のみ
+        //   VisualHypothesisTableと対称な構造
+        // ============================================================
+        class AcousticHypothesisTable {
+            constructor() {
+                this.hypotheses = new Map();
+                this.DEFINE_THRESHOLD = 0.68;
+                this.MIN_SAMPLES = 4;
+            }
+
+            // AcousticPerceptから3チャンネルベクトルを生成
+            // pitch     : [hz正規化, stability, contour正規化, pitchBin]  4次元
+            // amplitude : [level, dynamic正規化, crescendoFlag]           3次元
+            // timbre    : [roughness, brightness, waveformBin, sharpness] 4次元
+            _perceptToChannels(percept) {
+                const pitchHz    = percept.pitch.hz;
+                const hzNorm     = Math.min(1, pitchHz / 800);
+                const stability  = percept.pitch.stability || 0.5;
+                const contourMap = { flat: 0.0, rising: 0.5, falling: 0.3, peaking: 1.0 };
+                const contourNorm = contourMap[percept.pitch.contour] ?? 0.0;
+                const pitchBin   = Math.min(7, Math.floor(Math.log2(Math.max(80, pitchHz) / 80) / Math.log2(800 / 80) * 8)) / 7;
+                const pitch      = [hzNorm, stability, contourNorm, pitchBin];
+
+                const level      = percept.amplitude.level || 0.5;
+                const dynamicMap = { even: 0.2, crescendo: 0.7, decrescendo: 0.4, accented: 1.0 };
+                const dynamicNorm    = dynamicMap[percept.amplitude.dynamic] ?? 0.2;
+                const crescendoFlag  = percept.amplitude.dynamic === 'crescendo' ? 1.0 : 0.0;
+                const amplitude  = [level, dynamicNorm, crescendoFlag];
+
+                const roughness  = percept.timbre.roughness || 0.3;
+                const brightness = percept.timbre.brightness || 0.5;
+                const waveformMap = { sine: 0.0, triangle: 0.33, sawtooth: 0.67, square: 1.0 };
+                const waveformBin = waveformMap[percept.timbre.waveform] ?? 0.0;
+                const sharpness  = (roughness + brightness) / 2;
+                const timbre     = [roughness, brightness, waveformBin, sharpness];
+
+                return { pitch, amplitude, timbre };
+            }
+
+            observe(label, percept) {
+                if (!label || label.length === 0) return;
+                const channels = this._perceptToChannels(percept);
+                const tokens = label.split(/[　、。\s,.!?！？]+/).filter(t => t.length > 0 && t.length <= 15);
+                for (const token of tokens) {
+                    this._updateToken(token, channels.pitch, channels.amplitude, channels.timbre);
+                }
+            }
+
+            _updateToken(token, pitchVec, amplitudeVec, timbreVec) {
+                if (!this.hypotheses.has(token)) {
+                    this.hypotheses.set(token, {
+                        pitch:     { sum: new Array(4).fill(0), sumSq: new Array(4).fill(0), samples: 0 },
+                        amplitude: { sum: new Array(3).fill(0), sumSq: new Array(3).fill(0), samples: 0 },
+                        timbre:    { sum: new Array(4).fill(0), sumSq: new Array(4).fill(0), samples: 0 },
+                        best_channel: null,
+                        confidence: 0,
+                        defined: false,
+                        definedAt: null
+                    });
+                }
+                const hyp = this.hypotheses.get(token);
+                this._accumulate(hyp.pitch,     pitchVec);
+                this._accumulate(hyp.amplitude, amplitudeVec);
+                this._accumulate(hyp.timbre,    timbreVec);
+                if (hyp.pitch.samples >= this.MIN_SAMPLES) {
+                    this._evaluate(token, hyp);
+                }
+            }
+
+            _accumulate(ch, vec) {
+                ch.samples++;
+                for (let i = 0; i < vec.length && i < ch.sum.length; i++) {
+                    ch.sum[i]   += vec[i];
+                    ch.sumSq[i] += vec[i] * vec[i];
+                }
+            }
+
+            _evaluate(token, hyp) {
+                const snrPitch     = this._snr(hyp.pitch);
+                const snrAmplitude = this._snr(hyp.amplitude);
+                const snrTimbre    = this._snr(hyp.timbre);
+
+                if (snrPitch >= snrAmplitude && snrPitch >= snrTimbre) {
+                    hyp.best_channel = 'pitch';
+                } else if (snrAmplitude >= snrPitch && snrAmplitude >= snrTimbre) {
+                    hyp.best_channel = 'amplitude';
+                } else {
+                    hyp.best_channel = 'timbre';
+                }
+
+                const sorted = [snrPitch, snrAmplitude, snrTimbre].sort((a, b) => b - a);
+                const gap = sorted[0] > 0 ? (sorted[0] - sorted[1]) / (sorted[0] + 0.01) : 0;
+                const sampleBonus = Math.min(0.3, hyp.pitch.samples / 20 * 0.3);
+                hyp.confidence = Math.min(1, gap * 0.7 + sampleBonus);
+
+                if (hyp.confidence >= this.DEFINE_THRESHOLD && !hyp.defined) {
+                    hyp.defined = true;
+                    hyp.definedAt = Date.now();
+                }
+            }
+
+            _snr(ch) {
+                const n = ch.samples;
+                if (n < 2) return 0;
+                let sigPow = 0, noisePow = 0;
+                for (let i = 0; i < ch.sum.length; i++) {
+                    const mean = ch.sum[i] / n;
+                    const variance = Math.max(0.0001, ch.sumSq[i] / n - mean * mean);
+                    sigPow   += mean * mean;
+                    noisePow += variance;
+                }
+                return sigPow / (noisePow + 0.001);
+            }
+
+            _cosineSim(a, b, len) {
+                let dot = 0, magA = 0, magB = 0;
+                const L = len || Math.min(a.length, b.length);
+                for (let i = 0; i < L; i++) {
+                    dot  += a[i] * b[i];
+                    magA += a[i] * a[i];
+                    magB += b[i] * b[i];
+                }
+                return (magA > 0 && magB > 0) ? dot / (Math.sqrt(magA) * Math.sqrt(magB)) : 0;
+            }
+
+            matchHypotheses(percept, topK = 5) {
+                const channels = this._perceptToChannels(percept);
+                const results  = [];
+
+                this.hypotheses.forEach((hyp, word) => {
+                    if (hyp.pitch.samples < this.MIN_SAMPLES) return;
+                    const n = hyp.pitch.samples;
+                    let score = 0;
+
+                    if (hyp.best_channel === 'pitch') {
+                        score = this._cosineSim(channels.pitch, hyp.pitch.sum.map(v => v / n), 4);
+                    } else if (hyp.best_channel === 'amplitude') {
+                        score = this._cosineSim(channels.amplitude, hyp.amplitude.sum.map(v => v / n), 3);
+                    } else {
+                        score = this._cosineSim(channels.timbre, hyp.timbre.sum.map(v => v / n), 4);
+                    }
+
+                    const bonus      = hyp.defined ? 0.2 : 0;
+                    const finalScore = Math.min(1, score + bonus * hyp.confidence);
+
+                    if (finalScore > 0.38) {
+                        results.push({
+                            concept:    word,
+                            weight:     finalScore,
+                            channel:    hyp.best_channel,
+                            defined:    hyp.defined,
+                            confidence: hyp.confidence,
+                            samples:    hyp.pitch.samples
+                        });
+                    }
+                });
+
+                results.sort((a, b) => b.weight - a.weight);
+                return results.slice(0, topK);
+            }
+
+            query(word) {
+                const hyp = this.hypotheses.get(word);
+                if (!hyp) return null;
+                return {
+                    word,
+                    best_channel:   hyp.best_channel,
+                    confidence:     hyp.confidence,
+                    defined:        hyp.defined,
+                    samples:        hyp.pitch.samples,
+                    pitch_mean:     hyp.pitch.sum.map(v => v / Math.max(1, hyp.pitch.samples)),
+                    amplitude_mean: hyp.amplitude.sum.map(v => v / Math.max(1, hyp.amplitude.samples)),
+                    timbre_mean:    hyp.timbre.sum.map(v => v / Math.max(1, hyp.timbre.samples)),
+                };
+            }
+
+            getStats() {
+                let total = 0, defined = 0;
+                const byChannel = { pitch: 0, amplitude: 0, timbre: 0 };
+                this.hypotheses.forEach(hyp => {
+                    total++;
+                    if (hyp.defined) {
+                        defined++;
+                        if (hyp.best_channel) byChannel[hyp.best_channel] = (byChannel[hyp.best_channel] || 0) + 1;
+                    }
+                });
+                return { total, defined, byChannel };
+            }
+
+            getDefinedList() {
+                const list = [];
+                this.hypotheses.forEach((hyp, word) => {
+                    if (hyp.defined) {
+                        list.push({
+                            word,
+                            channel:    hyp.best_channel,
+                            confidence: hyp.confidence,
+                            samples:    hyp.pitch.samples
+                        });
+                    }
+                });
+                return list.sort((a, b) => b.confidence - a.confidence);
+            }
+
+            exportState() {
+                const out = [];
+                this.hypotheses.forEach((hyp, word) => {
+                    if (hyp.pitch.samples < 2) return;
+                    out.push([word, {
+                        pitch:     { sum: hyp.pitch.sum,     sumSq: hyp.pitch.sumSq,     samples: hyp.pitch.samples },
+                        amplitude: { sum: hyp.amplitude.sum, sumSq: hyp.amplitude.sumSq, samples: hyp.amplitude.samples },
+                        timbre:    { sum: hyp.timbre.sum,    sumSq: hyp.timbre.sumSq,    samples: hyp.timbre.samples },
+                        best_channel: hyp.best_channel,
+                        confidence:   hyp.confidence,
+                        defined:      hyp.defined,
+                        definedAt:    hyp.definedAt
+                    }]);
+                });
+                return { hypotheses: out };
+            }
+
+            importState(data) {
+                try {
+                    if (data && Array.isArray(data.hypotheses)) {
+                        this.hypotheses = new Map(data.hypotheses);
+                    }
+                } catch (e) {
+                    console.error('[AcousticHypothesisTable] import error:', e);
+                }
+            }
+        }
+
+        // ============================================================
         // AudioGenerator v26.5.0
         // 生成方向: 意味 → 韻律 → 時間構造 → 低次特徴 → 波形合成
         // （人間が「気持ちから声が出る」順序に対応）
@@ -7277,6 +7787,19 @@ MemoryLimitsConfig._instance = null;
                 this.temporalIntegrator = new AcousticTemporalIntegrator();
                 this.prosodyInterpreter = new ProsodyInterpreter();
                 this.semanticIntegrator = new AcousticSemanticIntegrator();
+                // v27.0: 仮説テーブル（ボトムアップ概念獲得）ImageAdapterと対称
+                this.hypothesisTable = new AcousticHypothesisTable();
+                this.semanticIntegrator._hypothesisTable = this.hypothesisTable;
+            }
+
+            // ラベル付きperceptを学習（ImageAdapterのlearnHypothesisと対称）
+            learnHypothesis(label, percept) {
+                try {
+                    if (!percept) return;
+                    this.hypothesisTable.observe(label, percept);
+                } catch (e) {
+                    console.error('[AudioGenerator] learnHypothesis error:', e);
+                }
             }
 
             /**
@@ -7436,6 +7959,8 @@ MemoryLimitsConfig._instance = null;
                 this.temporalIntegrator = new AcousticTemporalIntegrator();
                 this.prosodyInterpreter = new ProsodyInterpreter();
                 this.semanticIntegrator = new AcousticSemanticIntegrator();
+                // v27.0: 仮説テーブル（ボトムアップ概念獲得）AudioGeneratorと共有
+                this.hypothesisTable = null; // ao初期化後にaudioGenerator.hypothesisTableを注入
             }
 
             /**
@@ -7445,10 +7970,9 @@ MemoryLimitsConfig._instance = null;
              */
             async extractMeaning(audioBlob) {
                 this.processing = true;
-                await new Promise(resolve => setTimeout(resolve, 300));
 
-                // Layer2: 物理信号から低次特徴を抽出
-                let percept = this.featureExtractor.fromAudioBlob(audioBlob);
+                // Layer2: 物理信号から低次特徴を抽出（v27.0: 実解析・フレーム分割）
+                let percept = await this.featureExtractor.fromAudioBlob(audioBlob);
 
                 // Layer3: 時間構造を統合
                 percept = this.temporalIntegrator.fromPercept(percept);
@@ -7457,6 +7981,10 @@ MemoryLimitsConfig._instance = null;
                 percept = this.prosodyInterpreter.fromPercept(percept);
 
                 // Layer5: 意味候補に変換（最終層）
+                // v27.0: 仮説テーブルを渡して定義済み概念で照合
+                if (this.hypothesisTable) {
+                    this.semanticIntegrator._hypothesisTable = this.hypothesisTable;
+                }
                 percept = this.semanticIntegrator.fromPercept(percept);
 
                 this.processing = false;
@@ -7466,16 +7994,23 @@ MemoryLimitsConfig._instance = null;
                     modality: 'audio',
                     features: {
                         volume:   percept.amplitude.level,
-                        pitch:    percept.pitch.hz / 800,   // 正規化して旧APIと互換
+                        pitch:    percept.pitch.hz / 800,
                         duration: percept.duration.total
                     },
                     emotion_hints: {
                         valence: percept.prosody.valence,
                         arousal: percept.prosody.arousal
                     },
-                    percept: percept,   // 中間表現を公開
+                    percept: percept,
                     raw_descriptor: `音量:${(percept.amplitude.level * 100).toFixed(0)}% 音高:${percept.pitch.hz.toFixed(0)}Hz ${percept.duration.total.toFixed(1)}秒 [${percept.prosody.intent}/${percept.prosody.emotionHint}]`
                 };
+            }
+
+            // ラベル付き学習（ImageAdapterのlearnHypothesisと対称）
+            learnHypothesis(label, percept) {
+                if (this.hypothesisTable && percept) {
+                    this.hypothesisTable.observe(label, percept);
+                }
             }
         }
         
@@ -19436,6 +19971,10 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                 this.imageAdapter = new ImageAdapter();
                 this.audioAdapter = new AudioAdapter();
                 this.videoAdapter = new VideoAdapter();
+                // v27.0: AudioAdapterにAcousticHypothesisTableを注入（AudioGeneratorと共有）
+                this.audioAdapter.hypothesisTable = this.audioGenerator.hypothesisTable;
+                // v27.0: VideoAdapterにImageAdapterを注入（フレームを160次元で解析）
+                this.videoAdapter.imageAdapter = this.imageAdapter;
                 this.sensoryIntegrator = new SensoryIntegrator();
                 
                 // 圧縮レイヤー（v27.1.2 追加）
@@ -19460,6 +19999,8 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                 
                 // 代謝層（v17.0 完全脳統合）
                 this.episodicMemory = new EpisodicMemory();
+                // v27.0: VideoEventCognitionSystemにepisodicMemoryを注入（因果確定イベントを記憶）
+                this.videoEventCognition._episodicMemory = this.episodicMemory;
                 this.humanBrainMetabolism = new HumanBrainMetabolism(this);
                 
                 // 編集統合（v18.0 追加）
