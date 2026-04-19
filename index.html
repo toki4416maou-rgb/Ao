@@ -1317,6 +1317,12 @@ async function aoActivateAfterPaypal() {
                 <div id="subjectiveFocus" style="padding: 10px; font-size: 0.9em;"></div>
             </div>
             <div class="panel"><div class="panel-title">感覚入力層 <span class="existence-indicator">マルチモーダル</span></div><div id="sensoryLayer"></div></div>
+            <div class="panel">
+                <div class="panel-title">視覚概念仮説 <span class="existence-indicator" style="color:#f97316;">v27.0 ボトムアップ</span></div>
+                <div id="visualHypothesisPanel">
+                    <div style="font-size:0.65rem;color:#6b7280;">画像＋テキストのペアで仮説が育ちます</div>
+                </div>
+            </div>
             <div class="panel"><div class="panel-title">言語処理層 <span class="existence-indicator">DL</span></div><div id="languageLayer"></div></div>
             <div class="panel"><div class="panel-title">抽象概念階層 <span class="existence-indicator">帰納的</span></div><div id="hierarchy"></div></div>
             <div class="panel"><div class="panel-title">概念の成長 <span class="existence-indicator">不可逆</span></div><div id="growth"></div></div>
@@ -6338,6 +6344,242 @@ MemoryLimitsConfig._instance = null;
         }
         
         // ============ 画像意味抽出器（視覚野）============
+        // ============================================================
+        // VisualHypothesisTable - 視覚概念仮説テーブル
+        // 
+        // 設計思想:
+        //   「赤」「明るい」「丸い」などの言葉を
+        //   ハードコードせず、画像とテキストのペアから
+        //   帰納的に定義する。
+        //
+        //   画像を3チャンネルに分解:
+        //     hue       (8次元)   = 色相
+        //     brightness(16次元)  = 明度・輝度
+        //     spatial   (136次元) = 空間形状 (grad + HOG)
+        //
+        //   テキスト「赤」が来るたびに:
+        //     → 3チャンネルそれぞれとの共起を蓄積
+        //     → どのチャンネルに最も一貫した信号があるか計算
+        //     → 信頼度が閾値を超えたら「定義済み」に昇格
+        //
+        //   NNなし・GPUなし・四則演算のみ
+        // ============================================================
+        class VisualHypothesisTable {
+            constructor() {
+                // word → { hue, brightness, spatial, best_channel, confidence, defined }
+                this.hypotheses = new Map();
+                this.DEFINE_THRESHOLD = 0.68; // この信頼度を超えたら定義済み
+                this.MIN_SAMPLES = 4;          // 最低サンプル数
+            }
+
+            // テキストラベル + 画像チャンネルのペアを観測
+            observe(label, hueHist, brightnessGrid, spatialVec) {
+                if (!label || label.length === 0) return;
+                // スペース・句読点で分割して各トークンを更新
+                const tokens = label.split(/[　、。\s,.!?！？]+/).filter(t => t.length > 0 && t.length <= 15);
+                for (const token of tokens) {
+                    this._updateToken(token, hueHist, brightnessGrid, spatialVec);
+                }
+            }
+
+            _updateToken(token, hueHist, brightnessGrid, spatialVec) {
+                if (!this.hypotheses.has(token)) {
+                    this.hypotheses.set(token, {
+                        hue:        { sum: new Array(8).fill(0),   sumSq: new Array(8).fill(0),   samples: 0 },
+                        brightness: { sum: new Array(16).fill(0),  sumSq: new Array(16).fill(0),  samples: 0 },
+                        spatial:    { sum: new Array(136).fill(0), sumSq: new Array(136).fill(0), samples: 0 },
+                        best_channel: null,
+                        confidence: 0,
+                        defined: false,
+                        definedAt: null
+                    });
+                }
+
+                const hyp = this.hypotheses.get(token);
+                this._accumulate(hyp.hue,        hueHist);
+                this._accumulate(hyp.brightness,  brightnessGrid);
+                this._accumulate(hyp.spatial,     spatialVec);
+
+                // 最低サンプル数に達したら仮説を評価
+                if (hyp.hue.samples >= this.MIN_SAMPLES) {
+                    this._evaluate(token, hyp);
+                }
+            }
+
+            _accumulate(ch, vec) {
+                ch.samples++;
+                for (let i = 0; i < vec.length && i < ch.sum.length; i++) {
+                    ch.sum[i]   += vec[i];
+                    ch.sumSq[i] += vec[i] * vec[i];
+                }
+            }
+
+            // 各チャンネルのSNR（信号対雑音比）を比較して最適チャンネルを決定
+            _evaluate(token, hyp) {
+                const snrHue        = this._snr(hyp.hue);
+                const snrBrightness = this._snr(hyp.brightness);
+                const snrSpatial    = this._snr(hyp.spatial);
+
+                // 最高SNRのチャンネルが「この言葉が指すもの」
+                const best = Math.max(snrHue, snrBrightness, snrSpatial);
+                if (snrHue >= snrBrightness && snrHue >= snrSpatial) {
+                    hyp.best_channel = 'hue';
+                } else if (snrBrightness >= snrHue && snrBrightness >= snrSpatial) {
+                    hyp.best_channel = 'brightness';
+                } else {
+                    hyp.best_channel = 'spatial';
+                }
+
+                // 信頼度: 最高SNRが2位をどれだけ上回るか + サンプル補正
+                const sorted = [snrHue, snrBrightness, snrSpatial].sort((a, b) => b - a);
+                const gap = sorted[0] > 0 ? (sorted[0] - sorted[1]) / (sorted[0] + 0.01) : 0;
+                const sampleBonus = Math.min(0.3, hyp.hue.samples / 20 * 0.3);
+                hyp.confidence = Math.min(1, gap * 0.7 + sampleBonus);
+
+                if (hyp.confidence >= this.DEFINE_THRESHOLD && !hyp.defined) {
+                    hyp.defined = true;
+                    hyp.definedAt = Date.now();
+                }
+            }
+
+            // SNR = 信号パワー / ノイズパワー
+            _snr(ch) {
+                const n = ch.samples;
+                if (n < 2) return 0;
+                let sigPow = 0, noisePow = 0;
+                for (let i = 0; i < ch.sum.length; i++) {
+                    const mean = ch.sum[i] / n;
+                    const variance = Math.max(0.0001, ch.sumSq[i] / n - mean * mean);
+                    sigPow   += mean * mean;
+                    noisePow += variance;
+                }
+                return sigPow / (noisePow + 0.001);
+            }
+
+            // コサイン類似度
+            _cosineSim(a, b, len) {
+                let dot = 0, magA = 0, magB = 0;
+                const L = len || Math.min(a.length, b.length);
+                for (let i = 0; i < L; i++) {
+                    dot  += a[i] * b[i];
+                    magA += a[i] * a[i];
+                    magB += b[i] * b[i];
+                }
+                return (magA > 0 && magB > 0) ? dot / (Math.sqrt(magA) * Math.sqrt(magB)) : 0;
+            }
+
+            // 画像チャンネルを定義済み仮説と照合 → 意味候補を返す
+            matchHypotheses(hueHist, brightnessGrid, spatialVec, topK = 5) {
+                const results = [];
+
+                this.hypotheses.forEach((hyp, word) => {
+                    if (hyp.hue.samples < this.MIN_SAMPLES) return;
+                    const n = hyp.hue.samples;
+                    let score = 0;
+
+                    if (hyp.best_channel === 'hue') {
+                        const mean = hyp.hue.sum.map(v => v / n);
+                        score = this._cosineSim(hueHist, mean, 8);
+                    } else if (hyp.best_channel === 'brightness') {
+                        const mean = hyp.brightness.sum.map(v => v / n);
+                        score = this._cosineSim(brightnessGrid, mean, 16);
+                    } else {
+                        const mean = hyp.spatial.sum.map(v => v / n);
+                        score = this._cosineSim(spatialVec, mean, 136);
+                    }
+
+                    // 定義済みは信頼度ボーナス
+                    const bonus = hyp.defined ? 0.2 : 0;
+                    const finalScore = Math.min(1, score + bonus * hyp.confidence);
+
+                    if (finalScore > 0.38) {
+                        results.push({
+                            concept:    word,
+                            weight:     finalScore,
+                            channel:    hyp.best_channel,
+                            defined:    hyp.defined,
+                            confidence: hyp.confidence,
+                            samples:    hyp.hue.samples
+                        });
+                    }
+                });
+
+                results.sort((a, b) => b.weight - a.weight);
+                return results.slice(0, topK);
+            }
+
+            // 単語の仮説状態を照会
+            query(word) {
+                const hyp = this.hypotheses.get(word);
+                if (!hyp) return null;
+                return {
+                    word,
+                    best_channel: hyp.best_channel,
+                    confidence:   hyp.confidence,
+                    defined:      hyp.defined,
+                    samples:      hyp.hue.samples,
+                    hue_mean:        hyp.hue.sum.map(v => v / Math.max(1, hyp.hue.samples)),
+                    brightness_mean: hyp.brightness.sum.map(v => v / Math.max(1, hyp.brightness.samples)),
+                };
+            }
+
+            getStats() {
+                let total = 0, defined = 0;
+                const byChannel = { hue: 0, brightness: 0, spatial: 0 };
+                this.hypotheses.forEach(hyp => {
+                    total++;
+                    if (hyp.defined) {
+                        defined++;
+                        if (hyp.best_channel) byChannel[hyp.best_channel] = (byChannel[hyp.best_channel] || 0) + 1;
+                    }
+                });
+                return { total, defined, byChannel };
+            }
+
+            getDefinedList() {
+                const list = [];
+                this.hypotheses.forEach((hyp, word) => {
+                    if (hyp.defined) {
+                        list.push({
+                            word,
+                            channel:    hyp.best_channel,
+                            confidence: hyp.confidence,
+                            samples:    hyp.hue.samples
+                        });
+                    }
+                });
+                return list.sort((a, b) => b.confidence - a.confidence);
+            }
+
+            exportState() {
+                const out = [];
+                this.hypotheses.forEach((hyp, word) => {
+                    // サンプルが少なすぎるものは保存しない（容量節約）
+                    if (hyp.hue.samples < 2) return;
+                    out.push([word, {
+                        hue:        { sum: hyp.hue.sum,        sumSq: hyp.hue.sumSq,        samples: hyp.hue.samples },
+                        brightness: { sum: hyp.brightness.sum, sumSq: hyp.brightness.sumSq, samples: hyp.brightness.samples },
+                        spatial:    { sum: hyp.spatial.sum,    sumSq: hyp.spatial.sumSq,    samples: hyp.spatial.samples },
+                        best_channel: hyp.best_channel,
+                        confidence:   hyp.confidence,
+                        defined:      hyp.defined,
+                        definedAt:    hyp.definedAt
+                    }]);
+                });
+                return { hypotheses: out };
+            }
+
+            importState(data) {
+                try {
+                    if (data && Array.isArray(data.hypotheses)) {
+                        this.hypotheses = new Map(data.hypotheses);
+                    }
+                } catch (e) {
+                    console.error('[VisualHypothesisTable] import error:', e);
+                }
+            }
+        }
+
         // ============ ImageAdapter v3 - 視覚野モデル ============
         // v3変更点:
         //   1. SIZE 16→32（空間解像度4倍）
@@ -6355,6 +6597,8 @@ MemoryLimitsConfig._instance = null;
                 this.prototypes = new Map();
                 this.hueLabels = ['赤', '橙', '黄', '黄緑', '緑', '水色', '青', '紫'];
                 this.dirLabels = ['水平', '斜め右下', '垂直', '斜め左下', '水平', '斜め右上', '垂直', '斜め左上'];
+                // v27.0: 仮説テーブル（ボトムアップ概念獲得）
+                this.hypothesisTable = new VisualHypothesisTable();
             }
 
             // ---- RGB → HSV変換 ----
@@ -6584,6 +6828,26 @@ MemoryLimitsConfig._instance = null;
                 }
             }
 
+            // ---- [v27.0新規] 仮説テーブル更新: featuresオブジェクトから3チャンネルを分離して観測 ----
+            // これにより「赤」「明るい」「丸い」等を
+            // どのチャンネル（色/明度/形状）に帰属するかをボトムアップに学習する
+            learnHypothesis(label, features) {
+                try {
+                    if (!features || !features.hue_hist) return;
+                    const hueHist        = features.hue_hist;          //   8次元
+                    const brightnessGrid = features.brightness_grid;   //  16次元
+                    const gradHist       = features.gradient_hist;     //   8次元
+                    const hogBlocks      = features.hog_blocks;        // 128次元
+                    const spatialVec     = gradHist && hogBlocks       // 136次元（空間チャンネル）
+                        ? [...gradHist, ...hogBlocks]
+                        : (gradHist || []);
+
+                    this.hypothesisTable.observe(label, hueHist, brightnessGrid, spatialVec);
+                } catch (e) {
+                    console.error('[ImageAdapter] learnHypothesis error:', e);
+                }
+            }
+
             // ---- コサイン類似度（内部用） ----
             _cosineSim(a, b) {
                 let dot = 0, magA = 0, magB = 0;
@@ -6650,6 +6914,18 @@ MemoryLimitsConfig._instance = null;
 
                         // 意味候補生成
                         let semantics = this._vectorToSemantics(hueHist, brightnessGrid, gradHist, hogBlocks);
+
+                        // [v27.0] 仮説テーブル照合（定義済み概念を優先）
+                        const spatialVec = [...gradHist, ...hogBlocks];
+                        const hypothesisMatches = this.hypothesisTable.matchHypotheses(hueHist, brightnessGrid, spatialVec);
+                        // 定義済みの仮説は最上位に追加
+                        hypothesisMatches.forEach(m => {
+                            if (m.defined && m.weight > 0.5) {
+                                semantics.unshift({ concept: m.concept, weight: m.weight, fromHypothesis: true, channel: m.channel });
+                            } else if (m.weight > 0.55) {
+                                semantics.push({ concept: m.concept, weight: m.weight, fromHypothesis: true, channel: m.channel });
+                            }
+                        });
 
                         // プロトタイプ照合結果をマージ（類似度0.6以上）
                         protoMatches.forEach(m => {
@@ -19415,7 +19691,9 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                                 affective: this.distributedAffective.exportState()
                             },
                             // クオリア力場（v26.0）
-                            qualiaField: this.qualiaField ? this.qualiaField.exportState() : null
+                            qualiaField: this.qualiaField ? this.qualiaField.exportState() : null,
+                            // [v27.0] 視覚概念仮説テーブル
+                            visualHypothesisTable: this.imageAdapter ? this.imageAdapter.hypothesisTable.exportState() : null
                         }
                     };
                     
@@ -19805,6 +20083,17 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                         }
                     }
                     
+                    // [v27.0] 視覚概念仮説テーブルの復元
+                    if (core.visualHypothesisTable && this.imageAdapter) {
+                        try {
+                            this.imageAdapter.hypothesisTable.importState(core.visualHypothesisTable);
+                            const hStats = this.imageAdapter.hypothesisTable.getStats();
+                            this.addLog(`視覚仮説テーブル復元: 定義済${hStats.defined}/${hStats.total}概念`);
+                        } catch (e) {
+                            globalLogManager.log(`VisualHypothesisTable import failed: ${e.message}`, 'error');
+                        }
+                    }
+                    
                     // v22.0: PALシステムの復元
                     if (core.perpetualLoop && this.perpetualLoop) {
                         try {
@@ -20122,12 +20411,19 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                         if (imageResult.visual_vector && inputs.text && inputs.text.trim().length > 0) {
                             const label = inputs.text.trim().substring(0, 20);
                             this.imageAdapter.learnPrototype(label, imageResult.visual_vector);
-                            this.addLog(`視覚野: 「${label}」のプロトタイプ更新`);
+                            // [v27.0] 仮説テーブル更新（どのチャンネルにこの言葉が対応するか学習）
+                            this.imageAdapter.learnHypothesis(label, imageResult.features);
+                            const hStats = this.imageAdapter.hypothesisTable.getStats();
+                            this.addLog(`視覚野: 「${label}」仮説更新 [定義:${hStats.defined}/${hStats.total}]`);
                         }
                         // 上位概念候補でもプロトタイプ更新
                         if (imageResult.visual_vector && imageResult.semantic_candidates.length > 0) {
                             const topConcept = imageResult.semantic_candidates[0].concept;
                             this.imageAdapter.learnPrototype(topConcept, imageResult.visual_vector);
+                            // [v27.0] トップ候補が仮説由来の場合はスキップ（循環防止）
+                            if (!imageResult.semantic_candidates[0].fromHypothesis) {
+                                this.imageAdapter.learnHypothesis(topConcept, imageResult.features);
+                            }
                         }
                     }
                 }
@@ -25066,6 +25362,38 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                     </div>`;
                 }).join('');
             }
+
+            // [v27.0] 視覚概念仮説パネル更新
+            try {
+                const hypPanel = document.getElementById('visualHypothesisPanel');
+                if (hypPanel && ao.imageAdapter && ao.imageAdapter.hypothesisTable) {
+                    const ht = ao.imageAdapter.hypothesisTable;
+                    const stats = ht.getStats();
+                    const defined = ht.getDefinedList().slice(0, 8);
+                    const channelIcon = { hue: '🎨', brightness: '☀️', spatial: '🔷' };
+                    const channelLabel = { hue: '色相', brightness: '明度', spatial: '形状' };
+                    if (stats.total === 0) {
+                        hypPanel.innerHTML = '<div style="font-size:0.65rem;color:#6b7280;">画像＋テキストのペアで仮説が育ちます</div>';
+                    } else {
+                        const pendingCount = stats.total - stats.defined;
+                        hypPanel.innerHTML = `
+                            <div style="font-size:0.65rem;color:#9ca3af;margin-bottom:0.4rem;">
+                                定義済: <b style="color:#10b981;">${stats.defined}</b> / 観測中: <b style="color:#f59e0b;">${pendingCount}</b>
+                                &nbsp;|&nbsp; 🎨${stats.byChannel.hue||0} ☀️${stats.byChannel.brightness||0} 🔷${stats.byChannel.spatial||0}
+                            </div>
+                            ${defined.map(d => `
+                                <div style="font-size:0.7rem;padding:0.3rem 0.4rem;margin-bottom:0.25rem;
+                                    background:rgba(249,115,22,0.1);border-left:2px solid #f97316;
+                                    border-radius:0.25rem;color:#fed7aa;">
+                                    ${channelIcon[d.channel]||'?'} <b>${d.word}</b>
+                                    <span style="color:#6b7280;font-size:0.6rem;">→ ${channelLabel[d.channel]||d.channel}</span>
+                                    <span style="float:right;color:#10b981;font-size:0.6rem;">${(d.confidence*100).toFixed(0)}% (${d.samples}枚)</span>
+                                </div>`).join('')}
+                            ${stats.total > 8 ? `<div style="font-size:0.6rem;color:#6b7280;margin-top:0.25rem;">+${stats.total-8}件観測中...</div>` : ''}
+                        `;
+                    }
+                }
+            } catch(e) { /* パネル更新エラーは無視 */ }
             
             const langDiv = document.getElementById('languageLayer');
             if (ao.lastLanguageProcess) {
@@ -25798,6 +26126,7 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
         
         ao.addLog('言語入力DL: 初期化完了');
         ao.addLog('視覚野(ImageAdapter): 初期化完了');
+        ao.addLog('視覚仮説テーブル(v27.0): 画像+テキストのペアで概念を帰納的学習');
         ao.addLog('聴覚野(AudioAdapter): 初期化完了');
         ao.addLog('映像野(VideoAdapter): 初期化完了');
         ao.addLog('感覚統合器: 初期化完了');
