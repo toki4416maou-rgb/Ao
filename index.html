@@ -5021,6 +5021,15 @@ MemoryLimitsConfig._instance = null;
 
                 this.processing = false;
 
+                // シーン平均特徴（ImageAdapterの共起テーブルに渡せる形式）
+                const scenesWithFeatures = scenes.filter(sc => sc.features);
+                const avg_features = scenesWithFeatures.length > 0 ? {
+                    hue_hist:        this._avgArrays(scenesWithFeatures.map(sc => sc.features.hue_hist        || [])),
+                    brightness_grid: this._avgArrays(scenesWithFeatures.map(sc => sc.features.brightness_grid || [])),
+                    gradient_hist:   this._avgArrays(scenesWithFeatures.map(sc => sc.features.gradient_hist   || [])),
+                    hog_blocks:      this._avgArrays(scenesWithFeatures.map(sc => sc.features.hog_blocks      || []))
+                } : null;
+
                 return {
                     semantic_candidates: allMeanings.slice(0, 6),
                     modality:    'video',
@@ -5030,9 +5039,20 @@ MemoryLimitsConfig._instance = null;
                         avgBrightness: scenes.reduce((s, sc) => s + sc.brightness, 0) / scenes.length,
                         avgComplexity: scenes.reduce((s, sc) => s + sc.complexity, 0) / scenes.length
                     },
+                    avg_features,  // v27.1: ImageAdapter共起テーブル用
                     raw_descriptor: `${duration.toFixed(1)}秒 ${scenes.length}シーン ${mode}モード`,
                     _scenes: scenes
                 };
+            }
+
+            // シーン群の特徴ベクトルを平均化
+            _avgArrays(arrays) {
+                const valid = arrays.filter(a => a && a.length > 0);
+                if (valid.length === 0) return [];
+                const len = valid[0].length;
+                const sum = new Array(len).fill(0);
+                valid.forEach(arr => { for (let i = 0; i < len; i++) sum[i] += (arr[i] || 0); });
+                return sum.map(v => v / valid.length);
             }
         }
         
@@ -6703,6 +6723,82 @@ MemoryLimitsConfig._instance = null;
                 this.dirLabels = ['水平', '斜め右下', '垂直', '斜め左下', '水平', '斜め右上', '垂直', '斜め左上'];
                 // v27.0: 仮説テーブル（ボトムアップ概念獲得）
                 this.hypothesisTable = new VisualHypothesisTable();
+                // v27.1: 共起テーブル（概念の交差・複合概念認識）
+                // labelCoOccurrence[a][b] = { count, jointFeature: {hue, brightness, spatial} }
+                this.labelCoOccurrence = new Map();
+            }
+
+            // ---- [v27.1] 複数ラベルの共起を記録 ----
+            // 同一入力で複数ラベルが同時に学習されたとき呼ぶ
+            learnCoOccurrence(labels, features) {
+                if (!labels || labels.length < 2 || !features) return;
+                const hueHist        = features.hue_hist        || [];
+                const brightnessGrid = features.brightness_grid || [];
+                const spatialVec     = features.gradient_hist && features.hog_blocks
+                    ? [...features.gradient_hist, ...features.hog_blocks]
+                    : (features.gradient_hist || []);
+
+                // すべてのラベルペアを記録
+                for (let i = 0; i < labels.length; i++) {
+                    for (let j = i + 1; j < labels.length; j++) {
+                        const key = [labels[i], labels[j]].sort().join('∧');
+                        if (!this.labelCoOccurrence.has(key)) {
+                            this.labelCoOccurrence.set(key, {
+                                count: 0,
+                                labelA: [labels[i], labels[j]].sort()[0],
+                                labelB: [labels[i], labels[j]].sort()[1],
+                                jointHue:        new Array(hueHist.length).fill(0),
+                                jointBrightness: new Array(brightnessGrid.length).fill(0),
+                                jointSpatial:    new Array(spatialVec.length).fill(0)
+                            });
+                        }
+                        const entry = this.labelCoOccurrence.get(key);
+                        entry.count++;
+                        for (let k = 0; k < hueHist.length; k++)        entry.jointHue[k]        += hueHist[k];
+                        for (let k = 0; k < brightnessGrid.length; k++) entry.jointBrightness[k] += brightnessGrid[k];
+                        for (let k = 0; k < spatialVec.length; k++)     entry.jointSpatial[k]    += spatialVec[k];
+                    }
+                }
+            }
+
+            // ---- [v27.1] 複合概念マッチング ----
+            // 入力featuresに対して、共起テーブルとの一致度を返す
+            matchCoOccurrence(features, threshold = 0.55) {
+                if (!features || this.labelCoOccurrence.size === 0) return [];
+                const hueHist        = features.hue_hist        || [];
+                const brightnessGrid = features.brightness_grid || [];
+                const spatialVec     = features.gradient_hist && features.hog_blocks
+                    ? [...features.gradient_hist, ...features.hog_blocks]
+                    : (features.gradient_hist || []);
+
+                const results = [];
+                for (const [key, entry] of this.labelCoOccurrence) {
+                    if (entry.count < 2) continue; // 2回以上共起したものだけ使う
+
+                    // 正規化した平均ベクトルとのコサイン類似度
+                    const avgHue        = entry.jointHue.map(v => v / entry.count);
+                    const avgBrightness = entry.jointBrightness.map(v => v / entry.count);
+                    const avgSpatial    = entry.jointSpatial.map(v => v / entry.count);
+
+                    const hueScore  = hueHist.length        > 0 ? this._cosineSim(hueHist, avgHue)               : 0;
+                    const brightScore = brightnessGrid.length > 0 ? this._cosineSim(brightnessGrid, avgBrightness) : 0;
+                    const spatialScore = spatialVec.length   > 0 ? this._cosineSim(spatialVec, avgSpatial)         : 0;
+
+                    // hue（色）とspatial（形）の積が複合スコア
+                    const compositeScore = hueScore * 0.4 + brightScore * 0.2 + spatialScore * 0.4;
+
+                    if (compositeScore >= threshold) {
+                        results.push({
+                            concept: `${entry.labelA}の${entry.labelB}`,
+                            key,
+                            score: compositeScore,
+                            count: entry.count,
+                            fromCoOccurrence: true
+                        });
+                    }
+                }
+                results.sort((a, b) => b.score - a.score);
+                return results.slice(0, 3);
             }
 
             // ---- RGB → HSV変換 ----
@@ -7961,7 +8057,68 @@ MemoryLimitsConfig._instance = null;
                 this.semanticIntegrator = new AcousticSemanticIntegrator();
                 // v27.0: 仮説テーブル（ボトムアップ概念獲得）AudioGeneratorと共有
                 this.hypothesisTable = null; // ao初期化後にaudioGenerator.hypothesisTableを注入
+                // v27.1: 音声共起テーブル
+                this.labelCoOccurrence = new Map();
             }
+
+            // ---- [v27.1] 音声ラベル間の共起を記録 ----
+            learnCoOccurrence(labels, percept) {
+                if (!labels || labels.length < 2 || !percept) return;
+                const pitchHz   = percept.pitch?.hz   ?? 0;
+                const amplitude = percept.amplitude?.level ?? 0;
+                const roughness = percept.timbre?.roughness ?? 0;
+
+                for (let i = 0; i < labels.length; i++) {
+                    for (let j = i + 1; j < labels.length; j++) {
+                        const key = [labels[i], labels[j]].sort().join('∧');
+                        if (!this.labelCoOccurrence.has(key)) {
+                            this.labelCoOccurrence.set(key, {
+                                count: 0,
+                                labelA: [labels[i], labels[j]].sort()[0],
+                                labelB: [labels[i], labels[j]].sort()[1],
+                                sumPitch: 0, sumAmplitude: 0, sumRoughness: 0
+                            });
+                        }
+                        const entry = this.labelCoOccurrence.get(key);
+                        entry.count++;
+                        entry.sumPitch     += pitchHz;
+                        entry.sumAmplitude += amplitude;
+                        entry.sumRoughness += roughness;
+                    }
+                }
+            }
+
+            // ---- [v27.1] 音声複合概念マッチング ----
+            matchCoOccurrence(percept, threshold = 0.6) {
+                if (!percept || this.labelCoOccurrence.size === 0) return [];
+                const pitchHz   = percept.pitch?.hz   ?? 0;
+                const amplitude = percept.amplitude?.level ?? 0;
+                const roughness = percept.timbre?.roughness ?? 0;
+
+                const results = [];
+                for (const [key, entry] of this.labelCoOccurrence) {
+                    if (entry.count < 2) continue;
+                    const avgPitch     = entry.sumPitch     / entry.count;
+                    const avgAmplitude = entry.sumAmplitude / entry.count;
+                    const avgRoughness = entry.sumRoughness / entry.count;
+
+                    const pitchScore     = 1 - Math.min(1, Math.abs(pitchHz   - avgPitch)     / (avgPitch     + 1));
+                    const ampScore       = 1 - Math.min(1, Math.abs(amplitude - avgAmplitude) / (avgAmplitude + 0.01));
+                    const roughnessScore = 1 - Math.min(1, Math.abs(roughness - avgRoughness) / (avgRoughness + 0.01));
+                    const compositeScore = pitchScore * 0.4 + ampScore * 0.3 + roughnessScore * 0.3;
+
+                    if (compositeScore >= threshold) {
+                        results.push({
+                            concept: `${entry.labelA}の${entry.labelB}`,
+                            key, score: compositeScore, count: entry.count, fromCoOccurrence: true
+                        });
+                    }
+                }
+                return results.sort((a, b) => b.score - a.score).slice(0, 3);
+            }
+
+            exportCoOccurrence() { return Array.from(this.labelCoOccurrence.entries()); }
+            importCoOccurrence(data) { if (Array.isArray(data)) this.labelCoOccurrence = new Map(data); }
 
             /**
              * 知覚パイプライン（上昇方向）:
@@ -20235,7 +20392,9 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                             // クオリア力場（v26.0）
                             qualiaField: this.qualiaField ? this.qualiaField.exportState() : null,
                             // [v27.0] 視覚概念仮説テーブル
-                            visualHypothesisTable: this.imageAdapter ? this.imageAdapter.hypothesisTable.exportState() : null
+                            visualHypothesisTable: this.imageAdapter ? this.imageAdapter.hypothesisTable.exportState() : null,
+                            labelCoOccurrence: this.imageAdapter ? Array.from(this.imageAdapter.labelCoOccurrence.entries()) : [],
+                            audioLabelCoOccurrence: this.audioAdapter ? this.audioAdapter.exportCoOccurrence() : []
                         }
                     };
                     
@@ -20635,6 +20794,26 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                             globalLogManager.log(`VisualHypothesisTable import failed: ${e.message}`, 'error');
                         }
                     }
+
+                    // [v27.1] 共起テーブルの復元
+                    if (core.labelCoOccurrence && this.imageAdapter) {
+                        try {
+                            this.imageAdapter.labelCoOccurrence = new Map(core.labelCoOccurrence);
+                            this.addLog(`共起テーブル復元: ${this.imageAdapter.labelCoOccurrence.size}ペア`);
+                        } catch (e) {
+                            globalLogManager.log(`labelCoOccurrence import failed: ${e.message}`, 'error');
+                        }
+                    }
+
+                    // [v27.1] 音声共起テーブルの復元
+                    if (core.audioLabelCoOccurrence && this.audioAdapter) {
+                        try {
+                            this.audioAdapter.importCoOccurrence(core.audioLabelCoOccurrence);
+                            this.addLog(`音声共起テーブル復元: ${this.audioAdapter.labelCoOccurrence.size}ペア`);
+                        } catch (e) {
+                            globalLogManager.log(`audioLabelCoOccurrence import failed: ${e.message}`, 'error');
+                        }
+                    }
                     
                     // v22.0: PALシステムの復元
                     if (core.perpetualLoop && this.perpetualLoop) {
@@ -20952,11 +21131,13 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                         this.addLog(`視覚野: ${imageResult.semantic_candidates.length}候補 [${imageResult.raw_descriptor}]`);
 
                         // プロトタイプ学習: テキストと同時入力された場合、ラベルとして使う
+                        const activeLabels = []; // v27.1: 共起記録用ラベル収集
                         if (imageResult.visual_vector && inputs.text && inputs.text.trim().length > 0) {
                             const label = inputs.text.trim().substring(0, 20);
                             this.imageAdapter.learnPrototype(label, imageResult.visual_vector);
-                            // [v27.0] 仮説テーブル更新（どのチャンネルにこの言葉が対応するか学習）
+                            // [v27.0] 仮説テーブル更新
                             this.imageAdapter.learnHypothesis(label, imageResult.features);
+                            activeLabels.push(label);
                             const hStats = this.imageAdapter.hypothesisTable.getStats();
                             this.addLog(`視覚野: 「${label}」仮説更新 [定義:${hStats.defined}/${hStats.total}]`);
                         }
@@ -20964,9 +21145,30 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                         if (imageResult.visual_vector && imageResult.semantic_candidates.length > 0) {
                             const topConcept = imageResult.semantic_candidates[0].concept;
                             this.imageAdapter.learnPrototype(topConcept, imageResult.visual_vector);
-                            // [v27.0] トップ候補が仮説由来の場合はスキップ（循環防止）
                             if (!imageResult.semantic_candidates[0].fromHypothesis) {
                                 this.imageAdapter.learnHypothesis(topConcept, imageResult.features);
+                            }
+                            activeLabels.push(topConcept);
+                        }
+
+                        // [v27.1] 複数ラベルが同時に存在 → 共起テーブルを更新
+                        if (activeLabels.length >= 2 && imageResult.features) {
+                            this.imageAdapter.learnCoOccurrence(activeLabels, imageResult.features);
+                            this.addLog(`視覚野: 共起学習 [${activeLabels.join('∧')}]`);
+                        }
+
+                        // [v27.1] 複合概念マッチング → semantic_candidatesに追加
+                        if (imageResult.features) {
+                            const coMatches = this.imageAdapter.matchCoOccurrence(imageResult.features);
+                            if (coMatches.length > 0) {
+                                coMatches.forEach(m => {
+                                    imageResult.semantic_candidates.push({
+                                        concept: m.concept,
+                                        weight: m.score,
+                                        fromCoOccurrence: true
+                                    });
+                                });
+                                this.addLog(`視覚野: 複合概念検出 [${coMatches.map(m => m.concept).join(', ')}]`);
                             }
                         }
                     }
@@ -20977,6 +21179,32 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                         const audioResult = await this.audioAdapter.extractMeaning(audioFile);
                         sensoryResults.push(audioResult);
                         this.addLog(`聴覚野: ${audioResult.semantic_candidates.length}候補`);
+
+                        // [v27.1] 音声共起学習
+                        const audioLabels = [];
+                        if (inputs.text && inputs.text.trim().length > 0) {
+                            audioLabels.push(inputs.text.trim().substring(0, 20));
+                        }
+                        if (audioResult.semantic_candidates.length > 0) {
+                            audioLabels.push(audioResult.semantic_candidates[0].concept);
+                        }
+                        if (audioLabels.length >= 2 && audioResult.percept) {
+                            this.audioAdapter.learnCoOccurrence(audioLabels, audioResult.percept);
+                            this.addLog(`聴覚野: 共起学習 [${audioLabels.join('∧')}]`);
+                        }
+
+                        // [v27.1] 音声複合概念マッチング
+                        if (audioResult.percept) {
+                            const audioCoMatches = this.audioAdapter.matchCoOccurrence(audioResult.percept);
+                            if (audioCoMatches.length > 0) {
+                                audioCoMatches.forEach(m => {
+                                    audioResult.semantic_candidates.push({
+                                        concept: m.concept, weight: m.score, fromCoOccurrence: true
+                                    });
+                                });
+                                this.addLog(`聴覚野: 複合概念検出 [${audioCoMatches.map(m => m.concept).join(', ')}]`);
+                            }
+                        }
                     }
                 }
                 
@@ -20985,6 +21213,34 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                         const videoResult = await this.videoAdapter.extractMeaning(videoFile, 'normal');
                         sensoryResults.push(videoResult);
                         this.addLog(`映像野: ${videoResult.sceneCount}シーン解析完了`);
+
+                        // [v27.1] 動画共起学習（ImageAdapterの共起テーブルに乗せる）
+                        if (videoResult.avg_features) {
+                            const videoLabels = [];
+                            if (inputs.text && inputs.text.trim().length > 0) {
+                                videoLabels.push(inputs.text.trim().substring(0, 20));
+                                // テキストラベルをImageAdapterの仮説テーブルにも登録
+                                this.imageAdapter.learnHypothesis(inputs.text.trim().substring(0, 20), videoResult.avg_features);
+                            }
+                            if (videoResult.semantic_candidates.length > 0) {
+                                videoLabels.push(videoResult.semantic_candidates[0].concept);
+                            }
+                            if (videoLabels.length >= 2) {
+                                this.imageAdapter.learnCoOccurrence(videoLabels, videoResult.avg_features);
+                                this.addLog(`映像野: 共起学習 [${videoLabels.join('∧')}]`);
+                            }
+
+                            // [v27.1] 複合概念マッチング
+                            const videoCoMatches = this.imageAdapter.matchCoOccurrence(videoResult.avg_features);
+                            if (videoCoMatches.length > 0) {
+                                videoCoMatches.forEach(m => {
+                                    videoResult.semantic_candidates.push({
+                                        concept: m.concept, weight: m.score, fromCoOccurrence: true
+                                    });
+                                });
+                                this.addLog(`映像野: 複合概念検出 [${videoCoMatches.map(m => m.concept).join(', ')}]`);
+                            }
+                        }
 
                         // v26.5.0: VideoEventCognitionSystem によるイベント認知
                         if (this.videoEventCognition) {
