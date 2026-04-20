@@ -4974,6 +4974,7 @@ MemoryLimitsConfig._instance = null;
                         avgBrightness /= pixelCount; avgR /= pixelCount;
                         avgG /= pixelCount; avgB /= pixelCount;
 
+                        // v27.1: ハードコード概念廃止→meaningsは空（仮説テーブルに委譲）
                         scene = {
                             time,
                             brightness: avgBrightness / 255,
@@ -4981,12 +4982,6 @@ MemoryLimitsConfig._instance = null;
                             complexity: edgeCount / pixelCount,
                             meanings:   []
                         };
-                        if (avgBrightness < 80)  scene.meanings.push({ concept: '暗いシーン', weight: 0.7 });
-                        else if (avgBrightness > 180) scene.meanings.push({ concept: '明るいシーン', weight: 0.7 });
-                        if (edgeCount > pixelCount * 0.3) scene.meanings.push({ concept: '動きのあるシーン', weight: 0.6 });
-                        else scene.meanings.push({ concept: '静的なシーン', weight: 0.5 });
-                        if (avgR > Math.max(avgG, avgB) * 1.2) scene.meanings.push({ concept: '赤系の映像', weight: 0.6 });
-                        else if (avgB > Math.max(avgR, avgG) * 1.2) scene.meanings.push({ concept: '青系の映像', weight: 0.6 });
                     }
 
                     scenes.push(scene);
@@ -6927,7 +6922,13 @@ MemoryLimitsConfig._instance = null;
             }
 
             // ---- 160次元ベクトルから意味候補を生成 ----
+            // v27.1: ハードコード概念を廃止→仮説テーブルのみに委譲
             _vectorToSemantics(hueHist, brightnessGrid, gradHist, hogBlocks) {
+                return [];
+            }
+
+            // ---- (旧コード削除済み) ----
+            _vectorToSemantics_DISABLED(hueHist, brightnessGrid, gradHist, hogBlocks) {
                 const meanings = [];
 
                 // --- 色相から ---
@@ -7160,7 +7161,7 @@ MemoryLimitsConfig._instance = null;
                     img.onerror = () => {
                         this.processing = false;
                         resolve({
-                            semantic_candidates: [{ concept: '視覚情報', weight: 0.3 }],
+                            semantic_candidates: [],
                             modality: 'visual',
                             visual_vector: new Array(160).fill(0), // [v3] 160次元
                             features: {},
@@ -7539,47 +7540,8 @@ MemoryLimitsConfig._instance = null;
          */
         class AcousticSemanticIntegrator {
             fromPercept(percept) {
+                // v27.1: ハードコード概念廃止→仮説テーブルのみに委譲
                 const candidates = [];
-
-                // 音量から意味
-                if (percept.amplitude.level > 0.65) {
-                    candidates.push({ concept: '大きな音', weight: 0.8 });
-                    candidates.push({ concept: '強調', weight: 0.6 });
-                } else if (percept.amplitude.level < 0.3) {
-                    candidates.push({ concept: '小さな音', weight: 0.7 });
-                    candidates.push({ concept: '静か', weight: 0.5 });
-                }
-
-                // ピッチから意味
-                if (percept.pitch.hz > 400) {
-                    candidates.push({ concept: '高音', weight: 0.6 });
-                } else if (percept.pitch.hz < 180) {
-                    candidates.push({ concept: '低音', weight: 0.6 });
-                }
-
-                // 韻律から意味（Layer4が先に来ているので参照可）
-                if (percept.prosody.intent === 'question') {
-                    candidates.push({ concept: '問いかけ', weight: 0.75 });
-                } else if (percept.prosody.intent === 'exclamation') {
-                    candidates.push({ concept: '強い感情表出', weight: 0.75 });
-                }
-
-                if (percept.prosody.emotionHint === 'tense') {
-                    candidates.push({ concept: '緊張', weight: 0.7 });
-                } else if (percept.prosody.emotionHint === 'joyful') {
-                    candidates.push({ concept: '喜び', weight: 0.7 });
-                } else if (percept.prosody.emotionHint === 'sad') {
-                    candidates.push({ concept: '悲しみ', weight: 0.65 });
-                }
-
-                // 時間から意味
-                if (percept.duration.total > 6) {
-                    candidates.push({ concept: '長い発話', weight: 0.5 });
-                } else {
-                    candidates.push({ concept: '短い発話', weight: 0.4 });
-                }
-
-                candidates.push({ concept: '聴覚情報', weight: 0.3 });
 
                 // [v27.0] 仮説テーブル照合（定義済み概念を優先）ImageAdapterと対称
                 if (this._hypothesisTable) {
@@ -8739,7 +8701,7 @@ MemoryLimitsConfig._instance = null;
                     certainty: 0.5,
                     context_links: [],
                     unknown_terms: [],
-                    semantic_candidates: [{ concept: '対話', weight: 0.4 }],
+                    semantic_candidates: [],
                     emotion_hints: {
                         valence: 0,
                         arousal: 0.3
