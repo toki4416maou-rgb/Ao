@@ -13076,135 +13076,367 @@ class RichSyntaxHypothesisGenerator {
 // ---- 形態変化学習器 ----
 // 「走る」「走った」「走ります」などを同一語幹のバリアントとして統計的に発見・選択する
 class MorphVariantLearner {
-    constructor() {
-        // surface → { count, contextCounts, variants: Set }
+    // 設計方針:
+    //   ① 事前知識ゼロ。「た=過去形」等のハードコード一切なし
+    //   ② FunctionWordDetectorが統計的に発見した高頻度短語を接尾語候補として受け取る
+    //   ③ 語幹 × 接尾語の格子を自力構築し、「この語幹ならこの接尾語が来るはず」と予測
+    //   ④ 予測失敗 → SyntacticFailureMemory に流す（failureType: 'morphology_mismatch'）
+    //   ⑤ マルチモーダル入力のモダリティを信頼度重みとして使う
+    //      vision+language 同時観測 → 高信頼、language のみ → 低信頼
+
+    constructor(functionWordDetector = null, failureMemory = null) {
+        this.functionWordDetector = functionWordDetector;
+        this.failureMemory = failureMemory;
+
+        // surface → { count, suffixCounts: Map<suffix, count>, modalityWeights: Map<modality, count> }
         this.wordForms = new Map();
-        // 語末文字列 → 出現回数
-        this.endingFrequency = new Map();
-        this.MIN_PREFIX_LEN = 1;
+
+        // 接尾語候補 → 共起した語幹の Set（FunctionWordDetectorから昇格）
+        // 例: 'た' → Set{'食べ', '走', '書き', ...}
+        this.suffixCandidates = new Map();
+
+        // 語幹 → Set<surface>（活用形グループ）
+        // 例: '食べ' → Set{'食べる', '食べた', '食べない', '食べたい'}
+        this.stemGroups = new Map();
+
+        // 語幹グループの信頼度（十分な観測があるか）
+        // 例: '食べ' → 0.9（高信頼）, '走' → 0.3（低信頼）
+        this.stemConfidence = new Map();
+
+        // 高信頼グループで確認された接尾語セット
+        // 発見した接尾語を低信頼語幹への投影に使う
+        this.confirmedSuffixes = new Set();
+
+        // 内部状態（tone）× 接尾語の共起表
+        // tone値を離散化したキー → Map<suffix, count>
+        // 例: 'c0.8_h0.2' → {'た': 3, 'る': 1}
+        this.toneBinding = new Map();
+
+        // 予測ログ（直近50件）
+        this._predictionLog = [];
+
+        // 語幹抽出の最小長（語幹が1文字未満にならないよう）
+        this.MIN_STEM_LEN = 1;
+
+        // 高信頼グループと判定する最小観測バリアント数
+        this.HIGH_CONFIDENCE_VARIANT_COUNT = 3;
     }
 
-    // トークン列 + 文脈ヒントから学習
-    learnFromTokens(tokens, contextHints = {}) {
+    // ─── メインエントリ ───────────────────────────────────────────
+    // tokens: Token配列 または string配列
+    // modalities: ['language', 'vision', 'audio', 'video'] など（省略可）
+    // toneSnapshot: { certainty, hesitation, emotional_weight } Aoの内部状態（省略可）
+    learnFromTokens(tokens, modalities = ['language'], toneSnapshot = null) {
+        // モダリティ信頼度重み（vision/audio/video と language の同時観測で上昇）
+        const modalityWeight = modalities.length > 1 ? 1.5 : 1.0;
+
+        // FunctionWordDetectorの最新状態を接尾語候補に同期
+        this._syncSuffixCandidates();
+
         for (const token of tokens) {
             const surface = typeof token === 'string' ? token : token.surface;
             if (!surface || surface.length < 2) continue;
-
-            // 語末を登録（1〜3文字）
-            for (let endLen = 1; endLen <= Math.min(3, surface.length - 1); endLen++) {
-                const ending = surface.slice(-endLen);
-                this.endingFrequency.set(ending, (this.endingFrequency.get(ending) || 0) + 1);
-            }
-
-            this._registerForm(surface, contextHints);
+            this._registerForm(surface, modalities, modalityWeight);
         }
-        this._updateVariantGroups();
+
+        this._updateStemGroups();
+        this._updateConfirmedSuffixes();
+        this._projectToLowConfidenceStems();
+
+        // toneSnapshotが渡された場合、接尾語との共起を記録
+        if (toneSnapshot) {
+            this._recordToneBinding(tokens, toneSnapshot);
+        }
     }
 
-    // 文字列自体から文脈を自動推定（外部ヒントがない場合）
-    inferContext(surface) {
-        if (!surface) return {};
-        const s = surface;
-        return {
-            isPast:     s.endsWith('た') || s.endsWith('だ') || s.endsWith('たい'),
-            isPolite:   s.endsWith('ます') || s.endsWith('です') || s.endsWith('ました'),
-            isNegative: s.endsWith('ない') || s.endsWith('ません') || s.endsWith('なかった'),
-        };
+    // ─── FunctionWordDetectorの高頻度短語を接尾語候補に昇格 ──────
+    _syncSuffixCandidates() {
+        if (!this.functionWordDetector) return;
+        const topWords = this.functionWordDetector.getTopFunctionWords(20);
+        for (const { word } of topWords) {
+            if (!this.suffixCandidates.has(word)) {
+                this.suffixCandidates.set(word, new Set());
+            }
+        }
     }
 
-    _registerForm(surface, contextHints) {
+    // ─── 語形を登録 ────────────────────────────────────────────────
+    _registerForm(surface, modalities, modalityWeight) {
         if (!this.wordForms.has(surface)) {
             this.wordForms.set(surface, {
                 count: 0,
-                contextCounts: { past: 0, polite: 0, negative: 0, base: 0 },
-                variants: new Set([surface])
+                suffixCounts: new Map(),   // suffix → 観測回数（接尾語はデータから発見）
+                modalityWeights: new Map() // modality → 観測回数
             });
         }
         const entry = this.wordForms.get(surface);
-        entry.count++;
+        entry.count += modalityWeight;
 
-        if (contextHints.isPast)     entry.contextCounts.past++;
-        else if (contextHints.isPolite)   entry.contextCounts.polite++;
-        else if (contextHints.isNegative) entry.contextCounts.negative++;
-        else                               entry.contextCounts.base++;
+        for (const m of modalities) {
+            entry.modalityWeights.set(m, (entry.modalityWeights.get(m) || 0) + 1);
+        }
+
+        // この語形がどの接尾語候補と一致するか記録
+        for (const [suffix] of this.suffixCandidates) {
+            if (surface.endsWith(suffix) && surface.length > suffix.length + this.MIN_STEM_LEN) {
+                entry.suffixCounts.set(suffix, (entry.suffixCounts.get(suffix) || 0) + modalityWeight);
+                // 語幹を接尾語候補の共起語幹 Set に追加
+                const stem = surface.slice(0, surface.length - suffix.length);
+                this.suffixCandidates.get(suffix).add(stem);
+            }
+        }
     }
 
-    _updateVariantGroups() {
-        const forms = Array.from(this.wordForms.keys());
-        // O(n^2) だが最大300語程度なので許容
-        for (let i = 0; i < forms.length; i++) {
-            for (let j = i + 1; j < forms.length; j++) {
-                const a = forms[i];
-                const b = forms[j];
-                if (this._commonPrefix(a, b).length >= this.MIN_PREFIX_LEN) {
-                    this.wordForms.get(a).variants.add(b);
-                    this.wordForms.get(b).variants.add(a);
+    // ─── 語幹グループを更新（接尾語候補から語幹を逆算） ─────────
+    _updateStemGroups() {
+        // 接尾語候補ごとに共起語幹を集め、stemGroupsを構築
+        // 同じ語幹に複数の接尾語が付くことでグループが確定する
+        const stemToSurfaces = new Map();
+
+        for (const [suffix, stems] of this.suffixCandidates) {
+            for (const stem of stems) {
+                if (!stemToSurfaces.has(stem)) stemToSurfaces.set(stem, new Set());
+                // stem + suffix の形が wordForms に実際に存在するか確認
+                const surface = stem + suffix;
+                if (this.wordForms.has(surface)) {
+                    stemToSurfaces.get(stem).add(surface);
+                }
+            }
+        }
+
+        // wordForms に存在する語形で、共通語幹を持つものをグループ化
+        // 語幹長が長い候補を優先（短すぎる語幹でのノイズ混入を防ぐ）
+        for (const [stem, surfaces] of stemToSurfaces) {
+            if (surfaces.size < 2) continue; // 2バリアント以上ないとグループ扱いしない
+            this.stemGroups.set(stem, surfaces);
+
+            // 信頼度 = バリアント数 / HIGH_CONFIDENCE_VARIANT_COUNT（上限1.0）
+            const confidence = Math.min(1.0, surfaces.size / this.HIGH_CONFIDENCE_VARIANT_COUNT);
+            this.stemConfidence.set(stem, confidence);
+        }
+    }
+
+    // ─── 高信頼グループから接尾語を確認済みに昇格 ────────────────
+    _updateConfirmedSuffixes() {
+        for (const [stem, surfaces] of this.stemGroups) {
+            const confidence = this.stemConfidence.get(stem) || 0;
+            if (confidence < 1.0) continue;
+
+            // 高信頼グループの各バリアントから接尾語を抽出して確認済みに
+            for (const surface of surfaces) {
+                if (surface.startsWith(stem)) {
+                    const suffix = surface.slice(stem.length);
+                    if (suffix.length > 0) this.confirmedSuffixes.add(suffix);
                 }
             }
         }
     }
 
-    _commonPrefix(a, b) {
-        let i = 0;
-        while (i < a.length && i < b.length && a[i] === b[i]) i++;
-        return a.slice(0, i);
-    }
+    // ─── 高信頼グループの接尾語を低信頼語幹に投影して予測・検証 ──
+    // 赤ちゃんが「食べ＋た」を学んだら「走＋た」と予測するのと同じ
+    _projectToLowConfidenceStems() {
+        if (this.confirmedSuffixes.size === 0) return;
 
-    // 文脈に最適なバリアントを選択して返す
-    selectVariant(surface, contextHints = {}) {
-        const entry = this.wordForms.get(surface);
-        if (!entry || entry.variants.size <= 1) return surface;
+        for (const [stem, confidence] of this.stemConfidence) {
+            if (confidence >= 1.0) continue; // 高信頼は投影不要
 
-        let bestVariant = surface;
-        let bestScore = -1;
+            // 低信頼語幹に対して、確認済み接尾語の出現を予測
+            for (const suffix of this.confirmedSuffixes) {
+                const predictedSurface = stem + suffix;
+                if (this.wordForms.has(predictedSurface)) {
+                    // 予測的中 → 語幹グループを強化
+                    const existing = this.stemGroups.get(stem) || new Set();
+                    existing.add(predictedSurface);
+                    this.stemGroups.set(stem, existing);
+                    const newConf = Math.min(1.0,
+                        (this.stemConfidence.get(stem) || 0) + 0.1);
+                    this.stemConfidence.set(stem, newConf);
 
-        for (const variant of entry.variants) {
-            const varEntry = this.wordForms.get(variant);
-            if (!varEntry) continue;
-
-            const c = varEntry.contextCounts;
-            const total = Math.max(1, c.past + c.polite + c.negative + c.base);
-            let score = 0;
-
-            if (contextHints.isPast)          score = c.past    / total;
-            else if (contextHints.isPolite)   score = c.polite  / total;
-            else if (contextHints.isNegative) score = c.negative / total;
-            else                               score = c.base    / total;
-
-            // 出現回数で信頼性補正
-            score *= Math.log(1 + varEntry.count);
-
-            if (score > bestScore) { bestScore = score; bestVariant = variant; }
+                    this._logPrediction(stem, suffix, predictedSurface, true);
+                } else {
+                    // 予測外れ → 失敗記憶に記録（まだ観測されていないだけの可能性もあるが記録する）
+                    this._logPrediction(stem, suffix, predictedSurface, false);
+                    if (this.failureMemory) {
+                        this.failureMemory.recordFailure(
+                            `stem:${stem}`,
+                            predictedSurface,
+                            'morphology_mismatch',
+                            { stem, suffix, confidence }
+                        );
+                    }
+                }
+            }
         }
-        return bestVariant;
     }
 
+    // ─── 内部状態（tone）× 接尾語の共起を記録 ──────────────────
+    // toneSnapshot: { certainty, hesitation, emotional_weight }
+    _recordToneBinding(tokens, toneSnapshot) {
+        // tone値を0.2刻みで離散化してキー化
+        const c = Math.round((toneSnapshot.certainty || 0.5) * 5) / 5;
+        const h = Math.round((toneSnapshot.hesitation || 0.5) * 5) / 5;
+        const key = `c${c}_h${h}`;
+
+        if (!this.toneBinding.has(key)) {
+            this.toneBinding.set(key, new Map());
+        }
+        const suffixMap = this.toneBinding.get(key);
+
+        // このtone状態で観測されたトークンに含まれる接尾語候補を記録
+        for (const token of tokens) {
+            const surface = typeof token === 'string' ? token : token.surface;
+            if (!surface || surface.length < 2) continue;
+            for (const [suffix] of this.suffixCandidates) {
+                if (surface.endsWith(suffix) && surface.length > suffix.length + this.MIN_STEM_LEN) {
+                    suffixMap.set(suffix, (suffixMap.get(suffix) || 0) + 1);
+                }
+            }
+        }
+    }
+
+    // ─── toneに対応する接尾語候補を返す（生成側から呼ぶ） ────────
+    // toneHints: { certainty, hesitation, emotional_weight }
+    // 戻り値: 観測頻度が高い接尾語の配列（降順）
+    getSuffixesForTone(toneHints) {
+        if (!toneHints || this.toneBinding.size === 0) return [];
+
+        const c = Math.round((toneHints.certainty || 0.5) * 5) / 5;
+        const h = Math.round((toneHints.hesitation || 0.5) * 5) / 5;
+        const key = `c${c}_h${h}`;
+
+        // 完全一致を優先、なければ最近傍キーを探す
+        let suffixMap = this.toneBinding.get(key);
+        if (!suffixMap) {
+            // 最近傍: certainty差が最小のキーを選ぶ
+            let minDist = Infinity;
+            for (const [k, v] of this.toneBinding) {
+                const parts = k.match(/c([\d.]+)_h([\d.]+)/);
+                if (!parts) continue;
+                const dc = Math.abs(parseFloat(parts[1]) - c);
+                const dh = Math.abs(parseFloat(parts[2]) - h);
+                const dist = dc + dh;
+                if (dist < minDist) { minDist = dist; suffixMap = v; }
+            }
+        }
+        if (!suffixMap) return [];
+
+        return Array.from(suffixMap.entries())
+            .sort((a, b) => b[1] - a[1])
+            .map(([suffix]) => suffix);
+    }
+
+    // ─── 予測ログ ──────────────────────────────────────────────────
+    _logPrediction(stem, suffix, predicted, hit) {
+        this._predictionLog.push({ stem, suffix, predicted, hit, ts: Date.now() });
+        if (this._predictionLog.length > 50) this._predictionLog.shift();
+    }
+
+    // ─── 文脈（観測済み接尾語分布）から最適バリアントを選ぶ ──────
+    // ハードコードなし。接尾語の「意味」は不明のまま分布だけで選択
+    selectVariant(surface, observedSuffixes = []) {
+        // observedSuffixes: この文脈で直前・直後に観測された接尾語候補の配列
+        const entry = this.wordForms.get(surface);
+        if (!entry) return surface;
+
+        // この語形の語幹を特定
+        let stem = null;
+        let currentSuffix = '';
+        for (const [sfx, stems] of this.suffixCandidates) {
+            if (surface.endsWith(sfx) && surface.length > sfx.length + this.MIN_STEM_LEN) {
+                const s = surface.slice(0, surface.length - sfx.length);
+                if (this.stemGroups.has(s)) {
+                    stem = s;
+                    currentSuffix = sfx;
+                    break;
+                }
+            }
+        }
+        if (!stem) return surface;
+
+        const group = this.stemGroups.get(stem);
+        if (!group || group.size <= 1) return surface;
+
+        // 文脈で観測された接尾語と一致するバリアントを優先
+        if (observedSuffixes.length > 0) {
+            for (const sfx of observedSuffixes) {
+                const candidate = stem + sfx;
+                if (group.has(candidate) && this.wordForms.has(candidate)) {
+                    return candidate;
+                }
+            }
+        }
+
+        // 観測回数が最多のバリアントを返す（フォールバック）
+        let best = surface;
+        let bestCount = 0;
+        for (const v of group) {
+            const e = this.wordForms.get(v);
+            if (e && e.count > bestCount) { bestCount = e.count; best = v; }
+        }
+        return best;
+    }
+
+    // inferContext は廃止（ハードコード排除）
+    // 呼び出し元との互換のため空オブジェクトを返すスタブのみ残す
+    inferContext(_surface) { return {}; }
+
+    // ─── デバッグ用 ────────────────────────────────────────────────
     getTopEndings(n = 10) {
-        return Array.from(this.endingFrequency.entries())
-            .sort((a, b) => b[1] - a[1]).slice(0, n)
-            .map(([ending, count]) => ({ ending, count }));
+        return Array.from(this.suffixCandidates.entries())
+            .map(([suffix, stems]) => ({ ending: suffix, count: stems.size }))
+            .sort((a, b) => b.count - a.count)
+            .slice(0, n);
     }
 
+    getStemGroups() {
+        return Array.from(this.stemGroups.entries()).map(([stem, surfaces]) => ({
+            stem,
+            variants: Array.from(surfaces),
+            confidence: this.stemConfidence.get(stem) || 0
+        }));
+    }
+
+    // ─── 永続化 ────────────────────────────────────────────────────
     exportState() {
         return {
             wordForms: Array.from(this.wordForms.entries()).map(([k, v]) => [k, {
                 count: v.count,
-                contextCounts: v.contextCounts,
-                variants: Array.from(v.variants)
+                suffixCounts: Array.from(v.suffixCounts.entries()),
+                modalityWeights: Array.from(v.modalityWeights.entries())
             }]),
-            endingFrequency: Array.from(this.endingFrequency.entries())
+            suffixCandidates: Array.from(this.suffixCandidates.entries())
+                .map(([k, v]) => [k, Array.from(v)]),
+            stemGroups: Array.from(this.stemGroups.entries())
+                .map(([k, v]) => [k, Array.from(v)]),
+            stemConfidence: Array.from(this.stemConfidence.entries()),
+            confirmedSuffixes: Array.from(this.confirmedSuffixes),
+            toneBinding: Array.from(this.toneBinding.entries())
+                .map(([k, v]) => [k, Array.from(v.entries())])
         };
     }
+
     importState(data) {
         if (data.wordForms) {
             this.wordForms = new Map(data.wordForms.map(([k, v]) => [k, {
                 count: v.count,
-                contextCounts: v.contextCounts,
-                variants: new Set(v.variants)
+                suffixCounts: new Map(v.suffixCounts || []),
+                modalityWeights: new Map(v.modalityWeights || [])
             }]));
         }
-        if (data.endingFrequency) {
-            this.endingFrequency = new Map(data.endingFrequency);
+        if (data.suffixCandidates) {
+            this.suffixCandidates = new Map(data.suffixCandidates.map(([k, v]) => [k, new Set(v)]));
+        }
+        if (data.stemGroups) {
+            this.stemGroups = new Map(data.stemGroups.map(([k, v]) => [k, new Set(v)]));
+        }
+        if (data.stemConfidence) {
+            this.stemConfidence = new Map(data.stemConfidence);
+        }
+        if (data.confirmedSuffixes) {
+            this.confirmedSuffixes = new Set(data.confirmedSuffixes);
+        }
+        if (data.toneBinding) {
+            this.toneBinding = new Map(data.toneBinding.map(([k, v]) => [k, new Map(v)]));
         }
     }
 }
@@ -13219,8 +13451,11 @@ class RichSurfaceRealizer {
     _applyMorph(conceptSlots, contextHints) {
         if (!this.morphLearner) return conceptSlots;
         const result = {};
+        // contextHintsが配列なら observedSuffixes としてそのまま渡す
+        // オブジェクト形式（旧API）なら空配列（ハードコードを使わない）
+        const observedSuffixes = Array.isArray(contextHints) ? contextHints : [];
         for (const [id, surface] of Object.entries(conceptSlots)) {
-            result[id] = this.morphLearner.selectVariant(surface, contextHints);
+            result[id] = this.morphLearner.selectVariant(surface, observedSuffixes);
         }
         return result;
     }
@@ -13256,7 +13491,8 @@ class HumanLikeLanguageAcquisitionEngine {
         // ゼロ学習型文法獲得エンジン（助詞・主語述語・活用をデータから発見）
         this.functionWordDetector = new FunctionWordDetector();
         this.richHypothesisGenerator = new RichSyntaxHypothesisGenerator(this.functionWordDetector);
-        this.morphVariantLearner = new MorphVariantLearner();
+        // FunctionWordDetectorを渡す。failureMemoryはCompletLanguageCognitionEngine初期化後に注入
+        this.morphVariantLearner = new MorphVariantLearner(this.functionWordDetector, null);
         this.richSurfaceRealizer = new RichSurfaceRealizer(this.richHypothesisGenerator, this.morphVariantLearner);
         
         // 意味との疎結合
@@ -13337,14 +13573,10 @@ class HumanLikeLanguageAcquisitionEngine {
             // Step 1: まずトークン全体を機能語検出器に学習させる
             this.functionWordDetector.observe(tokens);
 
-            // Step 2: 形態変化学習（文脈ヒントを自動推定して各語形を登録）
+            // Step 2: 形態変化学習（ハードコードなし・統計のみ）
             if (this.morphVariantLearner) {
-                // 文末トークンから時制・丁寧度を自動推定
-                const lastSurface = tokens.length > 0
-                    ? (tokens[tokens.length - 1].surface || '')
-                    : '';
-                const contextHints = this.morphVariantLearner.inferContext(lastSurface);
-                this.morphVariantLearner.learnFromTokens(tokens, contextHints);
+                // テキストのみ入力時は language モダリティのみ（信頼度重み 1.0）
+                this.morphVariantLearner.learnFromTokens(tokens, ['language']);
             }
 
             // Step 3: 機能語が十分蓄積されたらリッチ仮説を生成
@@ -13363,6 +13595,17 @@ class HumanLikeLanguageAcquisitionEngine {
                 status: 'complete',
                 result: { recentAccuracy: accuracy }
             });
+
+            // ② 語順誤差をmorphVariantLearnerのstemConfidenceに統合
+            // 語順予測が外れ続けてる時は語形学習の信頼度も下げる
+            // （文全体として「なんか変だった」という複合失敗の統合）
+            if (this.morphVariantLearner && accuracy < 0.5) {
+                const penaltyFactor = 1.0 - (0.5 - accuracy); // 0.5未満で減衰
+                for (const [stem, conf] of this.morphVariantLearner.stemConfidence) {
+                    const newConf = Math.max(0, conf * penaltyFactor);
+                    this.morphVariantLearner.stemConfidence.set(stem, newConf);
+                }
+            }
             
             // 平均信頼度を更新
             this.updateAverageConfidence();
@@ -14568,6 +14811,8 @@ class CompletLanguageCognitionEngine extends HumanLikeLanguageAcquisitionEngine 
         
         // 新規モジュールを追加
         this.failureMemory = new SyntacticFailureMemory();
+        // morphVariantLearnerにfailureMemoryを注入（super()後に利用可能になる）
+        this.morphVariantLearner.failureMemory = this.failureMemory;
         this.expressionGenerator = new MultipleExpressionGenerator(
             this.surfaceRealizer,
             this.hypothesisGenerator
@@ -14605,6 +14850,19 @@ class CompletLanguageCognitionEngine extends HumanLikeLanguageAcquisitionEngine 
         // 学習
         if (result.tokens && result.tokens.length > 0) {
             this.errorLearner.learn(result.tokens);
+
+            // ① ノイズ→信頼度：聴取信頼度をmorphVariantLearnerのstemConfidenceに反映
+            // ノイズだらけの入力で学んだ語形は信頼度を下げる
+            if (this.morphVariantLearner && result.listenResult.noiseApplied) {
+                const listenConf = result.listenResult.confidence; // 0.3〜1.0
+                if (listenConf < 0.8) {
+                    const penaltyFactor = listenConf; // 信頼度が低いほど減衰
+                    for (const [stem, conf] of this.morphVariantLearner.stemConfidence) {
+                        const newConf = Math.max(0, conf * penaltyFactor);
+                        this.morphVariantLearner.stemConfidence.set(stem, newConf);
+                    }
+                }
+            }
         }
         
         return result;
@@ -15043,16 +15301,15 @@ HumanLikeLanguageAcquisitionEngine.prototype.generateSentence = function(concept
             slots[String.fromCharCode(65 + i)] = concepts[i];
         }
 
-        // intentとtoneHintsから活用の文脈ヒントを決定
-        const contextHints = {
-            isPast:     (toneHints && toneHints.certainty > 0.6),
-            isPolite:   (toneHints && toneHints.hesitation < 0.3),
-            isNegative: (toneHints && toneHints.certainty < 0.2),
-        };
+        // toneHintsからMorphVariantLearnerが学習した接尾語分布を引く
+        // ハードコードなし：「この内部状態の時に観測された接尾語」をデータから選ぶ
+        const observedSuffixes = this.morphVariantLearner
+            ? this.morphVariantLearner.getSuffixesForTone(toneHints)
+            : [];
 
         // リッチ生成器（助詞込み＋活用選択）が使えるか試みる
         const richCandidates = this.richSurfaceRealizer
-            ? this.richSurfaceRealizer.realizeMultiple(slots, 3, contextHints)
+            ? this.richSurfaceRealizer.realizeMultiple(slots, 3, observedSuffixes)
             : [];
 
         // 信頼度0.55以上のリッチ候補があればそちらを優先
@@ -15370,7 +15627,24 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                 }
                 
                 this.processing = false;
-                
+
+                // Aoが発話候補を生成した時点で、その発話とtoneの共起をmorphVariantLearnerに記録
+                // 「この内部状態でこの語形を使った」という経験の蓄積
+                if (this.languageAcquisition && this.languageAcquisition.morphVariantLearner) {
+                    try {
+                        const mvl = this.languageAcquisition.morphVariantLearner;
+                        const toneSnapshot = { certainty: certaintyLevel, hesitation: hesitationLevel, emotional_weight: emotionalWeight };
+                        for (const c of finalCandidates.slice(0, 3)) {
+                            const tokens = (c.text || '').split(/\s+/).filter(t => t.length > 1);
+                            if (tokens.length > 0) {
+                                mvl.learnFromTokens(tokens, ['language'], toneSnapshot);
+                            }
+                        }
+                    } catch (mvlErr) {
+                        // 学習失敗は無視（生成を止めない）
+                    }
+                }
+
                 return {
                     candidates: finalCandidates,
                     inferenceMode: inferenceMode.mode,
@@ -15437,7 +15711,24 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                     if (emptyCount > 0) {
                         score -= 0.5;
                     }
-                    
+
+                    // 6. ③ morphology_mismatch失敗記憶による減点
+                    // 候補テキストに含まれる語幹が失敗記憶にあれば回避スコアを反映
+                    if (this.languageAcquisition && this.languageAcquisition.failureMemory) {
+                        const fm = this.languageAcquisition.failureMemory;
+                        // 候補テキストをトークン分割して各語幹との一致を確認
+                        const candidateTokens = candidateText.split(/\s+/).filter(t => t.length > 1);
+                        let morphPenalty = 0;
+                        for (const token of candidateTokens) {
+                            // stem:XX 形式の失敗記憶を検索
+                            const avoidScore = fm.shouldAvoid(token, `stem:${token}`);
+                            if (avoidScore > 0.3) {
+                                morphPenalty = Math.max(morphPenalty, avoidScore * 0.3);
+                            }
+                        }
+                        score -= morphPenalty;
+                    }
+
                     return Math.max(0, Math.min(1, score));
                     
                 } catch (error) {
@@ -21354,6 +21645,23 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                     this.saveManager.markDirty();
                 }
                 
+                // 形態変化学習: マルチモーダル入力をmorphVariantLearnerに流す
+                // テキストトークンと観測モダリティを渡すことで
+                // vision+language 同時観測時は信頼度重みが上がる
+                if (this.languageOutputDL &&
+                    this.languageOutputDL.languageAcquisition &&
+                    this.languageOutputDL.languageAcquisition.morphVariantLearner) {
+                    try {
+                        const mvl = this.languageOutputDL.languageAcquisition.morphVariantLearner;
+                        const textTokens = (inputs.text || '').split(/\s+/).filter(t => t.length > 1);
+                        if (textTokens.length > 0) {
+                            mvl.learnFromTokens(textTokens, integrated.modalitiesUsed || ['language']);
+                        }
+                    } catch (mvlErr) {
+                        console.warn('[MorphVariantLearner] learnFromTokens failed:', mvlErr);
+                    }
+                }
+
                 return { conceptIds, integrated };
             }
             
