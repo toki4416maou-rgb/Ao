@@ -4925,11 +4925,11 @@ MemoryLimitsConfig._instance = null;
 
                     await new Promise(resolve => { video.onseeked = resolve; });
 
-                    canvas.width  = 160;
-                    canvas.height = 90;
+                    canvas.width  = 256;
+                    canvas.height = 144;
                     ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
 
-                    // ── v27.0: ImageAdapterで色・明度・形を160次元に分解 ──
+                    // ── v27.0→v4: ImageAdapterで色・明度・形を高解像度分解 ──
                     let scene;
                     if (this.imageAdapter) {
                         // canvasのDataURLをImageAdapterに渡して完全解析
@@ -4954,7 +4954,7 @@ MemoryLimitsConfig._instance = null;
                             color:         { r: 128, g: 128, b: 128 }, // 後方互換用ダミー
                             complexity,
                             meanings:      imageResult.semantic_candidates || [],
-                            visual_vector: imageResult.visual_vector,   // 160次元ベクトル
+                            visual_vector: imageResult.visual_vector,   // 2320次元ベクトル（v4: 256x256）
                             features:      imageResult.features          // 仮説学習に使う
                         };
 
@@ -6522,9 +6522,9 @@ MemoryLimitsConfig._instance = null;
             _updateToken(token, hueHist, brightnessGrid, spatialVec) {
                 if (!this.hypotheses.has(token)) {
                     this.hypotheses.set(token, {
-                        hue:        { sum: new Array(8).fill(0),   sumSq: new Array(8).fill(0),   samples: 0 },
-                        brightness: { sum: new Array(16).fill(0),  sumSq: new Array(16).fill(0),  samples: 0 },
-                        spatial:    { sum: new Array(136).fill(0), sumSq: new Array(136).fill(0), samples: 0 },
+                        hue:        { sum: new Array(8).fill(0),    sumSq: new Array(8).fill(0),    samples: 0 },
+                        brightness: { sum: new Array(256).fill(0),  sumSq: new Array(256).fill(0),  samples: 0 },
+                        spatial:    { sum: new Array(2056).fill(0), sumSq: new Array(2056).fill(0), samples: 0 },
                         best_channel: null,
                         confidence: 0,
                         defined: false,
@@ -6619,7 +6619,7 @@ MemoryLimitsConfig._instance = null;
                         score = this._cosineSim(hueHist, mean, 8);
                     } else if (hyp.best_channel === 'brightness') {
                         const mean = hyp.brightness.sum.map(v => v / n);
-                        score = this._cosineSim(brightnessGrid, mean, 16);
+                        score = this._cosineSim(brightnessGrid, mean, 256);
                     } else {
                         const mean = hyp.spatial.sum.map(v => v / n);
                         score = this._cosineSim(spatialVec, mean, 136);
@@ -6847,17 +6847,19 @@ MemoryLimitsConfig._instance = null;
 
             // ---- 4×4グリッド明度分布（16値） ----
             _brightnessGrid(data, w, h) {
-                const grid = new Float32Array(16);
-                const cellW = w / 4;
-                const cellH = h / 4;
-                const counts = new Float32Array(16);
+                // [v4] 4x4(16次元) → 16x16(256次元): 細部の明度分布を精密に捉える
+                const GCELLS = 16;
+                const grid = new Float32Array(GCELLS * GCELLS);
+                const cellW = w / GCELLS;
+                const cellH = h / GCELLS;
+                const counts = new Float32Array(GCELLS * GCELLS);
                 for (let py = 0; py < h; py++) {
                     for (let px = 0; px < w; px++) {
                         const idx = (py * w + px) * 4;
                         const brightness = (data[idx] * 0.299 + data[idx+1] * 0.587 + data[idx+2] * 0.114) / 255;
-                        const gx = Math.min(3, Math.floor(px / cellW));
-                        const gy = Math.min(3, Math.floor(py / cellH));
-                        const cell = gy * 4 + gx;
+                        const gx = Math.min(GCELLS - 1, Math.floor(px / cellW));
+                        const gy = Math.min(GCELLS - 1, Math.floor(py / cellH));
+                        const cell = gy * GCELLS + gx;
                         grid[cell] += brightness;
                         counts[cell]++;
                     }
@@ -6895,11 +6897,11 @@ MemoryLimitsConfig._instance = null;
                 return Array.from(bins).map(v => v / total);
             }
 
-            // ---- [v3新規] HOGブロック分割: 4×4グリッド × 8方向 = 128次元 ----
+            // ---- [v4改善] HOGブロック分割: 16×16グリッド × 8方向 = 2048次元 ----
             // 「輪郭の方向がどこ（位置）にあるか」を捉える
-            // 例: 猫耳は画像上部に垂直エッジ / 胴体中央に複雑なエッジ分布
+            // 256x256により指の本数・細部パーツの位置まで対応
             _hogBlocks(data, w, h) {
-                const GRID = 4;
+                const GRID = 16;
                 const BINS = 8;
                 const gray = new Float32Array(w * h);
                 for (let i = 0; i < w * h; i++) {
@@ -7104,7 +7106,7 @@ MemoryLimitsConfig._instance = null;
             async extractMeaning(imageData) {
                 this.processing = true;
 
-                const SIZE = 32; // [v3] 16→32: 空間解像度4倍 (1024px)
+                const SIZE = 256; // [v4] 32→256: 空間解像度64倍 (65536px) 指の本数・細部まで対応
                 const canvas = document.createElement('canvas');
                 const ctx = canvas.getContext('2d');
                 const img = new Image();
@@ -7213,11 +7215,11 @@ MemoryLimitsConfig._instance = null;
                 );
                 // 160次元の内訳: [0-7]色相 [8-23]明度 [24-31]勾配 [32-159]HOG
                 const hueHist        = mean.slice(0, 8);
-                const brightnessGrid = mean.slice(8, 24);
-                const gradHist       = mean.slice(24, 32);
+                const brightnessGrid = mean.slice(8, 264);    // 256次元(v4)
+                const gradHist       = mean.slice(264, 272);
                 const hueVar         = variance.slice(0, 8);
-                const brightnessVar  = variance.slice(8, 24);
-                const gradVar        = variance.slice(24, 32);
+                const brightnessVar  = variance.slice(8, 264);
+                const gradVar        = variance.slice(264, 272);
 
                 const hueReliability        = 1 / (1 + hueVar.reduce((a,b)=>a+b,0) / 8);
                 const brightnessReliability = 1 / (1 + brightnessVar.reduce((a,b)=>a+b,0) / 16);
