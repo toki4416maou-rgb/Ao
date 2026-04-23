@@ -5875,9 +5875,17 @@ MemoryLimitsConfig._instance = null;
              * @param {number} duration - 秒数
              * @returns {Object} { frames, fps, duration, description }
              */
-            async generateFromMood(mood, duration = 6) {
+            async generateFromMood(mood, duration = 6, conceptHints) {
                 this.processing = true;
-                
+
+                // ConceptBridge: 学習済みプロトタイプを mood にブレンド
+                const imageHints = conceptHints || (
+                    window.ao && window.ao.imageAdapter
+                        ? extractImageConceptHints(window.ao.imageAdapter)
+                        : []
+                );
+                mood = blendHintsIntoMood(mood, imageHints, null);
+
                 const fps = 6;
                 const totalFrames = duration * fps;
                 const canvas = document.createElement('canvas');
@@ -6250,15 +6258,23 @@ MemoryLimitsConfig._instance = null;
              * @param {Object} mood - { mood, curiosity, tension, confidence }
              * @returns {Object} { dataUrl, description }
              */
-            async generateFromMood(mood) {
+            async generateFromMood(mood, conceptHints) {
                 this.processing = true;
-                
+
+                // ConceptBridge: 学習済みプロトタイプを mood にブレンド
+                const imageHints = conceptHints || (
+                    window.ao && window.ao.imageAdapter
+                        ? extractImageConceptHints(window.ao.imageAdapter)
+                        : []
+                );
+                mood = blendHintsIntoMood(mood, imageHints, null);
+
                 const canvas = document.createElement('canvas');
                 canvas.width = 800;
                 canvas.height = 600;
                 const ctx = canvas.getContext('2d');
                 
-                // 背景色（気分→色）
+                // 背景色（気分→色、学習済み支配色も反映）
                 const bgColor = this.moodToBackgroundColor(mood);
                 ctx.fillStyle = bgColor;
                 ctx.fillRect(0, 0, canvas.width, canvas.height);
@@ -6279,9 +6295,11 @@ MemoryLimitsConfig._instance = null;
                 
                 this.processing = false;
                 
+                const conceptsUsed = (mood._imageHints || []).map(h => h.label + '(x' + h.count + ')');
                 return {
                     dataUrl: canvas.toDataURL('image/png'),
-                    description: this.moodToDescription(mood)
+                    description: (conceptsUsed.length > 0 ? '[' + conceptsUsed.join('・') + '] x ' : '') + this.moodToDescription(mood),
+                    conceptsUsed
                 };
             }
             
@@ -7173,7 +7191,122 @@ MemoryLimitsConfig._instance = null;
                 });
             }
         }
-        
+
+        // ============================================================
+        // ConceptBridge v1.0 - 学習統計 × 気分 → 創作 神経接続
+        // ImageAdapter.prototypes / AudioGenerator.hypothesisTable の
+        // 蓄積データを生成器に流し込む共通ユーティリティ
+        // ============================================================
+
+        // ---- 画像プロトタイプから概念ヒントを抽出 ----
+        function extractImageConceptHints(imageAdapter) {
+            const hints = [];
+            if (!imageAdapter || !imageAdapter.prototypes) return hints;
+            const hueNames = ['赤', '橙', '黄', '黄緑', '緑', '水色', '青', '紫'];
+
+            imageAdapter.prototypes.forEach((proto, label) => {
+                const n = proto.count;
+                if (n < 2) return;
+                const mean     = proto.sum.map(v => v / n);
+                const variance = proto.sumSq.map(
+                    (sq, i) => Math.max(0.001, sq / n - (proto.sum[i] / n) ** 2)
+                );
+                // 160次元の内訳: [0-7]色相 [8-23]明度 [24-31]勾配 [32-159]HOG
+                const hueHist        = mean.slice(0, 8);
+                const brightnessGrid = mean.slice(8, 24);
+                const gradHist       = mean.slice(24, 32);
+                const hueVar         = variance.slice(0, 8);
+                const brightnessVar  = variance.slice(8, 24);
+                const gradVar        = variance.slice(24, 32);
+
+                const hueReliability        = 1 / (1 + hueVar.reduce((a,b)=>a+b,0) / 8);
+                const brightnessReliability = 1 / (1 + brightnessVar.reduce((a,b)=>a+b,0) / 16);
+                const shapeReliability      = 1 / (1 + gradVar.reduce((a,b)=>a+b,0) / 8);
+
+                const dominantHueIdx = hueHist.indexOf(Math.max(...hueHist));
+                const avgBrightness  = brightnessGrid.reduce((a,b)=>a+b,0) / 16;
+                const dominantGradIdx = gradHist.indexOf(Math.max(...gradHist));
+
+                hints.push({
+                    label,
+                    count: n,
+                    dominantHue:     dominantHueIdx,
+                    dominantHueName: hueNames[dominantHueIdx],
+                    hueStrength:     hueHist[dominantHueIdx],
+                    hueReliability,
+                    avgBrightness,
+                    brightnessReliability,
+                    isHorizontal:   [0,4].includes(dominantGradIdx),
+                    isVertical:     [2,6].includes(dominantGradIdx),
+                    shapeReliability,
+                    meanVector: mean
+                });
+            });
+            hints.sort((a, b) => b.count - a.count);
+            return hints;
+        }
+
+        // ---- 音声仮説テーブルから概念ヒントを抽出 ----
+        function extractAudioConceptHints(audioGenerator) {
+            const hints = [];
+            if (!audioGenerator || !audioGenerator.hypothesisTable) return hints;
+            const table   = audioGenerator.hypothesisTable;
+            const entries = table.entries || table.observations || table._entries;
+            if (!entries) return hints;
+
+            entries.forEach((data, label) => {
+                if (!data || !data.count || data.count < 2) return;
+                hints.push({
+                    label,
+                    count:         data.count,
+                    avgEntropy:    data.sumEntropy    ? data.sumEntropy    / data.count : 0.5,
+                    avgPMI:        data.sumPMI        ? data.sumPMI        / data.count : 0,
+                    avgTempo:      data.sumTempo      ? data.sumTempo      / data.count : 0.5,
+                    avgBrightness: data.sumBrightness ? data.sumBrightness / data.count : 0.5,
+                });
+            });
+            hints.sort((a, b) => b.count - a.count);
+            return hints;
+        }
+
+        // ---- 学習ヒントを mood にブレンド ----
+        function blendHintsIntoMood(mood, imageHints, audioHints) {
+            const blended = { ...mood };
+
+            if (imageHints && imageHints.length > 0) {
+                const top = imageHints[0];
+                // 暖色 → joy上昇、寒色 → curiosity上昇
+                if (top.hueReliability > 0.4) {
+                    const hue = top.dominantHue;
+                    if (hue <= 2) {
+                        blended.joy = Math.min(1, (blended.joy || 0) + 0.2 * top.hueReliability);
+                    } else if (hue >= 5 && hue <= 6) {
+                        blended.curiosity = Math.min(1, (blended.curiosity || 0) + 0.2 * top.hueReliability);
+                        blended.tension   = Math.max(0, (blended.tension   || 0) - 0.1 * top.hueReliability);
+                    }
+                }
+                // 明度 → confidence にブレンド
+                if (top.brightnessReliability > 0.4) {
+                    blended.confidence = Math.min(1,
+                        (blended.confidence || 0.5) * 0.7 + top.avgBrightness * 0.3
+                    );
+                }
+                blended._imageHints = imageHints.slice(0, 3);
+            }
+
+            if (audioHints && audioHints.length > 0) {
+                const top = audioHints[0];
+                if (top.avgTempo !== undefined) {
+                    blended.tension = Math.min(1,
+                        (blended.tension || 0) * 0.7 + top.avgTempo * 0.3
+                    );
+                }
+                blended._audioHints = audioHints.slice(0, 3);
+            }
+
+            return blended;
+        }
+
         // ============ 音声生成器（v26.3.2 追加）============
         
         // ============ v26.3.3: 音声生成器（AudioGenerator）============
@@ -7864,9 +7997,15 @@ MemoryLimitsConfig._instance = null;
              * 生成パイプライン（下降方向）:
              *   内部状態 → [L4]韻律意図 → [L3]時間構造 → [L2]低次特徴 → 波形合成
              */
-            async generateFromMood(mood) {
+            async generateFromMood(mood, conceptHints) {
                 this.processing = true;
                 try {
+                    // ConceptBridge: 学習済み音声統計を mood にブレンド
+                    const audioHints = conceptHints || extractAudioConceptHints(this);
+                    const imageHints = window.ao && window.ao.imageAdapter
+                        ? extractImageConceptHints(window.ao.imageAdapter) : [];
+                    mood = blendHintsIntoMood(mood, imageHints, audioHints);
+
                     // Layer2: 低次特徴を内部状態から決定
                     let percept = this.featureExtractor.fromInternalState(mood);
 
@@ -25134,9 +25273,13 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                         return this.generateTextContent(concepts);
                     }
                     
-                    // v26.3.3: 気分ベースで画像生成
+                    // v26.6.0: 気分 × 学習概念で画像生成（ConceptBridge）
                     const mood = this.internalState.getState();
-                    const imageResult = await this.being.imageGenerator.generateFromMood(mood);
+                    const imageHints = this.being.imageAdapter ? extractImageConceptHints(this.being.imageAdapter) : [];
+                    if (imageHints.length > 0) {
+                        this.being.addLog('[創作] 画像: 気分 x 概念[' + imageHints.slice(0,2).map(h=>h.label).join('・') + ']');
+                    }
+                    const imageResult = await this.being.imageGenerator.generateFromMood(mood, imageHints);
                     
                     return {
                         type: 'image',
@@ -25155,9 +25298,13 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                         return this.generateTextContent(concepts);
                     }
                     
-                    // v26.3.3: 気分ベースで動画生成
+                    // v26.6.0: 気分 × 学習概念で動画生成（ConceptBridge）
                     const mood = this.internalState.getState();
-                    const videoResult = await this.being.videoGenerator.generateFromMood(mood, 5);
+                    const videoImageHints = this.being.imageAdapter ? extractImageConceptHints(this.being.imageAdapter) : [];
+                    if (videoImageHints.length > 0) {
+                        this.being.addLog('[創作] 動画: 気分 x 概念[' + videoImageHints.slice(0,2).map(h=>h.label).join('・') + ']');
+                    }
+                    const videoResult = await this.being.videoGenerator.generateFromMood(mood, 5, videoImageHints);
                     
                     return {
                         type: 'video',
@@ -25176,9 +25323,13 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                         return this.generateTextContent(concepts);
                     }
                     
-                    // v26.3.3: 気分ベースで音声生成
+                    // v26.6.0: 気分 × 学習概念で音声生成（ConceptBridge）
                     const mood = this.internalState.getState();
-                    const audioResult = await this.being.audioGenerator.generateFromMood(mood);
+                    const audioHints = extractAudioConceptHints(this.being.audioGenerator);
+                    if (audioHints.length > 0) {
+                        this.being.addLog('[創作] 音声: 気分 x 概念[' + audioHints.slice(0,2).map(h=>h.label).join('・') + ']');
+                    }
+                    const audioResult = await this.being.audioGenerator.generateFromMood(mood, audioHints);
                     
                     return {
                         type: 'audio',
