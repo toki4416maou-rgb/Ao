@@ -8165,16 +8165,10 @@ MemoryLimitsConfig._instance = null;
                 this.learningLog = [];
                 
                 // 否定表現パターン
-                this.negationPatterns = [
-                    'ない', 'ぬ', 'ず', 'ん', '未', '非', '無',
-                    'できない', 'わからない', 'しない', 'いない'
-                ];
-                
-                // 照応表現パターン
-                this.anaphoraPatterns = [
-                    'それ', 'あれ', 'これ', 'そう', 'ああ', 'こう',
-                    '同じ', '前の', 'さっきの', '先ほどの'
-                ];
+                // 否定語・照応語のハードコードリストは廃止
+                // polarityVectorの共起分布から自然に学習される
+                this.negationPatterns = []; // 廃止（互換のため空配列を残す）
+                this.anaphoraPatterns = []; // 廃止（互換のため空配列を残す）
                 
                 // [PERF FIX] kuromoji起動時ロード無効化
                 // this.initializeTokenizer();
@@ -8327,41 +8321,24 @@ MemoryLimitsConfig._instance = null;
             }
             
             analyzePolarityAndNegation(tokens, text) {
-                let hasNegation = false;
-                let negationScope = [];
-                let polarity = 1;
+                // 設計書「否定語ルール禁止」に従いnegationPatternsを廃止
+                // 否定の意味はpolarityVectorの共起分布から自然に浮かび上がる
+                // 「ない」が高頻度で負極性トークンと共起すれば、自然に逆転効果が学習される
+
+                // valenceはTokenClusterEngineのpolarityVectorから計算
                 let valence = 0;
-                
-                for (let i = 0; i < tokens.length; i++) {
-                    const token = tokens[i];
-                    const surface = token.surface_form;
-                    const baseForm = token.basic_form;
-                    
-                    if (this.negationPatterns.some(pattern => 
-                        surface.includes(pattern) || baseForm.includes(pattern))) {
-                        hasNegation = true;
-                        polarity = -1;
-                        const scopeStart = Math.max(0, i - 2);
-                        negationScope.push(...tokens.slice(scopeStart, i).map(t => t.surface_form));
-                    }
+                if (window.ao && window.ao.languageOutputDL &&
+                    window.ao.languageOutputDL.languageAcquisition &&
+                    window.ao.languageOutputDL.languageAcquisition.tokenClusterEngine) {
+                    valence = window.ao.languageOutputDL.languageAcquisition
+                        .tokenClusterEngine.calcValence(tokens);
                 }
-                
-                const positiveWords = ['嬉しい', '楽しい', '良い', '好き', '素晴らしい', '最高'];
-                const negativeWords = ['悲しい', '辛い', '苦しい', '嫌', '困る', '怖い', '痛い'];
-                
-                for (const token of tokens) {
-                    const surface = token.surface_form;
-                    if (positiveWords.some(w => surface.includes(w))) valence += 0.5;
-                    if (negativeWords.some(w => surface.includes(w))) valence -= 0.5;
-                }
-                
-                if (hasNegation) valence *= -1;
-                
+
                 return {
-                    hasNegation,
-                    negationScope,
-                    polarity,
-                    valence: Math.max(-1, Math.min(1, valence))
+                    hasNegation:  false,  // 否定検出はpolarityVector側で吸収
+                    negationScope: [],
+                    polarity:      1,
+                    valence:       Math.max(-1, Math.min(1, valence))
                 };
             }
             
@@ -9357,36 +9334,330 @@ class SemanticLearner {
  * 仮概念ネットワーク
  * 依頼書 3.5
  */
+// ============ クラスタリング層: TokenClusterEngine ============
+// 設計書5章「クラスタリング層」の実装
+//
+// 設計思想:
+//   - 意味ラベル禁止（REQUEST/NEGATION等のハードコード一切なし）
+//   - 共起ベクトルのみでクラスタを形成
+//   - オンライン更新（発話ごとに即時反映）
+//   - グループ名は無名（cluster_0, cluster_1, ...）
+//
+// アルゴリズム:
+//   1. windowサイズ内で共起するトークンをカウント
+//   2. 各トークンの共起ベクトルを生成
+//   3. コサイン類似度でオンラインクラスタリング（閾値ベース）
+//   4. 閾値以上のベクトルを持つトークンを同クラスタに統合
+class TokenClusterEngine {
+    constructor() {
+        // token → Map<token, count>（共起カウント）
+        this.cooccurrence = new Map();
+        // token → 出現回数
+        this.tokenFreq = new Map();
+        // クラスタID → Set<token>（ラベルなし）
+        this.clusters = new Map();
+        // token → clusterID
+        this.tokenToCluster = new Map();
+        this.nextClusterId = 0;
+
+        // 共起窓サイズ
+        this.WINDOW_SIZE = 3;
+        // クラスタ統合の類似度閾値
+        this.SIMILARITY_THRESHOLD = 0.65;
+        // 最小共起回数（ノイズ除去）
+        this.MIN_COOCCUR = 2;
+        // 最大クラスタ数
+        this.MAX_CLUSTERS = 100;
+
+        // 極性ベクトル: token → [-1, 1]（ハードコードなし・共起から自己学習）
+        this.polarityVector = new Map();
+    }
+
+    // ─── 発話からトークン列を学習 ─────────────────────────────────
+    observe(tokens) {
+        const surfaces = tokens.map(t => typeof t === 'string' ? t : t.surface)
+                               .filter(s => s && s.length > 0);
+        if (surfaces.length === 0) return;
+
+        // unigram頻度を更新
+        for (const s of surfaces) {
+            this.tokenFreq.set(s, (this.tokenFreq.get(s) || 0) + 1);
+        }
+
+        // 窓内共起を更新
+        for (let i = 0; i < surfaces.length; i++) {
+            const a = surfaces[i];
+            for (let j = i + 1; j <= Math.min(i + this.WINDOW_SIZE, surfaces.length - 1); j++) {
+                const b = surfaces[j];
+                if (a === b) continue;
+                this._addCooccur(a, b);
+                this._addCooccur(b, a);
+            }
+        }
+
+        // 新規トークンをクラスタに割り当て（オンライン更新）
+        for (const s of surfaces) {
+            if (!this.tokenToCluster.has(s)) {
+                this._assignCluster(s);
+            } else {
+                // 既存トークンの再割り当て（共起が増えたので）
+                this._reassignCluster(s);
+            }
+        }
+
+        // クラスタ数が上限を超えたら類似クラスタをマージ
+        if (this.clusters.size > this.MAX_CLUSTERS) {
+            this._mergeSimilarClusters();
+        }
+    }
+
+    _addCooccur(a, b) {
+        if (!this.cooccurrence.has(a)) this.cooccurrence.set(a, new Map());
+        const map = this.cooccurrence.get(a);
+        map.set(b, (map.get(b) || 0) + 1);
+    }
+
+    // ─── 共起ベクトルを生成 ──────────────────────────────────────
+    // 高頻度共起トークンのみを次元として使う（ノイズ除去）
+    _getCooccurVector(token) {
+        const coMap = this.cooccurrence.get(token);
+        if (!coMap) return new Map();
+        const vec = new Map();
+        for (const [t, count] of coMap) {
+            if (count >= this.MIN_COOCCUR) {
+                vec.set(t, count);
+            }
+        }
+        return vec;
+    }
+
+    // ─── コサイン類似度 ──────────────────────────────────────────
+    _cosineSim(vecA, vecB) {
+        if (vecA.size === 0 || vecB.size === 0) return 0;
+        let dot = 0, normA = 0, normB = 0;
+        for (const [t, v] of vecA) {
+            normA += v * v;
+            if (vecB.has(t)) dot += v * vecB.get(t);
+        }
+        for (const [, v] of vecB) normB += v * v;
+        return (normA && normB) ? dot / (Math.sqrt(normA) * Math.sqrt(normB)) : 0;
+    }
+
+    // ─── クラスタ割り当て ────────────────────────────────────────
+    _assignCluster(token) {
+        const vec = this._getCooccurVector(token);
+        if (vec.size === 0) {
+            // 共起なし → 単独クラスタ
+            const cid = `cluster_${this.nextClusterId++}`;
+            this.clusters.set(cid, new Set([token]));
+            this.tokenToCluster.set(token, cid);
+            return;
+        }
+
+        // 既存クラスタの重心ベクトルと比較
+        let bestCid = null;
+        let bestSim = this.SIMILARITY_THRESHOLD;
+
+        for (const [cid, members] of this.clusters) {
+            const centroid = this._clusterCentroid(members);
+            const sim = this._cosineSim(vec, centroid);
+            if (sim > bestSim) { bestSim = sim; bestCid = cid; }
+        }
+
+        if (bestCid) {
+            // 既存クラスタに追加
+            this.clusters.get(bestCid).add(token);
+            this.tokenToCluster.set(token, bestCid);
+        } else {
+            // 新規クラスタ
+            const cid = `cluster_${this.nextClusterId++}`;
+            this.clusters.set(cid, new Set([token]));
+            this.tokenToCluster.set(token, cid);
+        }
+    }
+
+    _reassignCluster(token) {
+        // 現クラスタから一旦外す
+        const oldCid = this.tokenToCluster.get(token);
+        if (oldCid && this.clusters.has(oldCid)) {
+            this.clusters.get(oldCid).delete(token);
+            if (this.clusters.get(oldCid).size === 0) {
+                this.clusters.delete(oldCid);
+            }
+        }
+        this.tokenToCluster.delete(token);
+        this._assignCluster(token);
+    }
+
+    // ─── クラスタ重心ベクトル ────────────────────────────────────
+    _clusterCentroid(members) {
+        const centroid = new Map();
+        for (const m of members) {
+            const vec = this._getCooccurVector(m);
+            for (const [t, v] of vec) {
+                centroid.set(t, (centroid.get(t) || 0) + v / members.size);
+            }
+        }
+        return centroid;
+    }
+
+    // ─── 類似クラスタのマージ ────────────────────────────────────
+    _mergeSimilarClusters() {
+        const cids = Array.from(this.clusters.keys());
+        for (let i = 0; i < cids.length; i++) {
+            for (let j = i + 1; j < cids.length; j++) {
+                if (!this.clusters.has(cids[i]) || !this.clusters.has(cids[j])) continue;
+                const centA = this._clusterCentroid(this.clusters.get(cids[i]));
+                const centB = this._clusterCentroid(this.clusters.get(cids[j]));
+                if (this._cosineSim(centA, centB) >= this.SIMILARITY_THRESHOLD) {
+                    // マージ: j → i
+                    for (const m of this.clusters.get(cids[j])) {
+                        this.clusters.get(cids[i]).add(m);
+                        this.tokenToCluster.set(m, cids[i]);
+                    }
+                    this.clusters.delete(cids[j]);
+                }
+            }
+        }
+    }
+
+    // ─── 外部向けAPI ─────────────────────────────────────────────
+    // tokenが属するクラスタIDを返す（なければnull）
+    getCluster(token) {
+        return this.tokenToCluster.get(token) || null;
+    }
+
+    // クラスタ内の他メンバーを返す
+    getClusterMembers(token) {
+        const cid = this.getCluster(token);
+        if (!cid) return [];
+        return Array.from(this.clusters.get(cid) || []).filter(m => m !== token);
+    }
+
+    // 全クラスタのサマリ
+    getSummary() {
+        return Array.from(this.clusters.entries()).map(([cid, members]) => ({
+            clusterId: cid,
+            size: members.size,
+            members: Array.from(members).slice(0, 5)
+        })).sort((a, b) => b.size - a.size);
+    }
+
+    // ─── 極性ベクトル（感情極性の自己学習）──────────────────────
+    // 設計思想:
+    //   - ハードコードなし。「嬉しい=ポジティブ」等の事前知識を持たない
+    //   - 共起の連鎖から極性[-1, 1]が自己組織化する
+    //   - 初期値0からスタートし、内部状態ベクトルの変化との相関で更新
+    //
+    // 更新ルール:
+    //   あるトークンが出現した直後に内部状態s0（joy相当）が上昇 → 極性を正に引く
+    //   あるトークンが出現した直後に内部状態s0が下降 → 極性を負に引く
+    //   同クラスタのトークンの極性平均に引き寄せられる（クラスタ内収束）
+
+    // 発話後の内部状態変化を記録してpolarityVectorを更新
+    // stateBeforeAfter: { before: [s0,s1,s2,s3], after: [s0,s1,s2,s3] }
+    updatePolarity(tokens, stateBeforeAfter) {
+        if (!stateBeforeAfter) return;
+        const { before, after } = stateBeforeAfter;
+        if (!before || !after) return;
+
+        // s0（joy相当）の変化量を極性シグナルとして使う
+        const signal = (after[0] - before[0]) * 2; // [-2, 2] に増幅
+
+        for (const token of tokens) {
+            const surface = typeof token === 'string' ? token : token.surface;
+            if (!surface || surface.length < 2) continue;
+
+            const current = this.polarityVector.get(surface) || 0;
+            // 指数移動平均で更新（学習率0.1）
+            const updated = current + 0.1 * (signal - current);
+            this.polarityVector.set(surface, Math.max(-1, Math.min(1, updated)));
+        }
+
+        // クラスタ内収束：同クラスタメンバーの極性平均に引き寄せる
+        this._convergePolarityInClusters();
+    }
+
+    _convergePolarityInClusters() {
+        for (const [, members] of this.clusters) {
+            if (members.size < 2) continue;
+            // クラスタ内の極性平均
+            let sum = 0; let count = 0;
+            for (const m of members) {
+                if (this.polarityVector.has(m)) { sum += this.polarityVector.get(m); count++; }
+            }
+            if (count === 0) continue;
+            const avg = sum / count;
+            // 各メンバーを平均方向に5%引き寄せる
+            for (const m of members) {
+                const cur = this.polarityVector.get(m) || 0;
+                this.polarityVector.set(m, cur + 0.05 * (avg - cur));
+            }
+        }
+    }
+
+    // トークン列のvalenceを返す（感情語リストなし・分布から計算）
+    // 戻り値: [-1, 1]
+    calcValence(tokens) {
+        if (!tokens || tokens.length === 0) return 0;
+        let sum = 0; let count = 0;
+        for (const token of tokens) {
+            const surface = typeof token === 'string' ? token : (token.surface_form || token.surface || '');
+            if (!surface) continue;
+            const p = this.polarityVector.get(surface);
+            if (p !== undefined) { sum += p; count++; }
+        }
+        if (count === 0) return 0;
+        return Math.max(-1, Math.min(1, sum / count));
+    }
+
+    // ─── 永続化 ─────────────────────────────────────────────────
+    exportState() {
+        return {
+            cooccurrence: Array.from(this.cooccurrence.entries())
+                .map(([k, v]) => [k, Array.from(v.entries())]),
+            tokenFreq:    Array.from(this.tokenFreq.entries()),
+            clusters:     Array.from(this.clusters.entries())
+                .map(([k, v]) => [k, Array.from(v)]),
+            tokenToCluster: Array.from(this.tokenToCluster.entries()),
+            nextClusterId:  this.nextClusterId,
+            polarityVector: Array.from(this.polarityVector.entries())
+        };
+    }
+
+    importState(data) {
+        if (data.cooccurrence) {
+            this.cooccurrence = new Map(
+                data.cooccurrence.map(([k, v]) => [k, new Map(v)])
+            );
+        }
+        if (data.tokenFreq)    this.tokenFreq    = new Map(data.tokenFreq);
+        if (data.clusters)     this.clusters     = new Map(data.clusters.map(([k, v]) => [k, new Set(v)]));
+        if (data.tokenToCluster) this.tokenToCluster = new Map(data.tokenToCluster);
+        this.nextClusterId = data.nextClusterId || 0;
+        if (data.polarityVector) this.polarityVector = new Map(data.polarityVector);
+    }
+}
+
 class ProvisionalConceptNetwork {
     constructor() {
-        // 仮ID → {token, contexts, cluster, knownDistance}
+        // 仮ID → {token, contexts, cluster}
         this.concepts = new Map();
         this.nextId = 1;
-        
-        // クラスタ
+
+        // クラスタ（TokenClusterEngineと共有）
         this.clusters = new Map();
-        
-        // 既知概念（参照用）
-        this.knownConcepts = new Map([
-            ['REQUEST', { semantics: ['要求', '依頼', 'ask', 'request'] }],
-            ['NEGATION', { semantics: ['否定', 'not', 'no', 'ない'] }],
-            ['MOVEMENT', { semantics: ['移動', 'go', 'come', '行く'] }],
-            ['POSSESSION', { semantics: ['所有', 'have', 'get', '持つ'] }]
-        ]);
+
+        // knownConceptsは廃止（設計書「意味ラベル禁止」）
+        // クラスタリングはTokenClusterEngineに委譲
     }
-    
-    /**
-     * 仮概念を登録
-     */
+
     register(token, contexts) {
-        // トークンそのものをIDとして使用（重複防止）
         const conceptId = token;
         if (this.concepts.has(conceptId)) {
             const existing = this.concepts.get(conceptId);
             for (const ctx of contexts) {
-                if (!existing.contexts.includes(ctx)) {
-                    existing.contexts.push(ctx);
-                }
+                if (!existing.contexts.includes(ctx)) existing.contexts.push(ctx);
             }
             return conceptId;
         }
@@ -9396,98 +9667,48 @@ class ProvisionalConceptNetwork {
             token,
             contexts,
             cluster: null,
-            knownDistance: new Map(),
             createdAt: Date.now()
         };
-        
-        this.calculateDistanceToKnown(concept);
-        this.assignToCluster(concept);
+
+        // クラスタはTokenClusterEngineから引く（ハードコードなし）
+        if (window.ao && window.ao.languageOutputDL &&
+            window.ao.languageOutputDL.languageAcquisition &&
+            window.ao.languageOutputDL.languageAcquisition.tokenClusterEngine) {
+            concept.cluster = window.ao.languageOutputDL.languageAcquisition
+                .tokenClusterEngine.getCluster(token) || 'unassigned';
+        }
+
         this.concepts.set(conceptId, concept);
-        
         return conceptId;
     }
-    
-    /**
-     * 既知概念との距離計算
-     */
-    calculateDistanceToKnown(concept) {
-        for (const [knownName, knownConcept] of this.knownConcepts.entries()) {
-            // 文脈類似度（簡易版）
-            let similarity = 0;
-            
-            for (const context of concept.contexts) {
-                for (const semantic of knownConcept.semantics) {
-                    if (context.includes(semantic)) {
-                        similarity += 0.1;
-                    }
-                }
-            }
-            
-            const distance = 1 - Math.min(1, similarity);
-            concept.knownDistance.set(knownName, distance);
-        }
-    }
-    
-    /**
-     * クラスタに割り当て
-     */
-    assignToCluster(concept) {
-        // 最も近い既知概念を見つける
-        let closestKnown = null;
-        let minDistance = Infinity;
-        
-        for (const [knownName, distance] of concept.knownDistance.entries()) {
-            if (distance < minDistance) {
-                minDistance = distance;
-                closestKnown = knownName;
-            }
-        }
-        
-        if (closestKnown && minDistance < 0.7) {
-            concept.cluster = closestKnown;
-            
-            const cluster = this.clusters.get(closestKnown) || [];
-            cluster.push(concept.id);
-            this.clusters.set(closestKnown, cluster);
-        } else {
-            concept.cluster = 'UNKNOWN';
-        }
-    }
-    
-    /**
-     * 意味空間での配置を取得
-     */
+
+    // 意味空間での配置（TokenClusterEngine経由）
     getSemanticPosition(conceptId) {
         const concept = this.concepts.get(conceptId);
         if (!concept) return null;
-        
-        const distances = Array.from(concept.knownDistance.entries())
-            .map(([name, dist]) => ({ concept: name, distance: dist }))
-            .sort((a, b) => a.distance - b.distance);
-        
+
+        let clusterMembers = [];
+        if (window.ao && window.ao.languageOutputDL &&
+            window.ao.languageOutputDL.languageAcquisition &&
+            window.ao.languageOutputDL.languageAcquisition.tokenClusterEngine) {
+            const tce = window.ao.languageOutputDL.languageAcquisition.tokenClusterEngine;
+            clusterMembers = tce.getClusterMembers(conceptId);
+            concept.cluster = tce.getCluster(conceptId) || 'unassigned';
+        }
+
         return {
             id: conceptId,
             token: concept.token,
             cluster: concept.cluster,
-            nearestKnown: distances.slice(0, 3),
-            description: this.generateDescription(concept, distances)
+            nearestKnown: clusterMembers.slice(0, 3).map(m => ({ concept: m, distance: 0 })),
+            description: `${conceptId} → ${concept.cluster || 'unassigned'}`
         };
     }
-    
-    generateDescription(concept, distances) {
-        if (distances.length === 0) {
-            return `${concept.id} (意味不明)`;
-        }
-        
-        const nearest = distances[0];
-        if (nearest.distance < 0.3) {
-            return `${concept.id} ≈ [${nearest.concept}] に近い`;
-        } else if (nearest.distance < 0.7) {
-            return `${concept.id} ≈ [${nearest.concept}] に やや近い`;
-        } else {
-            return `${concept.id} (既知概念から遠い)`;
-        }
-    }
+
+    // 後方互換（呼び出し元が壊れないよう残す）
+    calculateDistanceToKnown() {}
+    assignToCluster() {}
+    generateDescription(concept) { return `${concept.id}`; }
 }
 
 /**
@@ -9588,6 +9809,7 @@ class UnknownLanguageInputDL extends AdvancedLanguageInputDL {
         this.grammarHypothesisGen = new GrammarHypothesisGenerator();
         this.semanticLearner = new SemanticLearner();
         this.conceptNetwork = new ProvisionalConceptNetwork();
+        this.tokenClusterEngine = new TokenClusterEngine(); // 共起ベースクラスタリング層
         this.hypothesisManager = new HypothesisManager();
         
         // 処理履歴（学習用）
@@ -12570,121 +12792,248 @@ class SyntaxHypothesis {
 }
 
 // ============ Layer 1: 知覚層（Perceptual Parsing）============
+// 設計思想:
+//   意味・品詞・言語知識を一切使わない
+//   文字bigramの統計（PMI・エントロピー）のみで境界を発見する
+//
+//   score(i) = α × branch(i) - β × bond(i)
+//   bond(i)   = PMI(ci, ci+1) : 結合強度（高いほど境界になりにくい）
+//   branch(i) = H(ci+1 | ci)  : 分岐エントロピー（高いほど境界になりやすい）
 class PerceptualParser {
     constructor() {
-        this.boundaryScores = new Map();  // 境界候補のスコア
-        this.cooccurrenceMatrix = new Map(); // 共起行列
+        // 文字bigram頻度: 'AB' → count
+        this.bigramFreq = new Map();
+        // 文字unigram頻度: 'A' → count
+        this.unigramFreq = new Map();
+        // 総bigram数
+        this.totalBigrams = 0;
+        // 総unigram数
+        this.totalUnigrams = 0;
+
+        // PMI/エントロピーの重みパラメータ
+        this.ALPHA = 1.0; // branch重み
+        this.BETA  = 1.0; // bond重み
+        // 境界判定閾値（学習初期は低めに設定）
+        this.BOUNDARY_THRESHOLD = 0.3;
+        // 最小学習量（これ以下では統計が不安定なのでコールドスタートを使う）
+        this.MIN_BIGRAMS_FOR_STATS = 50;
+
+        // コールドスタート用：文字種変化フラグ（廃止せず学習量が増えるまで併用）
+        this._useCharTypeFallback = true;
     }
-    
+
+    // ─── メインエントリ ──────────────────────────────────────────
     parse(utterance) {
-        if (!utterance || utterance.trim().length === 0) {
-            return [];
-        }
-        
-        // 境界候補を生成（言語非依存）
+        if (!utterance || utterance.trim().length === 0) return [];
+
+        // 統計を先に更新（オンライン学習）
+        this._updateStats(utterance);
+
         const boundaries = this.detectBoundaries(utterance);
-        
-        // 境界でトークンに分割
         const tokens = this.segmentByBoundaries(utterance, boundaries);
-        
-        // Token配列を生成（意味・品詞・役割なし）
         return tokens.map((surface, position) => new Token(surface, position));
     }
-    
+
+    // ─── 統計のオンライン更新 ────────────────────────────────────
+    _updateStats(utterance) {
+        const chars = utterance.split('');
+        for (let i = 0; i < chars.length; i++) {
+            const c = chars[i];
+            this.unigramFreq.set(c, (this.unigramFreq.get(c) || 0) + 1);
+            this.totalUnigrams++;
+            if (i < chars.length - 1) {
+                const bg = c + chars[i + 1];
+                this.bigramFreq.set(bg, (this.bigramFreq.get(bg) || 0) + 1);
+                this.totalBigrams++;
+            }
+        }
+        // 学習量が増えたらコールドスタートフォールバックを無効化
+        if (this.totalBigrams >= this.MIN_BIGRAMS_FOR_STATS) {
+            this._useCharTypeFallback = false;
+        }
+    }
+
+    // ─── 境界検出 ────────────────────────────────────────────────
     detectBoundaries(utterance) {
-        // 完全に言語非依存の境界検出
         const boundaries = new Set();
         const chars = utterance.split('');
-        
+
+        if (this.totalBigrams < this.MIN_BIGRAMS_FOR_STATS) {
+            // コールドスタート：文字種変化を境界とする（インフラ扱い）
+            for (let i = 1; i < chars.length; i++) {
+                if (this._isCharTypeBoundary(
+                    utterance.charCodeAt(i - 1),
+                    utterance.charCodeAt(i)
+                )) boundaries.add(i);
+            }
+            return Array.from(boundaries).sort((a, b) => a - b);
+        }
+
+        // 統計が十分に蓄積された後：PMI + エントロピーで判定
         for (let i = 1; i < chars.length; i++) {
-            const leftContext = utterance.substring(Math.max(0, i - 2), i);
-            const rightContext = utterance.substring(i, Math.min(utterance.length, i + 2));
-            
-            // 共起統計から境界スコアを計算
-            const score = this.calculateBoundaryScore(leftContext, rightContext);
-            
-            if (score > 0.4) {  // 閾値
+            const bond   = this._calcPMI(chars[i - 1], chars[i]);
+            const branch = this._calcBranchEntropy(chars[i - 1]);
+            const score  = this.ALPHA * branch - this.BETA * bond;
+
+            if (score > this.BOUNDARY_THRESHOLD) {
                 boundaries.add(i);
             }
         }
-        
-        // FIX: 文字種変化による境界（コールドスタート用ブートストラップ）
-        // 学習前でも日本語の文字種遷移を手がかりに粗い分割を行う
+
+        // 句読点・スペースは設計書の「インフラ扱い」として常に境界
         for (let i = 1; i < chars.length; i++) {
-            const prev = utterance.charCodeAt(i - 1);
-            const curr = utterance.charCodeAt(i);
-            if (this._isCharTypeBoundary(prev, curr)) {
-                boundaries.add(i);
-            }
+            const code = utterance.charCodeAt(i);
+            if (this._isInfraChar(code)) boundaries.add(i);
         }
-        
-        // 完全に統計ベースの境界検出のみ
-        // 言語知識（句読点・スペース）は使用しない
-        
+
         return Array.from(boundaries).sort((a, b) => a - b);
     }
-    
-    // FIX: 文字種境界判定（日本語・英語に対応）
+
+    // ─── PMI（結合強度）────────────────────────────────────────
+    // PMI(a,b) = log2( P(ab) / (P(a) × P(b)) )
+    // 高い = a,b が強く結合 = 境界になりにくい
+    // 低い・負 = 結合弱い = 境界候補
+    _calcPMI(a, b) {
+        if (this.totalBigrams === 0 || this.totalUnigrams === 0) return 0;
+        const pAB = (this.bigramFreq.get(a + b) || 0) / this.totalBigrams;
+        const pA  = (this.unigramFreq.get(a) || 0) / this.totalUnigrams;
+        const pB  = (this.unigramFreq.get(b) || 0) / this.totalUnigrams;
+        if (pAB === 0 || pA === 0 || pB === 0) return 0;
+        // 正規化PMI: [-1, 1]に収める
+        const pmi = Math.log2(pAB / (pA * pB));
+        const maxPMI = -Math.log2(pAB); // 理論上限
+        return maxPMI > 0 ? Math.max(-1, Math.min(1, pmi / maxPMI)) : 0;
+    }
+
+    // ─── 分岐エントロピー ───────────────────────────────────────
+    // H(next | c) = -Σ P(x|c) log2 P(x|c)
+    // 高い = cの後に来る文字が多様 = 境界になりやすい
+    _calcBranchEntropy(c) {
+        if (this.totalUnigrams === 0) return 0;
+        const pC = (this.unigramFreq.get(c) || 0);
+        if (pC === 0) return 0;
+
+        // cで始まるbigramを列挙
+        let entropy = 0;
+        for (const [bg, count] of this.bigramFreq) {
+            if (bg[0] !== c) continue;
+            const pNextGivenC = count / pC;
+            if (pNextGivenC > 0) {
+                entropy -= pNextGivenC * Math.log2(pNextGivenC);
+            }
+        }
+        // 最大エントロピーで正規化（文字種数の対数）
+        const maxEntropy = Math.log2(Math.max(1, this.unigramFreq.size));
+        return maxEntropy > 0 ? Math.min(1, entropy / maxEntropy) : 0;
+    }
+
+    // ─── インフラ文字（句読点・スペース）───────────────────────
+    // 設計書の「インフラ扱い（境界候補として使用可）」に対応
+    _isInfraChar(code) {
+        return code === 0x0020 || code === 0x3000 || code === 0x000A || // スペース
+               code === 0x3002 || code === 0xFF01 || code === 0xFF1F ||  // 。！？
+               code === 0x002E || code === 0x002C;                        // . ,
+    }
+
+    // ─── コールドスタート用文字種境界 ──────────────────────────
     _isCharTypeBoundary(prev, curr) {
         const isKanji = c => c >= 0x4E00 && c <= 0x9FFF;
         const isHira  = c => c >= 0x3040 && c <= 0x309F;
         const isKata  = c => c >= 0x30A0 && c <= 0x30FF;
         const isLatin = c => (c >= 0x0041 && c <= 0x005A) || (c >= 0x0061 && c <= 0x007A);
         const isSpace = c => c === 0x0020 || c === 0x3000 || c === 0x000A;
-        const isPunct = c => c === 0x3002 || c === 0xFF01 || c === 0xFF1F || c === 0x002E || c === 0x002C;
-        
+        const isPunct = c => c === 0x3002 || c === 0xFF01 || c === 0xFF1F ||
+                             c === 0x002E || c === 0x002C;
+
         if (isSpace(curr) || isSpace(prev)) return true;
         if (isPunct(prev)) return true;
-        if (isKanji(prev) && isHira(curr)) return true;   // 走|った → 走 | った
-        if (isHira(prev) && isKanji(curr)) return true;   // が|猫 → が | 猫
+        if (isKanji(prev) && isHira(curr)) return true;
+        if (isHira(prev) && isKanji(curr)) return true;
         if (isKanji(prev) && isKata(curr)) return true;
         if (isKata(prev) && isKanji(curr)) return true;
         if (isLatin(prev) && !isLatin(curr) && !isSpace(curr)) return true;
         if (!isLatin(prev) && isLatin(curr) && !isSpace(prev)) return true;
         return false;
     }
-    
-    calculateBoundaryScore(leftContext, rightContext) {
-        const key = `${leftContext}|${rightContext}`;
-        return this.boundaryScores.get(key) || 0.1;  // FIX: 0.5→0.1（閾値0.4以下でコールドスタート過剰分割を防ぐ）
-    }
-    
+
+    // ─── 境界でセグメント化 ──────────────────────────────────────
     segmentByBoundaries(utterance, boundaries) {
         const tokens = [];
         let start = 0;
-        
         for (const boundary of boundaries) {
             if (boundary > start) {
                 const segment = utterance.substring(start, boundary).trim();
-                if (segment.length > 0) {
-                    tokens.push(segment);
-                }
+                if (segment.length > 0) tokens.push(segment);
                 start = boundary;
             }
         }
-        
-        // 残りの部分
         if (start < utterance.length) {
             const segment = utterance.substring(start).trim();
-            if (segment.length > 0) {
-                tokens.push(segment);
-            }
+            if (segment.length > 0) tokens.push(segment);
         }
-        
         return tokens;
     }
-    
+
+    // ─── 後方互換（learnFromUtteranceから呼ばれる）──────────────
+    // parse()内でオンライン更新するので実質不要だが互換のため残す
     updateBoundaryStatistics(utterance, confirmedBoundaries) {
-        // 確認された境界から統計を更新
-        for (const pos of confirmedBoundaries) {
-            if (pos <= 0 || pos >= utterance.length) continue;
-            
-            const leftContext = utterance.substring(Math.max(0, pos - 2), pos);
-            const rightContext = utterance.substring(pos, Math.min(utterance.length, pos + 2));
-            const key = `${leftContext}|${rightContext}`;
-            
-            const current = this.boundaryScores.get(key) || 0.5;
-            this.boundaryScores.set(key, Math.min(1.0, current + 0.05));
+        // parse()のオンライン更新で代替。何もしない。
+    }
+
+    // ─── 知覚的特徴ベクトルを抽出（未解釈プールへの入力用）────
+    // parse()後に呼ぶことで、その発話の分布的特徴を取得できる
+    // 戻り値: { entropy, avgPMI, tokenCount, bigramDiversity }
+    extractPerceptualFeatures(utterance, tokens) {
+        if (!utterance || utterance.length === 0) {
+            return { entropy: 0, avgPMI: 0, tokenCount: 0, bigramDiversity: 0 };
+        }
+
+        const chars = utterance.split('');
+        let totalEntropy = 0;
+        let totalPMI = 0;
+        let count = 0;
+
+        for (let i = 1; i < chars.length; i++) {
+            totalEntropy += this._calcBranchEntropy(chars[i - 1]);
+            totalPMI     += this._calcPMI(chars[i - 1], chars[i]);
+            count++;
+        }
+
+        const avgEntropy = count > 0 ? totalEntropy / count : 0;
+        const avgPMI     = count > 0 ? totalPMI     / count : 0;
+
+        // bigramの多様性：ユニークbigram数 / 総bigram数
+        const uniqueBigrams = new Set();
+        for (let i = 0; i < chars.length - 1; i++) {
+            uniqueBigrams.add(chars[i] + chars[i + 1]);
+        }
+        const bigramDiversity = count > 0 ? uniqueBigrams.size / count : 0;
+
+        return {
+            entropy:         avgEntropy,
+            avgPMI:          avgPMI,
+            tokenCount:      tokens ? tokens.length : 0,
+            bigramDiversity: bigramDiversity
+        };
+    }
+
+    // ─── 永続化 ─────────────────────────────────────────────────
+    exportState() {
+        return {
+            bigramFreq:    Array.from(this.bigramFreq.entries()),
+            unigramFreq:   Array.from(this.unigramFreq.entries()),
+            totalBigrams:  this.totalBigrams,
+            totalUnigrams: this.totalUnigrams
+        };
+    }
+
+    importState(data) {
+        if (data.bigramFreq)  this.bigramFreq  = new Map(data.bigramFreq);
+        if (data.unigramFreq) this.unigramFreq = new Map(data.unigramFreq);
+        this.totalBigrams  = data.totalBigrams  || 0;
+        this.totalUnigrams = data.totalUnigrams || 0;
+        if (this.totalBigrams >= this.MIN_BIGRAMS_FOR_STATS) {
+            this._useCharTypeFallback = false;
         }
     }
 }
@@ -13494,6 +13843,9 @@ class HumanLikeLanguageAcquisitionEngine {
         // FunctionWordDetectorを渡す。failureMemoryはCompletLanguageCognitionEngine初期化後に注入
         this.morphVariantLearner = new MorphVariantLearner(this.functionWordDetector, null);
         this.richSurfaceRealizer = new RichSurfaceRealizer(this.richHypothesisGenerator, this.morphVariantLearner);
+
+        // 共起ベースクラスタリング層（設計書5章）
+        this.tokenClusterEngine = new TokenClusterEngine();
         
         // 意味との疎結合
         this.conceptBindings = [];  // ConceptBinding配列
@@ -13542,18 +13894,9 @@ class HumanLikeLanguageAcquisitionEngine {
                 return;
             }
             
-            // FIX: 境界統計を更新（学習ループを閉じる）
-            // 今回の分割結果をもとにboundaryScoresを強化し、次回以降の分割精度を上げる
-            const boundaryPositions = [];
-            let charPos = 0;
-            for (let i = 0; i < tokens.length - 1; i++) {
-                charPos += tokens[i].surface.length;
-                boundaryPositions.push(charPos);
-            }
-            if (boundaryPositions.length > 0) {
-                this.perceptualParser.updateBoundaryStatistics(utterance, boundaryPositions);
-            }
-            
+            // 境界統計はparse()内でオンライン更新済み（PMI/エントロピー）
+            // updateBoundaryStatisticsは不要になったため削除
+
             // Layer 2: 構文仮説生成（役割=振る舞いのみ）
             traceEntry.steps.push({ layer: 2, name: 'Syntax Hypothesis Generation', status: 'start' });
             const hypothesis = this.hypothesisGenerator.generateHypothesis(tokens);
@@ -13577,6 +13920,12 @@ class HumanLikeLanguageAcquisitionEngine {
             if (this.morphVariantLearner) {
                 // テキストのみ入力時は language モダリティのみ（信頼度重み 1.0）
                 this.morphVariantLearner.learnFromTokens(tokens, ['language']);
+            }
+
+            // Step 2c: 共起ベースクラスタリング（設計書5章）
+            // 「似た使われ方」をまとめる → ラベルなしグループが自然に形成される
+            if (this.tokenClusterEngine) {
+                this.tokenClusterEngine.observe(tokens);
             }
 
             // Step 3: 機能語が十分蓄積されたらリッチ仮説を生成
@@ -13609,7 +13958,11 @@ class HumanLikeLanguageAcquisitionEngine {
             
             // 平均信頼度を更新
             this.updateAverageConfidence();
-            
+
+            // 知覚的特徴を抽出（未解釈プールへの入力用）
+            // 呼び出し元（learnFromUserInput等）でuninterpreted.add()に渡す
+            traceEntry.perceptualFeatures = this.perceptualParser.extractPerceptualFeatures(utterance, tokens);
+
             traceEntry.success = true;
             
         } catch (error) {
@@ -13630,6 +13983,9 @@ class HumanLikeLanguageAcquisitionEngine {
         if (this.richHypothesisGenerator) {
             this.richHypothesisGenerator.prune();
         }
+
+        // 知覚的特徴を呼び出し元に返す
+        return traceEntry.perceptualFeatures || null;
     }
     
     /**
@@ -13767,6 +14123,12 @@ class HumanLikeLanguageAcquisitionEngine {
                     : null,
                 morphVariants: this.morphVariantLearner
                     ? this.morphVariantLearner.exportState()
+                    : null,
+                perceptualStats: this.perceptualParser
+                    ? this.perceptualParser.exportState()
+                    : null,
+                tokenClusters: this.tokenClusterEngine
+                    ? this.tokenClusterEngine.exportState()
                     : null
             }
         };
@@ -13820,6 +14182,12 @@ class HumanLikeLanguageAcquisitionEngine {
             }
             if (this.morphVariantLearner && data.richGrammar.morphVariants) {
                 this.morphVariantLearner.importState(data.richGrammar.morphVariants);
+            }
+            if (this.perceptualParser && data.richGrammar.perceptualStats) {
+                this.perceptualParser.importState(data.richGrammar.perceptualStats);
+            }
+            if (this.tokenClusterEngine && data.richGrammar.tokenClusters) {
+                this.tokenClusterEngine.importState(data.richGrammar.tokenClusters);
             }
         }
     }
@@ -15329,15 +15697,138 @@ HumanLikeLanguageAcquisitionEngine.prototype.generateSentence = function(concept
 // learnFromInputメソッド（互換性）
 HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
     try {
-        this.learnFromUtterance(text);
+        return this.learnFromUtterance(text); // perceptualFeaturesを返す
     } catch (error) {
         console.error('learnFromInput error:', error);
+        return null;
     }
 };
+        // ============ 7章: 出力生成層（テンプレート統計化）============
+        // 設計書7章の規定:
+        //   - テンプレート自体は意味を持たない（形式のみ）
+        //   - ○○部分は統計由来（トークン再構成）
+        //   - 内部状態ベクトルによりテンプレート選択を変化させる（意味付与禁止）
+        //
+        // TemplateSelector:
+        //   テンプレートをcertainty/hesitation等のハードコード条件で選ぶのではなく
+        //   内部状態ベクトル[s0,s1,s2,s3]との「共起頻度」で選ぶ
+        //   使われるたびに「このベクトル状態でこのテンプレートを使った」を記録
+        //   → 状態とテンプレートの対応が統計から浮かび上がる
+        class TemplateSelector {
+            constructor() {
+                // テンプレートプール（形式のみ・意味なし）
+                this.templates = [
+                    '${concept}について、考えている',
+                    '${concept}が何か、少しずつ分かってきそう',
+                    '${concept}...もう少し時間がかかりそう',
+                    '${concept}って、まだよく分からない',
+                    '${concept}...何だろう、と思う',
+                    '${concept}というものがあるらしい',
+                    '${concept}は、少しずつ理解できている',
+                    '${concept}から、目が離せない',
+                    '${concept}...これで全部なのかな',
+                    '少し考えている',
+                    'うまく言葉にならない',
+                    '何か引っかかっている',
+                    'まだ整理できていない',
+                    'よく分からない',
+                    '掴めそうで掴めない',
+                    '今、何かを感じている',
+                    '少しずつ分かってきそう',
+                    'まだ形にならない'
+                ];
+
+                // templateIndex → Map<stateKey, count>
+                // 「この状態でこのテンプレートを使った」の頻度
+                this.usageMatrix = new Map();
+
+                // 状態の離散化精度（0.25刻み = 4^4 = 256種）
+                this.STATE_RESOLUTION = 4;
+            }
+
+            // 内部状態ベクトルを離散キーに変換
+            _stateKey(stateVector) {
+                // [s0,s1,s2,s3] → 'q0q1q2q3'
+                return stateVector.map(v =>
+                    Math.min(this.STATE_RESOLUTION - 1,
+                        Math.floor((v || 0) * this.STATE_RESOLUTION))
+                ).join('_');
+            }
+
+            // 使用を記録
+            record(templateIdx, stateVector) {
+                const key = this._stateKey(stateVector);
+                if (!this.usageMatrix.has(templateIdx)) {
+                    this.usageMatrix.set(templateIdx, new Map());
+                }
+                const m = this.usageMatrix.get(templateIdx);
+                m.set(key, (m.get(key) || 0) + 1);
+            }
+
+            // 現在の状態ベクトルに対して最適なテンプレートインデックスを返す
+            // 観測が少ない場合はランダム選択
+            select(stateVector, conceptStr = '') {
+                const key = this._stateKey(stateVector);
+                let bestIdx = -1;
+                let bestCount = -1;
+
+                for (const [idx, countMap] of this.usageMatrix) {
+                    const count = countMap.get(key) || 0;
+                    if (count > bestCount) { bestCount = count; bestIdx = idx; }
+                }
+
+                // 観測が十分でない場合はランダム選択
+                if (bestCount < 2) {
+                    bestIdx = Math.floor(Math.random() * this.templates.length);
+                }
+
+                const tmpl = this.templates[bestIdx] || this.templates[0];
+                return {
+                    text: tmpl.replace('${concept}', conceptStr || ''),
+                    templateIdx: bestIdx
+                };
+            }
+
+            // 複数候補を返す（generate()の候補リスト用）
+            selectMultiple(stateVector, conceptStr = '', n = 3) {
+                const key = this._stateKey(stateVector);
+
+                // 使用頻度でソート
+                const scored = this.templates.map((tmpl, idx) => {
+                    const countMap = this.usageMatrix.get(idx);
+                    const count = countMap ? (countMap.get(key) || 0) : 0;
+                    return { idx, count, tmpl };
+                }).sort((a, b) => b.count - a.count || Math.random() - 0.5);
+
+                return scored.slice(0, n).map(({ idx, tmpl }) => ({
+                    text: tmpl.replace('${concept}', conceptStr || ''),
+                    templateIdx: idx
+                }));
+            }
+
+            exportState() {
+                return {
+                    usageMatrix: Array.from(this.usageMatrix.entries())
+                        .map(([k, v]) => [k, Array.from(v.entries())])
+                };
+            }
+
+            importState(data) {
+                if (data.usageMatrix) {
+                    this.usageMatrix = new Map(
+                        data.usageMatrix.map(([k, v]) => [k, new Map(v)])
+                    );
+                }
+            }
+        }
+
         class LanguageOutputDL {
             constructor() {
                 this.processing = false;
                 this.expressionBias = new Map();
+
+                // 7章: テンプレート選択エンジン（統計ベース）
+                this.templateSelector = new TemplateSelector();
                 
                 // v26.3: 言語獲得層を統合
                 // v26.6.0: 言語認知完成版エンジン + 永続化
@@ -15375,47 +15866,36 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                 
                 // ==========================================
                 // Stage 0: ブートストラップ層（概念なし専用）
+                // 7章: TemplateSelector統計ベースで選択
                 // ==========================================
                 if (!hasConcepts) {
-                    // 内部状態に基づく発話生成
-                    if (hesitationLevel > 0.6) {
-                        candidates.push('少し考えている');
-                        candidates.push('うまく言葉にならない');
-                        candidates.push('何かを感じているけれど、まだ形にならない');
+                    // 内部状態ベクトル取得（Proxyから直接配列を取る）
+                    const sv = being && being._stateVector
+                        ? being._stateVector
+                        : [certaintyLevel, hesitationLevel, emotionalWeight, 0.5];
+
+                    // TemplateSelectorから複数候補を取得
+                    const tmplCandidates = this.templateSelector.selectMultiple(sv, '', 3);
+                    for (const { text, templateIdx } of tmplCandidates) {
+                        candidates.push(text);
+                        // 使用を記録（次回の選択精度向上）
+                        this.templateSelector.record(templateIdx, sv);
                     }
-                    
-                    if (emotionalWeight > 0.5) {
-                        candidates.push('何か引っかかっている');
-                        candidates.push('感じていることがある');
-                        candidates.push('まだ整理できていない');
-                    }
-                    
-                    if (certaintyLevel < 0.3) {
-                        candidates.push('よく分からない');
-                        candidates.push('まだはっきりしない');
-                        candidates.push('掴めそうで掴めない');
-                    }
-                    
-                    // 推論モードによる追加
-                    if (inferenceMode.mode === 'explore') {
-                        candidates.push('色々試してみている');
-                        candidates.push('違う角度から見てみる');
-                    }
-                    
+
                     // 最低限のフォールバック
                     if (candidates.length === 0) {
                         candidates.push('今、何かを感じている');
                         candidates.push('少しずつ分かってきそう');
                         candidates.push('まだ形にならない');
                     }
-                    
+
                     const uniqueCandidates = [...new Set(candidates)];
                     const withBias = uniqueCandidates.map(c => ({
                         text: c,
-                        meaningScore: 1.0,  // Stage 0は意味スコア無関係
+                        meaningScore: 1.0,
                         expressionBias: this.expressionBias.get(c) || 0
                     }));
-                    
+
                     this.processing = false;
                     return {
                         candidates: withBias,
@@ -15427,78 +15907,41 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                 
                 // ==========================================
                 // Stage 1: テンプレート主体（補助輪モード）
+                // 7章: TemplateSelectorで統計ベース選択
                 // ==========================================
                 if (maturityLevel <= 1) {
-                    // テンプレートを積極的に使用（補助輪）
-                    
-                    // 基本テンプレート（intentに依存しない）
-                    candidates.push(`${conceptStr}について、考えている`);
-                    candidates.push(`${conceptStr}が何か、少しずつ分かってきそう`);
-                    candidates.push(`${conceptStr}...もう少し時間がかかりそう`);
-                    
-                    // intentに応じたテンプレート
-                    if (intent === '説明したい') {
-                        if (certaintyLevel > 0.6) {
-                            candidates.push(`${conceptStr}については、かなり分かってきた`);
-                            candidates.push(`${conceptStr}の意味が、見えてきた気がする`);
-                        } else if (certaintyLevel > 0.3) {
-                            candidates.push(`${conceptStr}は、少しずつ理解できている`);
-                            candidates.push(`${conceptStr}について、前よりは掴めている`);
-                            candidates.push(`${conceptStr}が何か、ぼんやり分かる`);
-                        } else {
-                            candidates.push(`${conceptStr}って、まだよく分からない`);
-                            candidates.push(`${conceptStr}...何だろう、と思う`);
-                            candidates.push(`${conceptStr}というものがあるらしい`);
-                        }
+                    const sv = being && being._stateVector
+                        ? being._stateVector
+                        : [certaintyLevel, hesitationLevel, emotionalWeight, 0.5];
+
+                    // TemplateSelectorから候補を取得
+                    const tmplCandidates = this.templateSelector.selectMultiple(sv, conceptStr, 5);
+                    for (const { text, templateIdx } of tmplCandidates) {
+                        candidates.push(text);
+                        this.templateSelector.record(templateIdx, sv);
                     }
-                    
-                    if (intent === '迷いを伝えたい') {
-                        candidates.push(`${conceptStr}...どう考えていいのか、分からない`);
-                        candidates.push(`${conceptStr}のことで、混乱している`);
-                        candidates.push(`${conceptStr}が掴めそうで掴めない`);
+
+                    // 複数概念の関係表現（形式のみ・意味なし）
+                    if (concepts.length >= 2) {
+                        candidates.push(`${concepts[0]}と${concepts[1]}は、繋がっている気がする`);
+                        candidates.push(`${concepts[0]}と${concepts[1]}...どう関係しているんだろう`);
                     }
-                    
-                    if (intent === '関係を述べたい') {
-                        if (concepts.length >= 2) {
-                            candidates.push(`${concepts[0]}と${concepts[1]}は、繋がっている気がする`);
-                            candidates.push(`${concepts[0]}は${concepts[1]}に近い何かだと思う`);
-                            candidates.push(`${concepts[0]}と${concepts[1]}...どう関係しているんだろう`);
-                        }
-                    }
-                    
-                    if (intent === '問いかけたい') {
-                        candidates.push(`${conceptStr}って、もっと何かあるような...`);
-                        candidates.push(`${conceptStr}...これで全部なのかな`);
-                        candidates.push(`${conceptStr}の先に、何があるんだろう`);
-                    }
-                    
-                    // 内部状態による追加
-                    if (hesitationLevel > 0.6) {
-                        candidates.push(`...うまく言えないけど、${conceptStr}について考えてる`);
-                        candidates.push(`${conceptStr}のことで、何か引っかかってる`);
-                    }
-                    
-                    if (emotionalWeight > 0.6) {
-                        candidates.push(`${conceptStr}...それが、すごく大きい`);
-                        candidates.push(`${conceptStr}から、目が離せない`);
-                    }
-                    
+
                     // 学習パターンがあれば追加（補助的）
                     if (this.languageAcquisition.syntaxPatterns.length > 0) {
-                        const learnedSentence = this.languageAcquisition.generateSentence(concepts, intent, { certainty: certaintyLevel, hesitation: hesitationLevel });
-                        if (learnedSentence) {
-                            candidates.push(learnedSentence);
-                        }
+                        const learnedSentence = this.languageAcquisition.generateSentence(
+                            concepts, intent, { certainty: certaintyLevel, hesitation: hesitationLevel }
+                        );
+                        if (learnedSentence) candidates.push(learnedSentence);
                     }
-                    
-                    // Stage 1は意味スコアフィルタリングなし（補助輪モード）
+
                     const uniqueCandidates = [...new Set(candidates)];
                     const withBias = uniqueCandidates.map(c => ({
                         text: c,
-                        meaningScore: 1.0,  // Stage 1は意味スコア無関係
+                        meaningScore: 1.0,
                         expressionBias: this.expressionBias.get(c) || 0
                     }));
-                    
+
                     this.processing = false;
                     return {
                         candidates: withBias,
@@ -15509,122 +15952,78 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                 }
                 
                 // ==========================================
-                // Stage 2-3: 学習パターン主体（補助輪を外す）
+                // Stage 2-3: 補助輪なし（学習パターンのみ）
+                // ハードコードテンプレート完全廃止
                 // ==========================================
-                
-                // 学習パターンを優先
+
+                // Step 1: SyntaxHypothesisの学習パターンから生成（最優先）
                 if (this.languageAcquisition.syntaxPatterns.length > 0) {
-                    const learnedSentence = this.languageAcquisition.generateSentence(concepts, intent, { certainty: certaintyLevel, hesitation: hesitationLevel });
-                    if (learnedSentence) {
-                        candidates.push(learnedSentence);
-                    }
+                    const learnedSentence = this.languageAcquisition.generateSentence(
+                        concepts, intent, { certainty: certaintyLevel, hesitation: hesitationLevel }
+                    );
+                    if (learnedSentence) candidates.push(learnedSentence);
                 }
-                
-                // テンプレートはフォールバックとして使用
-                if (intent === '説明したい') {
-                    if (certaintyLevel > 0.6) {
-                        candidates.push(`${conceptStr}については、かなり分かってきた`);
-                        candidates.push(`${conceptStr}の意味が、見えてきた気がする`);
-                        
-                        if (inferenceMode.mode === 'explore') {
-                            candidates.push(`${conceptStr}...もっと深いところに何かある`);
-                            candidates.push(`${conceptStr}から、別の何かが見えてきた`);
-                        }
-                    } else if (certaintyLevel > 0.3) {
-                        candidates.push(`${conceptStr}は、少しずつ理解できている`);
-                        candidates.push(`${conceptStr}について、前よりは掴めている`);
-                        candidates.push(`${conceptStr}が何か、ぼんやり分かる`);
-                        
-                        if (inferenceMode.mode === 'explore') {
-                            candidates.push(`${conceptStr}って、予想と違うかもしれない`);
-                            candidates.push(`${conceptStr}...まだ見えていない部分がある`);
-                        }
-                    } else {
-                        candidates.push(`${conceptStr}って、まだよく分からない`);
-                        candidates.push(`${conceptStr}...何だろう、と思う`);
-                        candidates.push(`${conceptStr}というものがあるらしい`);
-                    }
-                }
-                
-                if (intent === '迷いを伝えたい') {
-                    candidates.push(`${conceptStr}...どう考えていいのか、分からない`);
-                    candidates.push(`${conceptStr}のことで、混乱している`);
-                    candidates.push(`${conceptStr}が掴めそうで掴めない`);
-                    
-                    if (inferenceMode.mode === 'explore') {
-                        candidates.push(`${conceptStr}...色々試してみないと`);
-                        candidates.push(`${conceptStr}、違う角度から見てみようか`);
-                    }
-                }
-                
-                if (intent === '関係を述べたい') {
-                    if (concepts.length >= 2) {
-                        candidates.push(`${concepts[0]}と${concepts[1]}は、繋がっている気がする`);
-                        candidates.push(`${concepts[0]}は${concepts[1]}に近い何かだと思う`);
-                        candidates.push(`${concepts[0]}と${concepts[1]}...どう関係しているんだろう`);
-                        
-                        if (inferenceMode.mode === 'explore') {
-                            candidates.push(`${concepts[0]}から${concepts[1]}への、新しい道が見えそう`);
-                            candidates.push(`${concepts[0]}と${concepts[1]}、もしかして逆なのかも`);
+
+                // Step 2: TokenClusterEngineのクラスタから
+                // 「概念と同じクラスタに属するトークン」を組み合わせて生成
+                if (this.languageAcquisition.tokenClusterEngine) {
+                    const tce = this.languageAcquisition.tokenClusterEngine;
+                    for (const concept of concepts.slice(0, 2)) {
+                        const neighbors = tce.getClusterMembers(concept);
+                        for (const neighbor of neighbors.slice(0, 2)) {
+                            // クラスタ内の共起トークンと概念を組み合わせる
+                            // 意味は付与しない、形式のみ
+                            candidates.push(`${concept}${neighbor}`);
+                            candidates.push(`${neighbor}${concept}`);
                         }
                     }
                 }
-                
-                if (intent === '問いかけたい') {
-                    candidates.push(`${conceptStr}って、もっと何かあるような...`);
-                    candidates.push(`${conceptStr}...これで全部なのかな`);
-                    candidates.push(`${conceptStr}の先に、何があるんだろう`);
-                    
-                    if (inferenceMode.mode === 'explore') {
-                        candidates.push(`${conceptStr}...まだ誰も気づいてないことがあるかも`);
-                        candidates.push(`${conceptStr}って、根本から違うのかもしれない`);
+
+                // Step 3: TemplateSelectorで統計ベースのテンプレートを追加
+                // （補助輪としてではなく、学習済み分布から選ぶ）
+                if (this.templateSelector) {
+                    const sv = being && being._stateVector
+                        ? being._stateVector
+                        : [certaintyLevel, hesitationLevel, emotionalWeight, 0.5];
+                    const tmplCandidates = this.templateSelector.selectMultiple(sv, conceptStr, 2);
+                    for (const { text, templateIdx } of tmplCandidates) {
+                        candidates.push(text);
+                        this.templateSelector.record(templateIdx, sv);
                     }
                 }
-                
-                if (hesitationLevel > 0.6) {
-                    candidates.push(`...うまく言えないけど、${conceptStr}について考えてる`);
-                    candidates.push(`${conceptStr}のことで、何か引っかかってる`);
+
+                // Step 4: 複数概念の関係（クラスタ共起から）
+                if (concepts.length >= 2 && this.languageAcquisition.tokenClusterEngine) {
+                    const tce = this.languageAcquisition.tokenClusterEngine;
+                    const c1 = tce.getCluster(concepts[0]);
+                    const c2 = tce.getCluster(concepts[1]);
+                    if (c1 && c2 && c1 === c2) {
+                        // 同じクラスタ → 関係性が高い
+                        candidates.push(`${concepts[0]}${concepts[1]}`);
+                    }
                 }
-                
-                if (emotionalWeight > 0.6) {
-                    candidates.push(`${conceptStr}...それが、すごく大きい`);
-                    candidates.push(`${conceptStr}から、目が離せない`);
+
+                // フォールバック：候補が全くない場合のみTemplateSelectorで補う
+                if (candidates.length === 0 && this.templateSelector) {
+                    const sv = being && being._stateVector
+                        ? being._stateVector
+                        : [0.5, 0.5, 0.5, 0.5];
+                    const { text, templateIdx } = this.templateSelector.select(sv, conceptStr);
+                    candidates.push(text);
+                    this.templateSelector.record(templateIdx, sv);
                 }
-                
-                // 基本フォールバック（intentに依存しない）
-                if (candidates.length === 0) {
-                    candidates.push(`${conceptStr}について、考えている`);
-                    candidates.push(`${conceptStr}が何か、少しずつ分かってきそう`);
-                    candidates.push(`${conceptStr}...もう少し時間がかかりそう`);
-                }
-                
-                const uniqueCandidates = [...new Set(candidates)];
-                
-                // Stage 2-3: 意味スコアを計算して候補を評価
-                const withScores = uniqueCandidates.map(c => {
-                    const meaningScore = this.calculateMeaningScore(c, concepts, tone);
-                    return {
-                        text: c,
-                        meaningScore: meaningScore,
-                        expressionBias: this.expressionBias.get(c) || 0
-                    };
-                });
-                
-                // 意味優先フィルタリング（Stage 2-3のみ）
-                const meaningThreshold = 0.2;  // 閾値を0.3→0.2に緩和
-                const filtered = withScores.filter(c => c.meaningScore >= meaningThreshold);
-                
-                // フィルタリング後に候補がない場合は内省文を優先
-                let finalCandidates;
-                if (filtered.length === 0) {
-                    finalCandidates = [
-                        { text: `${conceptStr}...もう少し時間がかかりそう`, meaningScore: 0.5, expressionBias: 0 },
-                        { text: `${conceptStr}について、もっと考えたい`, meaningScore: 0.5, expressionBias: 0 },
-                        { text: 'まだうまく言葉にならない', meaningScore: 0.6, expressionBias: 0 }
-                    ];
-                } else {
-                    finalCandidates = filtered;
-                }
+
+                const uniqueCandidates = [...new Set(candidates)].filter(Boolean);
+
+                // 意味スコアで評価
+                const withScores = uniqueCandidates.map(c => ({
+                    text: c,
+                    meaningScore: this.calculateMeaningScore(c, concepts, tone),
+                    expressionBias: this.expressionBias.get(c) || 0
+                }));
+
+                const filtered = withScores.filter(c => c.meaningScore >= 0.2);
+                const finalCandidates = filtered.length > 0 ? filtered : withScores.slice(0, 3);
                 
                 this.processing = false;
 
@@ -15741,7 +16140,19 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
              */
             learnFromUserInput(text) {
                 try {
-                    this.languageAcquisition.learnFromInput(text);
+                    // learnFromUtteranceがperceptualFeaturesを返すようになった
+                    const perceptualFeatures = this.languageAcquisition.learnFromInput(text);
+
+                    // 知覚的特徴を未解釈プールに流す
+                    // PerceptualParser→未解釈プール→原概念→内部状態 のパイプライン
+                    if (perceptualFeatures && this.being && this.being.uninterpreted) {
+                        const stateSnapshot = this.being.state || {};
+                        this.being.uninterpreted.add(
+                            stateSnapshot,
+                            text.substring(0, 50),
+                            perceptualFeatures
+                        );
+                    }
                 } catch (error) {
                     globalLogManager.log(`learnFromUserInput error: ${error.message}`, 'error');
                 }
@@ -15763,19 +16174,25 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
             exportState() {
                 return {
                     expressionBias: Array.from(this.expressionBias.entries()),
-                    // v26.3: 言語獲得層のデータ
-                    languageAcquisition: this.languageAcquisition.exportState()
+                    languageAcquisition: this.languageAcquisition.exportState(),
+                    // 7章: テンプレート選択統計の永続化
+                    templateSelector: this.templateSelector
+                        ? this.templateSelector.exportState()
+                        : null
                 };
             }
-            
+
             importState(data) {
                 try {
                     if (data.expressionBias) {
                         this.expressionBias = new Map(data.expressionBias);
                     }
-                    // v26.3: 言語獲得層のデータ復元
                     if (data.languageAcquisition) {
                         this.languageAcquisition.importState(data.languageAcquisition);
+                    }
+                    // 7章: テンプレート選択統計の復元
+                    if (data.templateSelector && this.templateSelector) {
+                        this.templateSelector.importState(data.templateSelector);
                     }
                 } catch (error) {
                     globalLogManager.log(`importState error: ${error.message}`, 'error');
@@ -15789,44 +16206,79 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                 this.states = [];
                 this.maxSize = 50;
             }
-            
-            add(emotionVector, contextFragment) {
-                this.states.push({
+
+            // emotionVector: 従来の{joy,tension,...}でもOK
+            // perceptualFeatures: PerceptualParserから来る分布特徴（省略可）
+            //   { entropy: 0.7, avgPMI: 0.3, tokenCount: 5, bigramDiversity: 0.6 }
+            add(emotionVector, contextFragment, perceptualFeatures = null) {
+                const state = {
                     emotion: {...emotionVector},
                     context: contextFragment,
                     timestamp: Date.now(),
                     attempts: 0
-                });
-                
+                };
+
+                // PerceptualParserの分布特徴を追加（あれば）
+                // これが内部状態無名化への橋渡し
+                // 名前付きemotion→分布特徴へと徐々に移行できる
+                if (perceptualFeatures) {
+                    state.perceptual = {
+                        entropy:        perceptualFeatures.entropy        || 0,
+                        avgPMI:         perceptualFeatures.avgPMI         || 0,
+                        tokenCount:     perceptualFeatures.tokenCount      || 0,
+                        bigramDiversity:perceptualFeatures.bigramDiversity || 0
+                    };
+                }
+
+                this.states.push(state);
+
                 if (this.states.length > this.maxSize) {
                     const removed = this.states.shift();
                     return { distorted: true, state: removed };
                 }
                 return { distorted: false };
             }
-            
+
             getDensity() {
                 return this.states.length / this.maxSize;
             }
-            
+
             getPressure() {
                 const density = this.getDensity();
-                const avgAge = this.states.reduce((sum, s) => 
+                const avgAge = this.states.reduce((sum, s) =>
                     sum + (Date.now() - s.timestamp), 0) / Math.max(1, this.states.length);
-                
+
+                // 知覚的特徴が蓄積してる場合、エントロピー平均を圧力に反映
+                // 高エントロピー入力が続く = 未解釈密度が増す = tensionが自然に上がる
+                const avgEntropy = this.states.reduce((sum, s) =>
+                    sum + (s.perceptual ? s.perceptual.entropy : 0), 0
+                ) / Math.max(1, this.states.length);
+
                 return {
-                    tensionIncrease: density * 0.15,
+                    tensionIncrease:   density * 0.15 + avgEntropy * 0.05,
                     curiosityIncrease: Math.min(0.2, avgAge / 100000)
                 };
             }
-            
-            exportState() {
-                return {
-                    states: this.states,
-                    maxSize: this.maxSize
-                };
+
+            // 分布ベクトルを返す（内部状態更新用）
+            // 名前付きラベルなし：[entropy, pmi, diversity, density]
+            getDistributionVector() {
+                if (this.states.length === 0) return [0, 0, 0, 0];
+                const n = this.states.length;
+                const avgEntropy = this.states.reduce((s, st) =>
+                    s + (st.perceptual ? st.perceptual.entropy : 0), 0) / n;
+                const avgPMI = this.states.reduce((s, st) =>
+                    s + (st.perceptual ? st.perceptual.avgPMI : 0), 0) / n;
+                const avgDiversity = this.states.reduce((s, st) =>
+                    s + (st.perceptual ? st.perceptual.bigramDiversity : 0), 0) / n;
+                const density = this.getDensity();
+                return [avgEntropy, avgPMI, avgDiversity, density];
             }
-            
+
+            exportState() {
+                return { states: this.states, maxSize: this.maxSize };
+            }
+
             importState(data) {
                 this.states = data.states || [];
                 this.maxSize = data.maxSize || 50;
@@ -15874,39 +16326,108 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
             constructor() {
                 this.protoConcepts = [];
             }
-            
+
             tryGenerate(uninterpretedStates) {
                 if (uninterpretedStates.length < 3) return null;
-                
+
+                // 知覚的特徴がある場合：分布類似度でクラスタリング
+                // 似た分布を持つ未解釈状態をまとめて原概念を生成
+                const withPerceptual = uninterpretedStates.filter(s => s.perceptual);
+                if (withPerceptual.length >= 2) {
+                    const clustered = this._clusterByDistribution(withPerceptual);
+                    if (clustered) {
+                        const proto = new ProtoConcept(clustered.map(s => s.context));
+                        // 分布ベクトルを原概念に付与（名前なし）
+                        proto.distributionVector = this._avgDistribution(clustered);
+                        this.protoConcepts.push(proto);
+                        return proto;
+                    }
+                }
+
+                // フォールバック：従来通りコンテキスト断片からそのまま生成
                 const fragments = uninterpretedStates.map(s => s.context);
                 const proto = new ProtoConcept(fragments);
                 this.protoConcepts.push(proto);
-                
                 return proto;
             }
-            
+
+            // 分布ベクトルのコサイン類似度でクラスタリング
+            // 最も近いペアを見つけてグループ化する
+            _clusterByDistribution(states) {
+                if (states.length < 2) return null;
+
+                let bestSim = -1;
+                let bestPair = null;
+
+                for (let i = 0; i < states.length; i++) {
+                    for (let j = i + 1; j < states.length; j++) {
+                        const sim = this._cosineSim(
+                            this._toVec(states[i].perceptual),
+                            this._toVec(states[j].perceptual)
+                        );
+                        if (sim > bestSim) { bestSim = sim; bestPair = [i, j]; }
+                    }
+                }
+
+                // 類似度0.6以上のペアをクラスタとして採用
+                if (bestSim >= 0.6 && bestPair) {
+                    return [states[bestPair[0]], states[bestPair[1]]];
+                }
+                return null;
+            }
+
+            _toVec(perceptual) {
+                return [
+                    perceptual.entropy        || 0,
+                    perceptual.avgPMI         || 0,
+                    perceptual.bigramDiversity|| 0,
+                    perceptual.tokenCount / 10 || 0
+                ];
+            }
+
+            _cosineSim(a, b) {
+                const dot  = a.reduce((s, v, i) => s + v * b[i], 0);
+                const normA = Math.sqrt(a.reduce((s, v) => s + v * v, 0));
+                const normB = Math.sqrt(b.reduce((s, v) => s + v * v, 0));
+                return (normA && normB) ? dot / (normA * normB) : 0;
+            }
+
+            _avgDistribution(states) {
+                const n = states.length;
+                return states.reduce((acc, s) => {
+                    acc[0] += (s.perceptual.entropy         || 0) / n;
+                    acc[1] += (s.perceptual.avgPMI          || 0) / n;
+                    acc[2] += (s.perceptual.bigramDiversity || 0) / n;
+                    acc[3] += (s.perceptual.tokenCount      || 0) / n;
+                    return acc;
+                }, [0, 0, 0, 0]);
+            }
+
             getActive() {
                 return this.protoConcepts.filter(p => p.stability < 0.6);
             }
-            
+
             promote(proto, conceptSpace) {
                 const conceptId = proto.label.replace(/『|』|的な何か/g, '');
                 const concept = conceptSpace.getOrCreate(conceptId);
                 concept.depth = proto.stability * 0.5;
                 concept.encounters = proto.useCount;
-                
+                // 分布ベクトルを概念にも引き継ぐ
+                if (proto.distributionVector) {
+                    concept.distributionVector = proto.distributionVector;
+                }
                 this.protoConcepts = this.protoConcepts.filter(p => p !== proto);
                 return conceptId;
             }
-            
+
             exportState() {
                 return {
                     protoConcepts: this.protoConcepts.map(p => p.exportState())
                 };
             }
-            
+
             importState(data) {
-                this.protoConcepts = (data.protoConcepts || []).map(p => 
+                this.protoConcepts = (data.protoConcepts || []).map(p =>
                     ProtoConcept.fromState(p)
                 );
             }
@@ -16413,29 +16934,22 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
             }
             
             generateAbstractLabel(members) {
-                const categoryPatterns = {
-                    '学習,理解,成長,知識': '認知活動',
-                    '対話,説明,伝える,表現': 'コミュニケーション',
-                    '失敗,迷い,混乱,困難': '困難体験',
-                    '好奇心,探索,発見,変化': '探索行動',
-                    '喜び,楽しい,嬉しい': 'ポジティブ感情',
-                    '不安,緊張,恐れ': 'ネガティブ感情',
-                    '暗い,夜,静か': '静寂環境',
-                    '明るい,昼,大きな音': '活発環境',
-                    '動画,映像,視聴': '映像認知',
-                    '生成,作成,制作': '創作活動'
-                };
-                
-                for (let [pattern, label] of Object.entries(categoryPatterns)) {
-                    const keywords = pattern.split(',');
-                    const matchCount = members.filter(m => 
-                        keywords.some(k => m.includes(k))
-                    ).length;
-                    
-                    if (matchCount >= 2) return label;
+                // 設計書「意味ラベル禁止」に従いハードコードカテゴリを廃止
+                // クラスタIDベースのラベルを返す（意味は付与しない）
+                // 会話を重ねるほどラベルではなく分布から意味が浮かび上がる
+                if (!members || members.length === 0) return 'cluster_unknown';
+
+                // TokenClusterEngineのクラスタIDを優先的に使う
+                if (window.ao && window.ao.languageOutputDL &&
+                    window.ao.languageOutputDL.languageAcquisition &&
+                    window.ao.languageOutputDL.languageAcquisition.tokenClusterEngine) {
+                    const tce = window.ao.languageOutputDL.languageAcquisition.tokenClusterEngine;
+                    const cid = tce.getCluster(members[0]);
+                    if (cid) return cid; // 例: 'cluster_3'
                 }
-                
-                return `${members[0]}系活動`;
+
+                // フォールバック: 先頭メンバー名をそのまま返す（意味付与なし）
+                return `${members[0]}系`;
             }
             
             detectOpposites(conceptSpace) {
@@ -20383,6 +20897,20 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                 this.videoAdapter = new VideoAdapter();
 
                 this.languageOutputDL = new LanguageOutputDL();
+
+                // languageOutputDLにbeing参照を注入
+                // learnFromUserInput内でthis.being.uninterpretedに流すために必要
+                this.languageOutputDL.being = this;
+
+                // ③ tokenClusterEngineをlanguageInputDL側と共有
+                // UnknownLanguageInputDLが独自インスタンスを持つため、
+                // languageOutputDL側のエンジンに統一して学習を共有する
+                if (this.languageInputDL.tokenClusterEngine !== undefined &&
+                    this.languageOutputDL.languageAcquisition &&
+                    this.languageOutputDL.languageAcquisition.tokenClusterEngine) {
+                    this.languageInputDL.tokenClusterEngine =
+                        this.languageOutputDL.languageAcquisition.tokenClusterEngine;
+                }
                 this.videoGenerator = new VideoGenerator();
                 this.imageGenerator = new ImageGenerator();  // v26.3.2
                 this.audioGenerator = new AudioGenerator();  // v26.3.2
@@ -20568,12 +21096,33 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                     this.inferenceMode = null;
                 }
                 
-                this.state = {
-                    joy: 0.5,
-                    tension: 0.3,
-                    curiosity: 0.6,
-                    calm: 0.6
-                };
+                // 6章: 内部状態の無名化
+                // stateVectorは[s0,s1,s2,s3]の無名ベクトル
+                // 既存コードとの互換のため joy/tension/curiosity/calm はgetterとして残す
+                // 分布構造（PMI/エントロピー）から自然に更新される（feel()経由）
+                this._stateVector = [0.5, 0.3, 0.6, 0.6]; // [s0,s1,s2,s3]
+                this.state = new Proxy(this._stateVector, {
+                    get: (vec, key) => {
+                        if (key === 'joy')      return vec[0];
+                        if (key === 'tension')  return vec[1];
+                        if (key === 'curiosity')return vec[2];
+                        if (key === 'calm')     return vec[3];
+                        // 直接インデックスアクセスも許可
+                        if (key === '0') return vec[0];
+                        if (key === '1') return vec[1];
+                        if (key === '2') return vec[2];
+                        if (key === '3') return vec[3];
+                        // その他のプロパティ（urgency等）はundefined
+                        return undefined;
+                    },
+                    set: (vec, key, value) => {
+                        if (key === 'joy')      { vec[0] = value; return true; }
+                        if (key === 'tension')  { vec[1] = value; return true; }
+                        if (key === 'curiosity'){ vec[2] = value; return true; }
+                        if (key === 'calm')     { vec[3] = value; return true; }
+                        return true; // 未知キーは無視
+                    }
+                });
                 
                 this.world = {
                     stability: 0.6,
@@ -20622,7 +21171,12 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                             personModel: this.personModel.exportState(),
                             languageOutputDL: this.languageOutputDL.exportState(),
                             sensoryIntegrator: this.sensoryIntegrator.exportState(),
-                            state: {...this.state},
+                            state: {
+                                joy:      this._stateVector[0],
+                                tension:  this._stateVector[1],
+                                curiosity:this._stateVector[2],
+                                calm:     this._stateVector[3]
+                            },
                             world: {...this.world},
                             identity: {...this.identity},
                             uninterpreted: this.uninterpreted.exportState(),
@@ -20987,7 +21541,13 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                     if (core.personModel) this.personModel.importState(core.personModel);
                     if (core.languageOutputDL) this.languageOutputDL.importState(core.languageOutputDL);
                     if (core.sensoryIntegrator) this.sensoryIntegrator.importState(core.sensoryIntegrator);
-                    if (core.state) Object.assign(this.state, core.state);
+                    if (core.state) {
+                        // Proxyを通さず_stateVectorに直接書き込む
+                        if (core.state.joy      !== undefined) this._stateVector[0] = core.state.joy;
+                        if (core.state.tension  !== undefined) this._stateVector[1] = core.state.tension;
+                        if (core.state.curiosity!== undefined) this._stateVector[2] = core.state.curiosity;
+                        if (core.state.calm     !== undefined) this._stateVector[3] = core.state.calm;
+                    }
                     if (core.world) Object.assign(this.world, core.world);
                     if (core.identity) {
                         Object.assign(this.identity, core.identity);
@@ -21362,10 +21922,23 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
 
                     // v26.6.1: pendingTermsを未解釈プールへ（直接概念昇格を防ぐ）
                     if (this.languageInputDL.pendingTerms && this.languageInputDL.pendingTerms.size > 0) {
+                        // pendingTermsのperceptualFeaturesをperceptualParserから取得
+                        let pendingPerceptual = null;
+                        if (this.languageOutputDL &&
+                            this.languageOutputDL.languageAcquisition &&
+                            this.languageOutputDL.languageAcquisition.perceptualParser) {
+                            try {
+                                const pp = this.languageOutputDL.languageAcquisition.perceptualParser;
+                                const allTerms = Array.from(this.languageInputDL.pendingTerms.keys()).join(' ');
+                                const toks = allTerms.split(/\s+/).filter(t => t.length > 1);
+                                pendingPerceptual = pp.extractPerceptualFeatures(allTerms, toks);
+                            } catch (_) {}
+                        }
                         for (const [term, data] of this.languageInputDL.pendingTerms) {
                             this.uninterpreted.add(
                                 this.state,
-                                `${term}（${(data.contexts[0] || '').substring(0, 30)}）`.substring(0, 50)
+                                `${term}（${(data.contexts[0] || '').substring(0, 30)}）`.substring(0, 50),
+                                pendingPerceptual
                             );
                         }
                         this.languageInputDL.pendingTerms.clear();
@@ -21576,10 +22149,23 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                         (inputs.images ? '視覚入力' : '') + 
                         (inputs.audios ? '聴覚入力' : '') +
                         (inputs.videos ? '映像入力' : '');
-                    
+
+                    // perceptualFeaturesを取得して渡す（切れてた神経を繋ぐ）
+                    let perceptualFeaturesEarly = null;
+                    if (inputs.text && this.languageOutputDL &&
+                        this.languageOutputDL.languageAcquisition &&
+                        this.languageOutputDL.languageAcquisition.perceptualParser) {
+                        try {
+                            const pp = this.languageOutputDL.languageAcquisition.perceptualParser;
+                            const toks = inputs.text.split(/\s+/).filter(t => t.length > 1);
+                            perceptualFeaturesEarly = pp.extractPerceptualFeatures(inputs.text, toks);
+                        } catch (_) {}
+                    }
+
                     const result = this.uninterpreted.add(
                         this.state,
-                        contextFragment.substring(0, 50)
+                        contextFragment.substring(0, 50),
+                        perceptualFeaturesEarly
                     );
                     
                     if (result.distorted) {
@@ -21593,6 +22179,34 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                     );
                     if (proto) {
                         this.addLog(`原概念生成: ${proto.label}`);
+                    }
+                }
+
+                // クラスタリング層 → 原概念昇格パイプライン
+                // 大きなクラスタ（3メンバー以上）を原概念候補として昇格
+                if (this.languageOutputDL &&
+                    this.languageOutputDL.languageAcquisition &&
+                    this.languageOutputDL.languageAcquisition.tokenClusterEngine) {
+                    try {
+                        const tce = this.languageOutputDL.languageAcquisition.tokenClusterEngine;
+                        const largeClusters = tce.getSummary().filter(c => c.size >= 3);
+                        for (const cluster of largeClusters.slice(0, 2)) {
+                            // クラスタメンバーを未解釈状態として原概念生成器に渡す
+                            const clusterStates = cluster.members.map(m => ({
+                                context: m,
+                                emotion: this.state,
+                                timestamp: Date.now(),
+                                perceptual: null
+                            }));
+                            if (clusterStates.length >= 2) {
+                                const proto = this.protoGenerator.tryGenerate(clusterStates);
+                                if (proto) {
+                                    this.addLog(`クラスタ→原概念: ${proto.label} (${cluster.clusterId})`);
+                                }
+                            }
+                        }
+                    } catch (clusterErr) {
+                        // クラスタリングエラーは無視
                     }
                 }
                 
@@ -21661,6 +22275,22 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                         console.warn('[MorphVariantLearner] learnFromTokens failed:', mvlErr);
                     }
                 }
+
+                // TokenClusterEngine: マルチモーダル入力のテキストも共起学習に流す
+                if (inputs.text &&
+                    this.languageOutputDL &&
+                    this.languageOutputDL.languageAcquisition &&
+                    this.languageOutputDL.languageAcquisition.tokenClusterEngine) {
+                    try {
+                        const tce = this.languageOutputDL.languageAcquisition.tokenClusterEngine;
+                        const textTokens = (inputs.text || '').split(/\s+/).filter(t => t.length > 1);
+                        if (textTokens.length > 0) tce.observe(textTokens);
+                    } catch (_) {}
+                }
+
+                // PerceptualParser→未解釈プール パイプラインは
+                // perceiveMultimodal上流のuninterpreted.add()で統合済み
+                // （モダリティ重みはmorphVariantLearner側で処理）
 
                 return { conceptIds, integrated };
             }
@@ -21742,21 +22372,37 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
             
             feel(integrated, conceptIds) {
                 const s = this.state;
-                
+
+                // polarityVector更新用にs0（joy相当）の変化前を記録
+                const svBefore = this._stateVector ? [...this._stateVector] : null;
+
+                // 未解釈プールの圧力（エントロピー平均を含む）
                 const pressure = this.uninterpreted.getPressure();
-                s.tension = Math.min(1, s.tension + pressure.tensionIncrease);
+                s.tension   = Math.min(1, s.tension   + pressure.tensionIncrease);
                 s.curiosity = Math.min(1, s.curiosity + pressure.curiosityIncrease);
-                
+
+                // 分布ベクトルから内部状態を自然更新
+                // [entropy, avgPMI, bigramDiversity, density]
+                // 名前付きラベルに触らず、統計構造から状態が湧き上がる
+                const dv = this.uninterpreted.getDistributionVector();
+                const dvEntropy     = dv[0]; // 高い = 予測困難 = tension上昇
+                const dvPMI         = dv[1]; // 高い = 結合強固 = calm上昇
+                const dvDiversity   = dv[2]; // 高い = 多様 = curiosity上昇
+                // entropyが高いほどtension微増、PMIが高いほどcalm微増
+                s.tension   = Math.min(1, s.tension   + dvEntropy   * 0.03);
+                s.calm      = Math.min(1, s.calm      + dvPMI       * 0.02);
+                s.curiosity = Math.min(1, s.curiosity + dvDiversity * 0.02);
+
                 const hints = integrated.emotion_hints;
                 if (hints.valence > 0.3) {
-                    s.joy = Math.min(1, s.joy + 0.15);
+                    s.joy     = Math.min(1, s.joy     + 0.15);
                     s.tension = Math.max(0, s.tension - 0.1);
                 } else if (hints.valence < -0.3) {
-                    s.joy = Math.max(0, s.joy - 0.1);
+                    s.joy     = Math.max(0, s.joy     - 0.1);
                     s.tension = Math.min(1, s.tension + 0.15);
-                    s.calm = Math.max(0, s.calm - 0.1);
+                    s.calm    = Math.max(0, s.calm    - 0.1);
                 }
-                
+
                 if (hints.arousal > 0.6) {
                     s.curiosity = Math.min(1, s.curiosity + 0.15);
                 }
@@ -21792,6 +22438,25 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                     const emotionalValue = hints.valence * 0.5 + (s.joy - 0.5);
                     this.distributedAffective.store(cId, emotionalValue);
                 });
+
+                // polarityVector更新：内部状態変化をトークンの極性学習に反映
+                // 「このトークンが来た後にjoyが上がった/下がった」→ 極性を更新
+                if (svBefore && this._stateVector &&
+                    this.languageOutputDL &&
+                    this.languageOutputDL.languageAcquisition &&
+                    this.languageOutputDL.languageAcquisition.tokenClusterEngine) {
+                    try {
+                        const tce = this.languageOutputDL.languageAcquisition.tokenClusterEngine;
+                        const svAfter = [...this._stateVector];
+                        // integrated.semantic_candidatesのトークンを対象に更新
+                        const tokens = (integrated.semantic_candidates || [])
+                            .map(c => c.concept)
+                            .filter(Boolean);
+                        if (tokens.length > 0) {
+                            tce.updatePolarity(tokens, { before: svBefore, after: svAfter });
+                        }
+                    } catch (_) {}
+                }
             }
             
             formHypothesis(integrated) {
