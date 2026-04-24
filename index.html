@@ -5022,7 +5022,9 @@ MemoryLimitsConfig._instance = null;
                     hue_hist:        this._avgArrays(scenesWithFeatures.map(sc => sc.features.hue_hist        || [])),
                     brightness_grid: this._avgArrays(scenesWithFeatures.map(sc => sc.features.brightness_grid || [])),
                     gradient_hist:   this._avgArrays(scenesWithFeatures.map(sc => sc.features.gradient_hist   || [])),
-                    hog_blocks:      this._avgArrays(scenesWithFeatures.map(sc => sc.features.hog_blocks      || []))
+                    hog_blocks:      this._avgArrays(scenesWithFeatures.map(sc => sc.features.hog_blocks      || [])),
+                    gabor_features:  this._avgArrays(scenesWithFeatures.map(sc => sc.features.gabor_features  || [])),
+                    lbp_features:    this._avgArrays(scenesWithFeatures.map(sc => sc.features.lbp_features    || []))
                 } : null;
 
                 return {
@@ -5894,37 +5896,86 @@ MemoryLimitsConfig._instance = null;
                 const ctx = canvas.getContext('2d');
                 
                 const frames = [];
-                
+
+                // ── 学習統計から動画パラメータを決定 ──
+                const topHint = (mood._imageHints || [])[0] || null;
+
+                // 支配色相（学習済み）
+                const baseHue = topHint && topHint.hueReliability > 0.4
+                    ? (topHint.dominantHue / 8) * 360
+                    : (mood.mood + 1) * 180;
+
+                // 質感スタイル
+                const isRough   = topHint && topHint.textureReliability > 0.4 && topHint.dominantGaborFreq >= 16;
+                const isUniform = topHint && topHint.lbpUniformity > 0.3;
+
+                // 形状傾向（HOG統計から）
+                const preferVertical   = topHint && topHint.isVertical   && topHint.shapeReliability > 0.4;
+                const preferHorizontal = topHint && topHint.isHorizontal && topHint.shapeReliability > 0.4;
+
                 for (let i = 0; i < totalFrames; i++) {
                     const progress = i / totalFrames;
-                    
-                    // 背景色（気分→色、時間で変化）
-                    const bgColor = this.moodToColorAnimated(mood, progress);
-                    ctx.fillStyle = bgColor;
+
+                    // 背景色: 学習した支配色 × 時間アニメーション
+                    const animHue = (baseHue + Math.sin(progress * Math.PI * 2) * 30) % 360;
+                    const bgSat   = 30 + mood.curiosity * 50;
+                    const bgLit   = topHint
+                        ? 10 + topHint.avgBrightness * 40 + Math.sin(progress * Math.PI) * 10
+                        : 20 + mood.confidence * 60 + Math.sin(progress * Math.PI) * 10;
+                    ctx.fillStyle = `hsl(${animHue}, ${bgSat}%, ${bgLit}%)`;
                     ctx.fillRect(0, 0, canvas.width, canvas.height);
-                    
-                    // 形状を描く（気分に基づいて）
-                    const shapeCount = Math.floor(1 + mood.curiosity * 4); // 1-5個
-                    
+
+                    // 形状数
+                    const shapeCount = Math.floor(1 + mood.curiosity * 4);
+
                     for (let j = 0; j < shapeCount; j++) {
                         const shapeProgress = (progress + j / shapeCount) % 1.0;
-                        this.drawMoodShape(ctx, mood, shapeProgress, canvas.width, canvas.height, j);
+
+                        // 形状タイプを学習統計から決定
+                        const useTension = mood.tension > 0.6;
+                        let forceShape = null;
+                        if (preferVertical)        forceShape = useTension ? 'triangle' : 'line_v';
+                        else if (preferHorizontal) forceShape = 'wave';
+
+                        // 色: 学習した色相帯を維持しながらアニメーション
+                        const shapeHue = (baseHue + shapeProgress * 60 + j * 20) % 360;
+                        const alpha    = isUniform ? 0.7 : 0.4 + mood.confidence * 0.4;
+                        ctx.fillStyle   = `hsla(${shapeHue}, 70%, 60%, ${alpha})`;
+                        ctx.strokeStyle = `hsla(${shapeHue}, 70%, 40%, ${alpha})`;
+                        ctx.lineWidth   = isRough ? 1 + mood.tension * 3 : 3 + mood.tension * 5;
+
+                        this.drawMoodShape(ctx, mood, shapeProgress, canvas.width, canvas.height, j, forceShape);
+
+                        // ザラザラ質感
+                        if (isRough && Math.random() > 0.7) {
+                            const x = Math.random() * canvas.width;
+                            const y = Math.random() * canvas.height;
+                            for (let n = 0; n < 20; n++) {
+                                ctx.fillRect(
+                                    x + (Math.random()-0.5)*50,
+                                    y + (Math.random()-0.5)*50,
+                                    2, 2
+                                );
+                            }
+                        }
                     }
-                    
+
                     frames.push(canvas.toDataURL('image/jpeg', 0.8));
-                    
+
                     if (window.taskManager) {
                         window.taskManager.updateProgress('generate', (i + 1) / totalFrames);
                     }
                 }
-                
+
                 this.processing = false;
-                
+
+                const conceptsUsed = (mood._imageHints || []).map(h => h.label + '(x' + h.count + ')');
                 return {
                     frames,
                     fps,
                     duration,
-                    description: this.moodToVideoDescription(mood)
+                    description: (conceptsUsed.length > 0 ? '[' + conceptsUsed.join('・') + '] x ' : '') + this.moodToVideoDescription(mood),
+                    conceptsUsed
                 };
             }
             
@@ -5942,7 +5993,7 @@ MemoryLimitsConfig._instance = null;
             /**
              * 気分に基づいた形状を描く
              */
-            drawMoodShape(ctx, mood, progress, width, height, index) {
+            drawMoodShape(ctx, mood, progress, width, height, index, forceShape = null) {
                 ctx.save();
                 
                 // 位置（アニメーション）
@@ -5959,8 +6010,9 @@ MemoryLimitsConfig._instance = null;
                 ctx.strokeStyle = `hsla(${hue % 360}, 70%, 40%, ${alpha})`;
                 ctx.lineWidth = 3 + mood.tension * 5;
                 
-                // 形状（tension高い → 尖った、低い → 丸い）
-                if (mood.tension > 0.6) {
+                // 形状（forceShape優先、なければtension判定）
+                const shapeType = forceShape || (mood.tension > 0.6 ? 'triangle' : mood.tension > 0.3 ? 'square' : 'circle');
+                if (shapeType === 'triangle' || mood.tension > 0.6) {
                     // 三角形
                     ctx.beginPath();
                     ctx.moveTo(x, y - size / 2);
@@ -6273,26 +6325,81 @@ MemoryLimitsConfig._instance = null;
                 canvas.width = 800;
                 canvas.height = 600;
                 const ctx = canvas.getContext('2d');
-                
-                // 背景色（気分→色、学習済み支配色も反映）
-                const bgColor = this.moodToBackgroundColor(mood);
-                ctx.fillStyle = bgColor;
+
+                // ── 学習統計から描画パラメータを決定 ──
+                const topHint = (mood._imageHints || [])[0] || null;
+
+                // 背景色: 学習した支配色 × 気分をブレンド
+                let bgHue, bgSat, bgLit;
+                if (topHint && topHint.hueReliability > 0.4) {
+                    // 学習した支配色相(0-7) → HSL色相(0-360)
+                    bgHue = (topHint.dominantHue / 8) * 360;
+                    bgSat = 30 + mood.curiosity * 40;
+                    bgLit = 10 + topHint.avgBrightness * 40 + mood.confidence * 20;
+                } else {
+                    bgHue = mood.mood > 0 ? 30 + mood.mood * 30 : 200 + mood.mood * 80;
+                    bgSat = 30 + mood.curiosity * 50;
+                    bgLit = 20 + mood.confidence * 60;
+                }
+                ctx.fillStyle = `hsl(${bgHue}, ${bgSat}%, ${bgLit}%)`;
                 ctx.fillRect(0, 0, canvas.width, canvas.height);
-                
-                // 複数の形状を描く（気分に基づいて）
-                const shapeCount = Math.floor(3 + mood.curiosity * 5); // 3-8個
-                
+
+                // 質感スタイル: Gabor/LBPから決定
+                const isRough    = topHint && topHint.textureReliability > 0.4 && topHint.dominantGaborFreq >= 16;
+                const isUniform  = topHint && topHint.lbpUniformity > 0.3;
+                const lineWidth  = isRough ? 1 + mood.tension * 3 : 3 + mood.tension * 5;
+                const useTexture = isRough; // ザラザラ感→ノイズ描画
+
+                // 形状数: curiosity × 学習概念数でスケール
+                const conceptCount = (mood._imageHints || []).length;
+                const shapeCount = Math.floor(3 + mood.curiosity * 5 + conceptCount * 0.5);
+
                 for (let i = 0; i < shapeCount; i++) {
-                    const shapeType = this.moodToShapeType(mood);
-                    const shapeColor = this.moodToShapeColor(mood, i / shapeCount);
-                    const shapeSize = 50 + Math.random() * 150 * (1 + mood.confidence);
-                    
+                    // 形状タイプ: HOG統計から決定
+                    let shapeType;
+                    if (topHint && topHint.shapeReliability > 0.4) {
+                        if (topHint.isVertical)        shapeType = mood.tension > 0.5 ? 'triangle' : 'line';
+                        else if (topHint.isHorizontal) shapeType = mood.curiosity > 0.5 ? 'wave' : 'line';
+                        else                           shapeType = mood.tension > 0.5 ? 'star' : 'spiral';
+                    } else {
+                        shapeType = this.moodToShapeType(mood);
+                    }
+
+                    // 形状色: 学習した色相 × 気分のオフセット
+                    let shapeHue;
+                    if (topHint && topHint.hueReliability > 0.4) {
+                        shapeHue = (bgHue + 30 + i * 15) % 360;
+                    } else {
+                        shapeHue = (mood.mood + 1) * 180 + i * 20;
+                    }
+                    const shapeSat   = 50 + mood.curiosity * 40;
+                    const shapeLit   = 40 + mood.confidence * 40;
+                    const shapeAlpha = isUniform ? 0.8 : 0.5 + Math.random() * 0.4;
+                    const shapeColor = `hsla(${shapeHue % 360}, ${shapeSat}%, ${shapeLit}%, ${shapeAlpha})`;
+
+                    // サイズ: 明度統計 × 気分
+                    const brightnessFactor = topHint ? topHint.avgBrightness : 0.5;
+                    const shapeSize = 40 + brightnessFactor * 100 + Math.random() * 100 * mood.confidence;
+
+                    // 位置
                     const x = Math.random() * canvas.width;
                     const y = Math.random() * canvas.height;
-                    
+
+                    // 質感を線幅に反映
+                    ctx.lineWidth = lineWidth;
                     this.drawAbstractShape(ctx, shapeType, x, y, shapeSize, shapeColor, mood);
+
+                    // ザラザラ感: ノイズ点を散布
+                    if (useTexture && Math.random() > 0.5) {
+                        ctx.fillStyle = shapeColor;
+                        for (let n = 0; n < 30; n++) {
+                            const nx = x + (Math.random() - 0.5) * shapeSize;
+                            const ny = y + (Math.random() - 0.5) * shapeSize;
+                            ctx.fillRect(nx, ny, 2, 2);
+                        }
+                    }
                 }
-                
+
                 this.processing = false;
                 
                 const conceptsUsed = (mood._imageHints || []).map(h => h.label + '(x' + h.count + ')');
@@ -6524,7 +6631,7 @@ MemoryLimitsConfig._instance = null;
                     this.hypotheses.set(token, {
                         hue:        { sum: new Array(8).fill(0),    sumSq: new Array(8).fill(0),    samples: 0 },
                         brightness: { sum: new Array(256).fill(0),  sumSq: new Array(256).fill(0),  samples: 0 },
-                        spatial:    { sum: new Array(2056).fill(0), sumSq: new Array(2056).fill(0), samples: 0 },
+                        spatial:    { sum: new Array(2104).fill(0), sumSq: new Array(2104).fill(0), samples: 0 }, // [v5] +gabor32+lbp16
                         best_channel: null,
                         confidence: 0,
                         defined: false,
@@ -6622,7 +6729,7 @@ MemoryLimitsConfig._instance = null;
                         score = this._cosineSim(brightnessGrid, mean, 256);
                     } else {
                         const mean = hyp.spatial.sum.map(v => v / n);
-                        score = this._cosineSim(spatialVec, mean, 136);
+                        score = this._cosineSim(spatialVec, mean, 2104); // [v5]
                     }
 
                     // 定義済みは信頼度ボーナス
@@ -6897,6 +7004,99 @@ MemoryLimitsConfig._instance = null;
                 return Array.from(bins).map(v => v / total);
             }
 
+            // ---- [v5追加] Gaborフィルター: 質感の周波数・方向 = 32次元 ----
+            // 4周波数 × 8方向 = 32次元
+            // 毛並み・縞模様・ザラザラ感などテクスチャの周波数と方向を捉える
+            _gaborFeatures(data, w, h) {
+                const freqs = [2, 4, 8, 16]; // 空間周波数（低→高）
+                const angles = [0, Math.PI/8, Math.PI/4, 3*Math.PI/8,
+                                Math.PI/2, 5*Math.PI/8, 3*Math.PI/4, 7*Math.PI/8];
+                const features = new Float32Array(freqs.length * angles.length);
+                let fi = 0;
+
+                // グレースケール変換
+                const gray = new Float32Array(w * h);
+                for (let i = 0; i < w * h; i++) {
+                    gray[i] = (data[i*4]*0.299 + data[i*4+1]*0.587 + data[i*4+2]*0.114) / 255;
+                }
+
+                for (const freq of freqs) {
+                    for (const angle of angles) {
+                        const sigma = 2.0;
+                        const lambda = w / freq;
+                        const cosA = Math.cos(angle);
+                        const sinA = Math.sin(angle);
+                        let response = 0;
+                        let count = 0;
+
+                        // カーネルサイズ（sigmaの3倍）
+                        const ks = Math.min(Math.ceil(sigma * 3), 8);
+                        const cx = Math.floor(w / 2);
+                        const cy = Math.floor(h / 2);
+
+                        // サンプリング（全ピクセルは重いので格子状に）
+                        const step = Math.max(1, Math.floor(w / 16));
+                        for (let y = ks; y < h - ks; y += step) {
+                            for (let x = ks; x < w - ks; x += step) {
+                                // Gaborカーネル応答
+                                let real = 0;
+                                for (let ky = -ks; ky <= ks; ky++) {
+                                    for (let kx = -ks; kx <= ks; kx++) {
+                                        const nx = x + kx;
+                                        const ny = y + ky;
+                                        if (nx < 0 || nx >= w || ny < 0 || ny >= h) continue;
+                                        const xp =  kx * cosA + ky * sinA;
+                                        const yp = -kx * sinA + ky * cosA;
+                                        const gauss = Math.exp(-(xp*xp + yp*yp) / (2*sigma*sigma));
+                                        const wave  = Math.cos(2 * Math.PI * xp / lambda);
+                                        real += gray[ny * w + nx] * gauss * wave;
+                                    }
+                                }
+                                response += Math.abs(real);
+                                count++;
+                            }
+                        }
+                        features[fi++] = count > 0 ? response / count : 0;
+                    }
+                }
+
+                // 正規化
+                const max = Math.max(...features, 1e-6);
+                return Array.from(features).map(v => v / max);
+            }
+
+            // ---- [v5追加] LBP（Local Binary Pattern）: 局所テクスチャ = 16次元 ----
+            // 各ピクセルの周囲8近傍との大小比較でパターンを作る
+            // 毛並みの細かさ・均一さ・境界のシャープさを捉える
+            _lbpFeatures(data, w, h) {
+                const gray = new Float32Array(w * h);
+                for (let i = 0; i < w * h; i++) {
+                    gray[i] = (data[i*4]*0.299 + data[i*4+1]*0.587 + data[i*4+2]*0.114) / 255;
+                }
+
+                // 16ビンのヒストグラム（256パターンを16に量子化）
+                const hist = new Float32Array(16);
+                const dx = [1,1,0,-1,-1,-1,0,1];
+                const dy = [0,1,1,1,0,-1,-1,-1];
+
+                for (let y = 1; y < h - 1; y++) {
+                    for (let x = 1; x < w - 1; x++) {
+                        const center = gray[y * w + x];
+                        let code = 0;
+                        for (let k = 0; k < 8; k++) {
+                            const nx = x + dx[k];
+                            const ny = y + dy[k];
+                            if (gray[ny * w + nx] >= center) code |= (1 << k);
+                        }
+                        hist[Math.floor(code / 16)]++;
+                    }
+                }
+
+                // 正規化
+                const total = hist.reduce((a,b)=>a+b, 1);
+                return Array.from(hist).map(v => v / total);
+            }
+
             // ---- [v4改善] HOGブロック分割: 16×16グリッド × 8方向 = 2048次元 ----
             // 「輪郭の方向がどこ（位置）にあるか」を捉える
             // 256x256により指の本数・細部パーツの位置まで対応
@@ -7055,12 +7255,15 @@ MemoryLimitsConfig._instance = null;
             learnHypothesis(label, features) {
                 try {
                     if (!features || !features.hue_hist) return;
-                    const hueHist        = features.hue_hist;          //   8次元
-                    const brightnessGrid = features.brightness_grid;   //  16次元
-                    const gradHist       = features.gradient_hist;     //   8次元
-                    const hogBlocks      = features.hog_blocks;        // 128次元
-                    const spatialVec     = gradHist && hogBlocks       // 136次元（空間チャンネル）
-                        ? [...gradHist, ...hogBlocks]
+                    const hueHist        = features.hue_hist;          //    8次元
+                    const brightnessGrid = features.brightness_grid;   //  256次元 [v4]
+                    const gradHist       = features.gradient_hist;     //    8次元
+                    const hogBlocks      = features.hog_blocks;        // 2048次元 [v4]
+                    const gaborFeatures  = features.gabor_features || []; //  32次元 [v5]
+                    const lbpFeatures    = features.lbp_features   || []; //  16次元 [v5]
+                    // spatialVec: 形状+空間+質感 = 2104次元 [v5]
+                    const spatialVec = gradHist && hogBlocks
+                        ? [...gradHist, ...hogBlocks, ...gaborFeatures, ...lbpFeatures]
                         : (gradHist || []);
 
                     this.hypothesisTable.observe(label, hueHist, brightnessGrid, spatialVec);
@@ -7122,13 +7325,15 @@ MemoryLimitsConfig._instance = null;
                         const pixelCount = SIZE * SIZE;
 
                         // 特徴抽出
-                        const hueHist        = this._hueHistogram(data, pixelCount);      //   8次元
-                        const brightnessGrid = this._brightnessGrid(data, SIZE, SIZE);    //  16次元
-                        const gradHist       = this._gradientHistogram(data, SIZE, SIZE); //   8次元
-                        const hogBlocks      = this._hogBlocks(data, SIZE, SIZE);         // 128次元 [v3]
+                        const hueHist        = this._hueHistogram(data, pixelCount);      //    8次元
+                        const brightnessGrid = this._brightnessGrid(data, SIZE, SIZE);    //  256次元 [v4]
+                        const gradHist       = this._gradientHistogram(data, SIZE, SIZE); //    8次元
+                        const hogBlocks      = this._hogBlocks(data, SIZE, SIZE);         // 2048次元 [v4]
+                        const gaborFeatures  = this._gaborFeatures(data, SIZE, SIZE);     //   32次元 [v5] 質感
+                        const lbpFeatures    = this._lbpFeatures(data, SIZE, SIZE);       //   16次元 [v5] 局所テクスチャ
 
-                        // 160次元の視覚ベクトル [v3]
-                        const visual_vector = [...hueHist, ...brightnessGrid, ...gradHist, ...hogBlocks];
+                        // 2368次元の視覚ベクトル [v5]
+                        const visual_vector = [...hueHist, ...brightnessGrid, ...gradHist, ...hogBlocks, ...gaborFeatures, ...lbpFeatures];
 
                         // プロトタイプ照合（学習済みがあれば）
                         const protoMatches = this.matchPrototype(visual_vector);
@@ -7137,7 +7342,7 @@ MemoryLimitsConfig._instance = null;
                         let semantics = this._vectorToSemantics(hueHist, brightnessGrid, gradHist, hogBlocks);
 
                         // [v27.0] 仮説テーブル照合（定義済み概念を優先）
-                        const spatialVec = [...gradHist, ...hogBlocks];
+                        const spatialVec = [...gradHist, ...hogBlocks, ...gaborFeatures, ...lbpFeatures];
                         const hypothesisMatches = this.hypothesisTable.matchHypotheses(hueHist, brightnessGrid, spatialVec);
                         // 定義済みの仮説は最上位に追加
                         hypothesisMatches.forEach(m => {
@@ -7170,7 +7375,9 @@ MemoryLimitsConfig._instance = null;
                                 hue_hist:        hueHist,
                                 brightness_grid: brightnessGrid,
                                 gradient_hist:   gradHist,
-                                hog_blocks:      hogBlocks,     // [v3]
+                                hog_blocks:      hogBlocks,     // [v4]
+                                gabor_features:  gaborFeatures, // [v5] 質感
+                                lbp_features:    lbpFeatures,   // [v5] 局所テクスチャ
                                 dominant_hue:    dominantHue,
                                 dominant_dir:    dominantDir,
                             },
@@ -7215,15 +7422,21 @@ MemoryLimitsConfig._instance = null;
                 );
                 // 160次元の内訳: [0-7]色相 [8-23]明度 [24-31]勾配 [32-159]HOG
                 const hueHist        = mean.slice(0, 8);
-                const brightnessGrid = mean.slice(8, 264);    // 256次元(v4)
+                const brightnessGrid = mean.slice(8, 264);      // 256次元(v4)
                 const gradHist       = mean.slice(264, 272);
+                const gaborFeatures  = mean.slice(2320, 2352);  // 32次元(v5) 質感
+                const lbpFeatures    = mean.slice(2352, 2368);  // 16次元(v5) 局所テクスチャ
                 const hueVar         = variance.slice(0, 8);
                 const brightnessVar  = variance.slice(8, 264);
                 const gradVar        = variance.slice(264, 272);
+                const gaborVar       = variance.slice(2320, 2352);
+                const lbpVar         = variance.slice(2352, 2368);
 
                 const hueReliability        = 1 / (1 + hueVar.reduce((a,b)=>a+b,0) / 8);
-                const brightnessReliability = 1 / (1 + brightnessVar.reduce((a,b)=>a+b,0) / 16);
+                const brightnessReliability = 1 / (1 + brightnessVar.reduce((a,b)=>a+b,0) / 256);
                 const shapeReliability      = 1 / (1 + gradVar.reduce((a,b)=>a+b,0) / 8);
+                const textureReliability    = 1 / (1 + (gaborVar.reduce((a,b)=>a+b,0) / 32
+                                             + lbpVar.reduce((a,b)=>a+b,0) / 16) / 2);
 
                 const dominantHueIdx = hueHist.indexOf(Math.max(...hueHist));
                 const avgBrightness  = brightnessGrid.reduce((a,b)=>a+b,0) / 16;
@@ -7241,6 +7454,9 @@ MemoryLimitsConfig._instance = null;
                     isHorizontal:   [0,4].includes(dominantGradIdx),
                     isVertical:     [2,6].includes(dominantGradIdx),
                     shapeReliability,
+                    textureReliability,                          // [v5] 質感信頼度
+                    dominantGaborFreq: gaborFeatures.indexOf(Math.max(...gaborFeatures)), // 支配的テクスチャ周波数
+                    lbpUniformity: lbpFeatures[0],              // 均一テクスチャ度
                     meanVector: mean
                 });
             });
@@ -7294,6 +7510,23 @@ MemoryLimitsConfig._instance = null;
                     );
                 }
                 blended._imageHints = imageHints.slice(0, 3);
+
+                // 質感 → tension/curiosityに影響
+                // 高周波テクスチャ(ザラザラ) → tension上昇
+                // 低周波テクスチャ(なめらか) → tension低下
+                if (top.textureReliability > 0.4) {
+                    const freqIdx = top.dominantGaborFreq || 0;
+                    const isHighFreq = freqIdx >= 16; // 高周波(8,16周波数帯)
+                    if (isHighFreq) {
+                        blended.tension = Math.min(1, (blended.tension || 0) + 0.1 * top.textureReliability);
+                    } else {
+                        blended.tension = Math.max(0, (blended.tension || 0) - 0.1 * top.textureReliability);
+                    }
+                    // 均一テクスチャ → confidence上昇
+                    blended.confidence = Math.min(1,
+                        (blended.confidence || 0.5) * 0.8 + top.lbpUniformity * 0.2
+                    );
+                }
             }
 
             if (audioHints && audioHints.length > 0) {
