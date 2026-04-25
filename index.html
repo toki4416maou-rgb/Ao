@@ -31618,6 +31618,27 @@ class ConceptValidator {
 //     概念構造を反映した自然な名前を複数候補から選ぶ
 // ─────────────────────────────────────────────────────────────
 class ConceptLabelGenerator {
+    constructor(being) {
+        this.being = being;
+    }
+
+    /**
+     * TokenClusterEngineから学習済みの隣接語を取得する
+     * 何も学習していなければ空配列を返す（ハードコードにフォールバックしない）
+     */
+    _getLearnedNeighbors(word, n = 3) {
+        try {
+            const tce = this.being &&
+                this.being.languageOutputDL &&
+                this.being.languageOutputDL.languageAcquisition &&
+                this.being.languageOutputDL.languageAcquisition.tokenClusterEngine;
+            if (!tce) return [];
+            return tce.getClusterMembers(word).slice(0, n);
+        } catch (e) {
+            return [];
+        }
+    }
+
     /**
      * 検証済み概念からラベル候補を生成し、最適なものを primaryLabel に設定する
      * @param {SynthesizedConcept} concept
@@ -31665,16 +31686,25 @@ class ConceptLabelGenerator {
         const coreA = concept.core.function.split('×')[0] || idA;
         const coreB = concept.core.function.split('×')[1] || idB;
 
-        return [
-            // 自然な語順
+        // 構造的な組み合わせ（学習語彙に依存しない・意味的に中立な形式）
+        const labels = [
             `${coreA}の${coreB}`,
             `${coreB}を持つ${coreA}`,
-            // 圧縮形
             `${coreA}${coreB}`,
-            // 修飾形
-            `飛行${coreA}`,
             `${coreB}型${coreA}`,
-        ].filter(l => l.length <= 12); // 短縮優先
+        ];
+
+        // 学習済み隣接語があれば、それを修飾語として追加
+        const neighborsA = this._getLearnedNeighbors(coreA, 2);
+        const neighborsB = this._getLearnedNeighbors(coreB, 2);
+        for (const n of neighborsB) {
+            if (n && n !== coreA) labels.push(`${n}${coreA}`);
+        }
+        for (const n of neighborsA) {
+            if (n && n !== coreB) labels.push(`${coreB}の${n}`);
+        }
+
+        return labels.filter(l => l.length <= 12);
     }
 
     _generateAddAttrLabels(concept) {
@@ -31685,34 +31715,60 @@ class ConceptLabelGenerator {
 
         const labels = [];
         if (attrVals.length > 0) {
-            const attr = attrVals[attrVals.length - 1]; // 最後に追加された属性
+            const attr = attrVals[attrVals.length - 1];
             labels.push(`${attr}の${base}`);
             labels.push(`${attr}${base}`);
             labels.push(`${base}（${attr}）`);
         }
-        labels.push(`強化${base}`);
+
+        // 学習済み隣接語を修飾語として使う（ハードコード「強化」は使わない）
+        const neighbors = this._getLearnedNeighbors(base, 2);
+        for (const n of neighbors) {
+            if (n && n !== base) labels.push(`${n}の${base}`);
+        }
+
         return labels;
     }
 
     _generateRemoveAttrLabels(concept) {
         const base = concept.sourceIds[0] || concept.core.function;
-        return [
-            `簡素${base}`,
-            `${base}（原型）`,
-            `原始${base}`,
-            `核${base}`,
+
+        // 元の概念IDから「属性を除いた核」として表現（ハードコード接頭語なし）
+        const labels = [
+            `${base}（元）`,
+            `${base}のみ`,
         ];
+
+        // 学習済み隣接語で「シンプルな」方向のものを探す
+        const neighbors = this._getLearnedNeighbors(base, 3);
+        for (const n of neighbors) {
+            if (n && n !== base) labels.push(`${n}の${base}`);
+        }
+
+        return labels.filter(l => l.length <= 12);
     }
 
     _generateReplaceAttrLabels(concept) {
         const base = concept.sourceIds[0] || concept.core.function;
         const attrVals = Object.values(concept.attributes).filter(Boolean);
-        const attr = attrVals[0] || '変容';
-        return [
-            `${attr}${base}`,
-            `変容${base}`,
-            `${base}（${attr}版）`,
-        ];
+
+        const labels = [];
+        if (attrVals.length > 0) {
+            const attr = attrVals[0];
+            labels.push(`${attr}${base}`);
+            labels.push(`${base}（${attr}版）`);
+        }
+
+        // 学習済み隣接語を使う（ハードコード「変容」は使わない）
+        const neighbors = this._getLearnedNeighbors(base, 2);
+        for (const n of neighbors) {
+            if (n && n !== base) labels.push(`${n}${base}`);
+        }
+
+        // 何も生成できなければ元の概念名をそのまま使う
+        if (labels.length === 0) labels.push(base);
+
+        return labels.filter(l => l.length <= 12);
     }
 
     /**
@@ -31756,7 +31812,7 @@ class ConceptSynthesisEngine {
         this.decomposer    = new ConceptDecomposer();
         this.composer      = new ConceptComposer();
         this.validator     = new ConceptValidator();
-        this.labelGen      = new ConceptLabelGenerator();
+        this.labelGen      = new ConceptLabelGenerator(being);
 
         // 生成済み概念プール
         this.synthesized   = [];        // 検証通過済み
@@ -31958,9 +32014,34 @@ class ConceptSynthesisEngine {
     }
 
     _pickAttrValue() {
-        const vals = ['明', '暗', '速', '静', '小', '大', '軽', '重',
-                      '熱', '冷', '柔', '硬', '新', '旧', '透明', '不透明'];
-        return vals[Math.floor(Math.random() * vals.length)];
+        // 学習済み語彙からランダムに属性値を選ぶ
+        try {
+            const tce = this.being &&
+                this.being.languageOutputDL &&
+                this.being.languageOutputDL.languageAcquisition &&
+                this.being.languageOutputDL.languageAcquisition.tokenClusterEngine;
+            if (tce) {
+                // vocabから短い語（1〜3文字）を属性値候補として使う
+                const vocab = Array.from(tce.vocab ? tce.vocab.keys() : [])
+                    .filter(w => w && w.length >= 1 && w.length <= 3);
+                if (vocab.length > 0) {
+                    return vocab[Math.floor(Math.random() * vocab.length)];
+                }
+            }
+        } catch (e) {}
+        // 学習がまだ十分でない場合は概念空間から拾う
+        try {
+            const space = this.being && this.being.concepts;
+            if (space && space.concepts && space.concepts.size > 0) {
+                const ids = Array.from(space.concepts.keys())
+                    .filter(k => k && k.length <= 3);
+                if (ids.length > 0) {
+                    return ids[Math.floor(Math.random() * ids.length)];
+                }
+            }
+        } catch (e) {}
+        // 何も学習していない場合は空文字（ハードコードリストを使わない）
+        return '';
     }
 
     _log(msg) {
