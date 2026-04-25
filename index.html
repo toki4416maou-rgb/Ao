@@ -1504,9 +1504,81 @@ async function aoActivateAfterPaypal() {
                         <div class="metric"><span>社会</span><span id="axisSocial">0.0</span></div>
                     </div>
                     <div style="font-size: 0.7rem; opacity: 0.5; margin-top: 0.5rem;">※ 12軸固定（追加禁止）</div>
+
+                    <!-- AxisCodec リアルタイム表示 -->
+                    <div style="margin-top: 0.75rem; border-top: 1px solid rgba(168,85,247,0.2); padding-top: 0.5rem;">
+                        <div style="font-size: 0.65rem; color: #c084fc; margin-bottom: 0.4rem;">
+                            🔗 AxisCodec — 統計信頼構造
+                            <span id="axisCodecTrainCount" style="color:#86efac; margin-left:0.5rem;">学習0回</span>
+                        </div>
+                        <div id="axisCodecDisplay" style="font-size: 0.62rem; line-height: 1.6;">
+                            <div style="color:#6b7280;">入力待ち...</div>
+                        </div>
+                        <div style="margin-top:0.4rem; display:flex; gap:0.3rem; flex-wrap:wrap;">
+                            <button onclick="window._aoAxisCodecDecodeTest('language')"
+                                style="font-size:0.6rem;padding:0.2rem 0.4rem;background:rgba(96,165,250,0.2);border:1px solid rgba(96,165,250,0.4);border-radius:0.25rem;cursor:pointer;color:#60a5fa;">
+                                言語→生成
+                            </button>
+                            <button onclick="window._aoAxisCodecDecodeTest('image')"
+                                style="font-size:0.6rem;padding:0.2rem 0.4rem;background:rgba(249,115,22,0.2);border:1px solid rgba(249,115,22,0.4);border-radius:0.25rem;cursor:pointer;color:#f97316;">
+                                画像→生成
+                            </button>
+                            <button onclick="window._aoAxisCodecDecodeTest('audio')"
+                                style="font-size:0.6rem;padding:0.2rem 0.4rem;background:rgba(6,182,212,0.2);border:1px solid rgba(6,182,212,0.4);border-radius:0.25rem;cursor:pointer;color:#06b6d4;">
+                                音声→生成
+                            </button>
+                        </div>
+                    </div>
                 </div>
             </div>
             </div>
+
+            <!-- IdentityManager / SpatialState / Intent パネル -->
+            <div class="panel collapsible-panel">
+                <div class="panel-title" onclick="togglePanel('identityPanel')" style="cursor:pointer;">
+                    🧬 Identity / State / Intent <span id="identityPanelToggle" style="float:right;">▼</span>
+                </div>
+                <div id="identityPanel" style="display:none;">
+
+                    <!-- Intent表示 -->
+                    <div style="margin-bottom:0.5rem;padding:0.4rem;background:rgba(96,165,250,0.08);border-radius:0.3rem;border-left:2px solid #60a5fa;">
+                        <div style="font-size:0.65rem;color:#60a5fa;margin-bottom:0.2rem;">⚡ 現在のIntent</div>
+                        <div id="intentDisplay" style="font-size:0.7rem;color:#e2e8f0;">待機中...</div>
+                        <div id="intentMetrics" style="font-size:0.6rem;color:#6b7280;margin-top:0.2rem;"></div>
+                    </div>
+
+                    <!-- SpatialState サマリ -->
+                    <div style="margin-bottom:0.5rem;padding:0.4rem;background:rgba(52,211,153,0.08);border-radius:0.3rem;border-left:2px solid #34d399;">
+                        <div style="font-size:0.65rem;color:#34d399;margin-bottom:0.2rem;">🌐 SpatialState（空間野）</div>
+                        <div id="spatialDisplay" style="font-size:0.65rem;color:#d1fae5;line-height:1.6;">
+                            <div>動作: <span id="spatialMotion" style="color:#fbbf24;font-weight:600;">---</span></div>
+                            <div>視点 yaw/pitch: <span id="spatialPose">---</span></div>
+                            <div>視点多様性: <span id="spatialDiversity">---</span></div>
+                            <div>速度 [vx,vy,vz]: <span id="spatialVel">---</span></div>
+                            <div>位置 [x,y,z]: <span id="spatialPos">---</span></div>
+                            <div>予測誤差: <span id="spatialErr">---</span></div>
+                            <div>信頼度: <span id="spatialConf">---</span></div>
+                        </div>
+                    </div>
+
+                    <!-- IdentityManager 一覧 -->
+                    <div style="padding:0.4rem;background:rgba(167,139,250,0.08);border-radius:0.3rem;border-left:2px solid #a78bfa;">
+                        <div style="font-size:0.65rem;color:#a78bfa;margin-bottom:0.3rem;">
+                            🔗 Identities
+                            <span id="identityCount" style="color:#86efac;margin-left:0.4rem;">0件</span>
+                            <span id="unknownRate" style="color:#fbbf24;margin-left:0.4rem;"></span>
+                        </div>
+                        <div id="identityList" style="font-size:0.6rem;max-height:8rem;overflow-y:auto;line-height:1.7;"></div>
+                    </div>
+
+                    <!-- PredictionLoop 平均誤差 -->
+                    <div style="margin-top:0.4rem;font-size:0.6rem;color:#6b7280;display:flex;gap:0.8rem;">
+                        <span>avgPredError: <span id="predAvgErr" style="color:#f87171;">---</span></span>
+                        <span>highErr IDs: <span id="predHighErr" style="color:#fb923c;">---</span></span>
+                    </div>
+                </div>
+            </div>
+
         </div>
         <div class="chat">
             <div class="messages" id="messages">
@@ -2089,8 +2161,20 @@ MemoryLimitsConfig._instance = null;
                 if (integration.contradictions && integration.contradictions.length > 0) {
                     return { action: 'hesitate', reason: '矛盾' };
                 }
+
+                // ── IntentGenerator からのintentを反映 ──
+                const intentState = this.being?._latestIntentWorldState || {};
+                const goal = intentState.intent_goal || 'explain';
+
+                if (goal === 'ask') {
+                    return { action: 'ask', reason: 'intent:未知率高', intent: intentState };
+                } else if (goal === 'predict') {
+                    return { action: 'predict', reason: 'intent:予測誤差高', intent: intentState };
+                } else if (goal === 'react') {
+                    return { action: 'react', reason: 'intent:未解釈プール過多', intent: intentState };
+                }
                 
-                return { action: 'proceed', reason: '通常' };
+                return { action: 'proceed', reason: '通常', intent: intentState };
             }
             
             act(decision) {
@@ -3701,16 +3785,24 @@ MemoryLimitsConfig._instance = null;
                 }
             }
             
-            projectToAxes(concept) {
+            projectToAxes(concept, featureVec = null, modality = 'language') {
                 try {
-                    // 概念を12軸に射影
-                    const projection = {};
-                    
-                    for (const [key, axis] of Object.entries(this.axes)) {
-                        // 簡易的な射影計算
-                        projection[key] = Math.random() * axis.depth;
+                    // コーデックが利用可能なら学習済み重みで射影
+                    const codec = window._aoAxisCodec;
+                    if (codec && featureVec && featureVec.length > 0) {
+                        const dist = codec.encode(featureVec, modality);
+                        const projection = {};
+                        for (const [key] of Object.entries(this.axes)) {
+                            projection[key] = dist[key] ? dist[key].mu : 0;
+                        }
+                        return projection;
                     }
                     
+                    // フォールバック: axis.depthベースの決定論的射影
+                    const projection = {};
+                    for (const [key, axis] of Object.entries(this.axes)) {
+                        projection[key] = axis.depth * 0.5;
+                    }
                     return projection;
                 } catch (error) {
                     console.error('projectToAxes failed:', error);
@@ -3785,6 +3877,229 @@ MemoryLimitsConfig._instance = null;
             importState(data) {
                 if (data.axes) {
                     this.axes = JSON.parse(JSON.stringify(data.axes));
+                }
+            }
+        }
+        
+        // ================================================================
+        // MultimodalAxisCodec v1.0
+        // 各モダリティ特徴量 ↔ 12軸分布（μ,σ）の双方向変換
+        // ================================================================
+        class MultimodalAxisCodec {
+            constructor() {
+                this.AXIS_NAMES = [
+                    'causality','hierarchy','information','evolution',
+                    'constraint','feedback','meaning','narrative',
+                    'selfReference','boundary','emotion','social'
+                ];
+                // モダリティ別の特徴量次元
+                this.FEAT_DIM = {
+                    language: 64,
+                    image:    2368, // hueHist(8)+brightnessGrid(256)+gradHist(8)+HOG(2048)+gabor(32)+lbp(16) = 2368次元フル
+                    audio:    128,
+                    video:    64
+                };
+                this.LR = 0.003;           // 学習率
+                this.trainCount = 0;
+                
+                // エンコーダ重み: W_enc[mod][axis] = Float32Array(dim)
+                this.W_enc  = {};
+                this.B_enc  = {};
+                // σ（不確かさ）用重み
+                this.W_sig  = {};
+                // デコーダ重み: W_dec[mod][axis] = Float32Array(dim)
+                this.W_dec  = {};
+                this.B_dec  = {};
+                
+                this._initWeights();
+                console.log('[AxisCodec] initialized — 4 modalities × 12 axes');
+            }
+
+            _initWeights() {
+                for (const [mod, dim] of Object.entries(this.FEAT_DIM)) {
+                    this.W_enc[mod] = {}; this.B_enc[mod] = {};
+                    this.W_sig[mod] = {}; this.W_dec[mod] = {}; this.B_dec[mod] = {};
+                    const sc = Math.sqrt(2.0 / dim);
+                    for (const ax of this.AXIS_NAMES) {
+                        this.W_enc[mod][ax] = Float32Array.from({length: dim}, () => (Math.random()-.5)*sc);
+                        this.B_enc[mod][ax] = 0;
+                        this.W_sig[mod][ax] = Float32Array.from({length: dim}, () => (Math.random()-.5)*sc*.1);
+                        this.W_dec[mod][ax] = Float32Array.from({length: dim}, () => (Math.random()-.5)*sc);
+                        this.B_dec[mod][ax] = new Float32Array(dim);
+                    }
+                }
+            }
+
+            // ── ユーティリティ ────────────────────────────────────────
+            _sig(x)  { return 1/(1+Math.exp(-Math.max(-10,Math.min(10,x)))); }
+            _soft(x) { return Math.log(1+Math.exp(Math.max(-10,Math.min(10,x)))); }
+            _norm(v) { let s=0; for(let i=0;i<v.length;i++) s+=v[i]*v[i]; return Math.sqrt(s)||1; }
+            _randn() {
+                const u=Math.random()+1e-10, v=Math.random();
+                return Math.sqrt(-2*Math.log(u))*Math.cos(2*Math.PI*v);
+            }
+            _dot(a, b, dim) {
+                let s=0; for(let i=0;i<dim;i++) s+=a[i]*b[i]; return s;
+            }
+            _normalize(vec, dim) {
+                const n=this._norm(vec.slice ? vec.slice(0,dim) : Array.from(vec).slice(0,dim));
+                return Array.from({length:dim}, (_,i)=>(vec[i]||0)/n);
+            }
+
+            // ── エンコード: 特徴量 → 12軸分布 ───────────────────────
+            encode(featureVec, modality='language') {
+                const dim  = this.FEAT_DIM[modality] || 64;
+                const Wenc = this.W_enc[modality];
+                const Wsig = this.W_sig[modality];
+                const Benc = this.B_enc[modality];
+                if (!Wenc) return this._fallback();
+
+                const nv = this._normalize(featureVec, dim);
+                const result = {};
+                for (const ax of this.AXIS_NAMES) {
+                    const mu_raw  = this._dot(nv, Wenc[ax], dim) + (Benc[ax]||0);
+                    const sig_raw = this._dot(nv, Wsig[ax], dim);
+                    result[ax] = {
+                        mu:    this._sig(mu_raw),
+                        sigma: Math.max(0.01, this._soft(sig_raw))
+                    };
+                }
+                // UIコールバック（登録されていれば呼ぶ）
+                if (typeof this.onEncode === 'function') {
+                    try { this.onEncode(result, modality); } catch(e) {}
+                }
+                return result;
+            }
+
+            // ── デコード: 12軸分布 → 特徴量（生成用）─────────────────
+            decode(axisDist, modality='language') {
+                const dim   = this.FEAT_DIM[modality] || 64;
+                const Wdec  = this.W_dec[modality];
+                if (!Wdec) return new Array(dim).fill(0);
+
+                const out = new Float32Array(dim);
+                for (const ax of this.AXIS_NAMES) {
+                    const mu = (axisDist[ax]||{}).mu || 0;
+                    const w  = Wdec[ax];
+                    for(let i=0;i<dim;i++) out[i] += mu * w[i];
+                }
+                return Array.from(out, v => Math.tanh(v));
+            }
+
+            // ── サンプリング（再パラメータ化トリック）────────────────
+            sample(axisDist) {
+                const out = {};
+                for(const ax of this.AXIS_NAMES) {
+                    const {mu=0.5, sigma=0.1} = axisDist[ax]||{};
+                    out[ax] = Math.max(0, Math.min(1, mu + sigma*this._randn()));
+                }
+                return out;
+            }
+
+            // ── クロスモーダル対比学習 ───────────────────────────────
+            // 同一概念を別モダリティで入力 → 12軸表現を一致させる
+            trainCrossModal(feat1, mod1, feat2, mod2) {
+                try {
+                    const enc1 = this.encode(feat1, mod1);
+                    const enc2 = this.encode(feat2, mod2);
+                    let loss = 0;
+
+                    for(const ax of this.AXIS_NAMES) {
+                        const mu1  = enc1[ax]?.mu || 0;
+                        const mu2  = enc2[ax]?.mu || 0;
+                        const target = (mu1+mu2)/2;   // 中間に引き寄せ
+                        loss += (mu1-mu2)**2;
+                        this._updateEncoder(feat1, mod1, ax, target);
+                        this._updateEncoder(feat2, mod2, ax, target);
+                    }
+                    this.trainCount++;
+                    return loss / this.AXIS_NAMES.length;
+                } catch(e) {
+                    console.error('[AxisCodec] trainCrossModal failed:', e);
+                    return 0;
+                }
+            }
+
+            // ── 単一モダリティ学習（軸の深さをターゲットに） ─────────
+            trainSingle(featureVec, modality, axisTargets) {
+                try {
+                    for(const [ax, target] of Object.entries(axisTargets)) {
+                        this._updateEncoder(featureVec, modality, ax, target);
+                    }
+                    this.trainCount++;
+                } catch(e) {
+                    console.error('[AxisCodec] trainSingle failed:', e);
+                }
+            }
+
+            _updateEncoder(featureVec, modality, axis, target) {
+                const dim  = this.FEAT_DIM[modality] || 64;
+                const Wenc = this.W_enc[modality];
+                const Benc = this.B_enc[modality];
+                if(!Wenc || !Wenc[axis]) return;
+
+                const nv  = this._normalize(featureVec, dim);
+                const w   = Wenc[axis];
+                let pred  = this._dot(nv, w, dim) + (Benc[axis]||0);
+                pred      = this._sig(pred);
+
+                const err  = pred - target;
+                const grad = err * pred * (1-pred);  // MSE + sigmoid微分
+
+                for(let i=0;i<dim;i++) w[i] -= this.LR * grad * nv[i];
+                Benc[axis] = (Benc[axis]||0) - this.LR * grad;
+            }
+
+            // ── 12軸分布の信頼度サマリ ───────────────────────────────
+            // μが高くσが低い軸 = 確信度高
+            summary(axisDist) {
+                return this.AXIS_NAMES.map(ax => {
+                    const {mu=0, sigma=1} = axisDist[ax]||{};
+                    const confidence = mu / (sigma + 1e-6);
+                    return { axis: ax, mu, sigma, confidence };
+                }).sort((a,b)=>b.confidence-a.confidence);
+            }
+
+            _fallback() {
+                const r={}; for(const ax of this.AXIS_NAMES) r[ax]={mu:0.5,sigma:0.5}; return r;
+            }
+
+            // ── 永続化 ───────────────────────────────────────────────
+            exportState() {
+                const ser = obj => {
+                    const out={};
+                    for(const [k,v] of Object.entries(obj)) {
+                        if(v instanceof Float32Array) out[k]=Array.from(v);
+                        else if(typeof v==='object'&&v!==null) out[k]=ser(v);
+                        else out[k]=v;
+                    }
+                    return out;
+                };
+                return {
+                    W_enc: ser(this.W_enc), B_enc: this.B_enc,
+                    W_sig: ser(this.W_sig),
+                    W_dec: ser(this.W_dec),
+                    trainCount: this.trainCount
+                };
+            }
+
+            importState(data) {
+                const deser = (src, tgt) => {
+                    for(const [k,v] of Object.entries(src)) {
+                        if(Array.isArray(v)) tgt[k]=new Float32Array(v);
+                        else if(typeof v==='object'&&v!==null){ tgt[k]=tgt[k]||{}; deser(v,tgt[k]); }
+                        else tgt[k]=v;
+                    }
+                };
+                try {
+                    if(data.W_enc) deser(data.W_enc, this.W_enc);
+                    if(data.B_enc) this.B_enc = data.B_enc;
+                    if(data.W_sig) deser(data.W_sig, this.W_sig);
+                    if(data.W_dec) deser(data.W_dec, this.W_dec);
+                    if(data.trainCount) this.trainCount = data.trainCount;
+                    console.log(`[AxisCodec] imported (trainCount=${this.trainCount})`);
+                } catch(e) {
+                    console.error('[AxisCodec] importState failed:', e);
                 }
             }
         }
@@ -5027,6 +5342,25 @@ MemoryLimitsConfig._instance = null;
                     lbp_features:    this._avgArrays(scenesWithFeatures.map(sc => sc.features.lbp_features    || []))
                 } : null;
 
+                // [v28] 連続性学習: フレーム間HOG類似度が高い連続区間を検出
+                // 「前フレームと似ている＝同じ対象が動いている」
+                // 連続する区間をまとめてspatialPrototypeの学習単位にする
+                const continuousSegments = []; // { features, continuityScore }[]
+                for (let i = 0; i < scenesWithFeatures.length; i++) {
+                    const curr = scenesWithFeatures[i];
+                    if (i === 0) {
+                        continuousSegments.push({ features: curr.features, continuityScore: 1.0 });
+                        continue;
+                    }
+                    const prev = scenesWithFeatures[i - 1];
+                    const sim  = this._hogSimilarity(
+                        prev.features.hog_blocks || [],
+                        curr.features.hog_blocks || []
+                    );
+                    // 類似度が高い＝同じ対象の連続→学習に使う重みとして保持
+                    continuousSegments.push({ features: curr.features, continuityScore: sim });
+                }
+
                 return {
                     semantic_candidates: allMeanings.slice(0, 6),
                     modality:    'video',
@@ -5036,7 +5370,8 @@ MemoryLimitsConfig._instance = null;
                         avgBrightness: scenes.reduce((s, sc) => s + sc.brightness, 0) / scenes.length,
                         avgComplexity: scenes.reduce((s, sc) => s + sc.complexity, 0) / scenes.length
                     },
-                    avg_features,  // v27.1: ImageAdapter共起テーブル用
+                    avg_features,
+                    continuousSegments, // [v28] フレームごとの連続性スコア付きfeatures
                     raw_descriptor: `${duration.toFixed(1)}秒 ${scenes.length}シーン ${mode}モード`,
                     _scenes: scenes
                 };
@@ -5050,6 +5385,19 @@ MemoryLimitsConfig._instance = null;
                 const sum = new Array(len).fill(0);
                 valid.forEach(arr => { for (let i = 0; i < len; i++) sum[i] += (arr[i] || 0); });
                 return sum.map(v => v / valid.length);
+            }
+
+            // [v28] フレーム間HOGコサイン類似度（連続性の判定に使う）
+            _hogSimilarity(hogA, hogB) {
+                if (!hogA.length || !hogB.length) return 0;
+                let dot = 0, magA = 0, magB = 0;
+                const len = Math.min(hogA.length, hogB.length);
+                for (let i = 0; i < len; i++) {
+                    dot  += hogA[i] * hogB[i];
+                    magA += hogA[i] * hogA[i];
+                    magB += hogB[i] * hogB[i];
+                }
+                return (magA > 0 && magB > 0) ? dot / (Math.sqrt(magA) * Math.sqrt(magB)) : 0;
             }
         }
         
@@ -5895,86 +6243,189 @@ MemoryLimitsConfig._instance = null;
                 canvas.height = 720;
                 const ctx = canvas.getContext('2d');
                 
-                const frames = [];
+                const frames  = [];
+                const hints   = mood._imageHints || [];
+                const hasHints= hints.length > 0;
+                const W = canvas.width, H = canvas.height;
+                const GCELLS  = 16;
+                const cw = W / GCELLS, ch = H / GCELLS;
+                const dirs = [0, Math.PI/8, Math.PI/4, 3*Math.PI/8,
+                              Math.PI/2, 5*Math.PI/8, 3*Math.PI/4, 7*Math.PI/8];
 
-                // ── 学習統計から動画パラメータを決定 ──
-                const topHint = (mood._imageHints || [])[0] || null;
+                // 学習統計を一度だけ取り出す（フレーム間で共通）
+                let mean = null, hueHist = null, brightnessGrid = null;
+                let hogBlocks = null, gradHist = null, gaborMean = null, lbpMean = null;
+                let domHue = 0, isRough = false, isUniform = false;
 
-                // 支配色相（学習済み）
-                const baseHue = topHint && topHint.hueReliability > 0.4
-                    ? (topHint.dominantHue / 8) * 360
-                    : (mood.mood + 1) * 180;
-
-                // 質感スタイル
-                const isRough   = topHint && topHint.textureReliability > 0.4 && topHint.dominantGaborFreq >= 16;
-                const isUniform = topHint && topHint.lbpUniformity > 0.3;
-
-                // 形状傾向（HOG統計から）
-                const preferVertical   = topHint && topHint.isVertical   && topHint.shapeReliability > 0.4;
-                const preferHorizontal = topHint && topHint.isHorizontal && topHint.shapeReliability > 0.4;
+                if (hasHints && hints[0].meanVector) {
+                    mean           = hints[0].meanVector;
+                    hueHist        = mean.slice(0, 8);
+                    brightnessGrid = mean.slice(8, 264);
+                    gradHist       = mean.slice(264, 272);
+                    hogBlocks      = mean.slice(272, 2320);
+                    gaborMean      = mean.slice(2320, 2352);
+                    lbpMean        = mean.slice(2352, 2368);
+                    domHue         = (hueHist.indexOf(Math.max(...hueHist)) / 8) * 360;
+                    isRough        = gaborMean[Math.floor(gaborMean.length*3/4)] > 0.3;
+                    isUniform      = lbpMean[0] > 0.3;
+                }
 
                 for (let i = 0; i < totalFrames; i++) {
                     const progress = i / totalFrames;
+                    const wave     = Math.sin(progress * Math.PI * 2);
 
-                    // 背景色: 学習した支配色 × 時間アニメーション
-                    const animHue = (baseHue + Math.sin(progress * Math.PI * 2) * 30) % 360;
-                    const bgSat   = 30 + mood.curiosity * 50;
-                    const bgLit   = topHint
-                        ? 10 + topHint.avgBrightness * 40 + Math.sin(progress * Math.PI) * 10
-                        : 20 + mood.confidence * 60 + Math.sin(progress * Math.PI) * 10;
-                    ctx.fillStyle = `hsl(${animHue}, ${bgSat}%, ${bgLit}%)`;
-                    ctx.fillRect(0, 0, canvas.width, canvas.height);
+                    if (hasHints && hints[0].spatialHints) {
+                        // ── [v28] セルごとの統計でフレームを描画 ──
+                        const sp  = hints[0].spatialHints;
+                        const cm  = sp.cellMaps;
+                        const dirs2 = [0, Math.PI/8, Math.PI/4, 3*Math.PI/8,
+                                       Math.PI/2, 5*Math.PI/8, 3*Math.PI/4, 7*Math.PI/8];
 
-                    // 形状数
-                    const shapeCount = Math.floor(1 + mood.curiosity * 4);
+                        for (let gy = 0; gy < GCELLS; gy++) {
+                            for (let gx = 0; gx < GCELLS; gx++) {
+                                const ci = gy * GCELLS + gx;
+                                const bRel2 = cm.briReliability[ci];
+                                const hRel2 = cm.hueReliability[ci];
+                                const eRel2 = cm.hogReliability[ci];
 
-                    for (let j = 0; j < shapeCount; j++) {
-                        const shapeProgress = (progress + j / shapeCount) % 1.0;
+                                if (bRel2 < 0.2 && hRel2 < 0.2 && eRel2 < 0.2) continue;
 
-                        // 形状タイプを学習統計から決定
-                        const useTension = mood.tension > 0.6;
-                        let forceShape = null;
-                        if (preferVertical)        forceShape = useTension ? 'triangle' : 'line_v';
-                        else if (preferHorizontal) forceShape = 'wave';
+                                const bVal2 = cm.brightness[ci];
+                                const hue2  = cm.hue[ci];
+                                const eStr2 = cm.hogStr[ci];
 
-                        // 色: 学習した色相帯を維持しながらアニメーション
-                        const shapeHue = (baseHue + shapeProgress * 60 + j * 20) % 360;
-                        const alpha    = isUniform ? 0.7 : 0.4 + mood.confidence * 0.4;
-                        ctx.fillStyle   = `hsla(${shapeHue}, 70%, 60%, ${alpha})`;
-                        ctx.strokeStyle = `hsla(${shapeHue}, 70%, 40%, ${alpha})`;
-                        ctx.lineWidth   = isRough ? 1 + mood.tension * 3 : 3 + mood.tension * 5;
+                                // 時間で明度を微動させる（生きてる感）
+                                const lit2 = Math.min(90, Math.max(10,
+                                    bVal2 * 100 + wave * 3 * bRel2
+                                ));
+                                const sat2 = Math.round(hRel2 * 70);
+                                ctx.fillStyle = `hsl(${hue2}, ${sat2}%, ${lit2}%)`;
+                                ctx.fillRect(gx * cw, gy * ch, cw + 1, ch + 1);
 
-                        this.drawMoodShape(ctx, mood, shapeProgress, canvas.width, canvas.height, j, forceShape);
-
-                        // ザラザラ質感
-                        if (isRough && Math.random() > 0.7) {
-                            const x = Math.random() * canvas.width;
-                            const y = Math.random() * canvas.height;
-                            for (let n = 0; n < 20; n++) {
-                                ctx.fillRect(
-                                    x + (Math.random()-0.5)*50,
-                                    y + (Math.random()-0.5)*50,
-                                    2, 2
-                                );
+                                if (eRel2 >= 0.3 && eStr2 > 0.05) {
+                                    const angle2 = dirs2[cm.hogDir[ci]] + wave * 0.05 * eRel2;
+                                    const cx2    = gx * cw + cw / 2;
+                                    const cy2    = gy * ch + ch / 2;
+                                    const len2   = cw * 0.8 * eStr2 * eRel2;
+                                    const alpha2 = eRel2 * eStr2;
+                                    const eLit2  = lit2 > 50 ? 20 : 80;
+                                    ctx.strokeStyle = `hsla(${hue2}, ${sat2}%, ${eLit2}%, ${alpha2})`;
+                                    ctx.lineWidth   = 1 + eRel2 * 2;
+                                    ctx.beginPath();
+                                    ctx.moveTo(cx2 - Math.cos(angle2)*len2, cy2 - Math.sin(angle2)*len2);
+                                    ctx.lineTo(cx2 + Math.cos(angle2)*len2, cy2 + Math.sin(angle2)*len2);
+                                    ctx.stroke();
+                                }
                             }
+                        }
+                    } else if (hasHints && mean) {
+                        const hRel = h0.hueReliability;
+                        const bRel = h0.brightnessReliability;
+                        const sRel = h0.shapeReliability;
+                        const tRel = h0.textureReliability;
+
+                        // 採用する色相bin（信頼度×bin値が閾値超のもののみ）
+                        const HUE_THR = 0.1;
+                        const huePairs = hueHist
+                            .map((v, i) => ({ hue: (i / 8) * 360, weight: v * hRel }))
+                            .filter(p => p.weight >= HUE_THR)
+                            .sort((a, b) => b.weight - a.weight);
+                        const bgHue = huePairs.length > 0 ? huePairs[0].hue : 0;
+                        const bgSat = huePairs.length > 0 ? Math.round(hRel * 60) : 0;
+                        const fgHue = huePairs.length > 1 ? huePairs[1].hue : (bgHue + 180) % 360;
+                        const fgSat = huePairs.length > 1 ? Math.round(hRel * 80) : bgSat;
+
+                        const bAvg   = brightnessGrid.reduce((a, b) => a + b, 0) / brightnessGrid.length;
+                        const bRange = bRel * 80;
+
+                        // 1. 背景: 明度 × HOG強度で背景/対象を分離（時間で明度を微動）
+                        for (let gy = 0; gy < GCELLS; gy++) {
+                            for (let gx = 0; gx < GCELLS; gx++) {
+                                const b         = brightnessGrid[gy * GCELLS + gx];
+                                const blockBase = (gy * GCELLS + gx) * 8;
+                                const maxStr    = Math.max(...hogBlocks.slice(blockBase, blockBase + 8));
+
+                                const lit = Math.min(90, Math.max(10,
+                                    bAvg * 100 + (b - bAvg) * bRange + wave * 3 * bRel
+                                ));
+                                const isTarget = maxStr > 0.15;
+                                const hue      = isTarget ? fgHue : bgHue;
+                                const sat      = isTarget ? fgSat : bgSat;
+
+                                ctx.fillStyle = `hsl(${hue}, ${sat}%, ${lit}%)`;
+                                ctx.fillRect(gx * cw, gy * ch, cw + 1, ch + 1);
+                            }
+                        }
+
+                        // 2. エッジ: shapeReliability が高い場合のみ描画
+                        if (sRel >= 0.3) {
+                            const useTexture = tRel >= 0.4;
+                            const isRoughF   = useTexture && isRough;
+                            const isUniformF = useTexture && isUniform;
+                            const edgeThr    = 0.05 + (1 - sRel) * 0.2;
+
+                            for (let gy = 0; gy < GCELLS; gy++) {
+                                for (let gx = 0; gx < GCELLS; gx++) {
+                                    const blockBase = (gy * GCELLS + gx) * 8;
+                                    const blockHog  = hogBlocks.slice(blockBase, blockBase + 8);
+                                    const maxStr    = Math.max(...blockHog);
+                                    if (maxStr < edgeThr) continue;
+
+                                    const domDir  = blockHog.indexOf(maxStr);
+                                    const angle   = dirs[domDir] + wave * 0.1 * sRel;
+                                    const cx2     = gx * cw + cw / 2;
+                                    const cy2     = gy * ch + ch / 2;
+                                    const strength= maxStr * sRel;
+                                    const len     = cw * 0.8 * strength * (1 + wave * 0.1);
+
+                                    const alpha   = isUniformF ? 0.7 * sRel : (0.3 + strength * 0.5) * sRel;
+                                    ctx.strokeStyle = `hsla(${fgHue}, ${fgSat}%, ${30 + hRel * 40}%, ${alpha})`;
+                                    ctx.lineWidth   = isRoughF ? 0.5 + sRel : 1 + sRel * 2;
+                                    ctx.beginPath();
+                                    ctx.moveTo(cx2 - Math.cos(angle)*len, cy2 - Math.sin(angle)*len);
+                                    ctx.lineTo(cx2 + Math.cos(angle)*len, cy2 + Math.sin(angle)*len);
+                                    ctx.stroke();
+
+                                    if (isRoughF && strength > 0.3 && tRel > 0.5 && Math.random() > 0.8) {
+                                        ctx.fillStyle = `hsla(${fgHue}, ${fgSat}%, 50%, ${0.2 * tRel})`;
+                                        for (let n = 0; n < 3; n++) {
+                                            ctx.fillRect(
+                                                cx2 + (Math.random()-0.5)*cw,
+                                                cy2 + (Math.random()-0.5)*ch,
+                                                1.5, 1.5
+                                            );
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                    } else {
+                        // 学習データなし → 気分アニメーション
+                        const bgHue = (mood.mood + 1) * 180 + wave * 30;
+                        ctx.fillStyle = `hsl(${bgHue % 360}, ${30 + mood.curiosity*50}%, ${20 + mood.confidence*60}%)`;
+                        ctx.fillRect(0, 0, W, H);
+                        const shapeCount = Math.floor(1 + mood.curiosity * 4);
+                        for (let j = 0; j < shapeCount; j++) {
+                            this.drawMoodShape(ctx, mood, (progress + j/shapeCount) % 1, W, H, j, null);
                         }
                     }
 
                     frames.push(canvas.toDataURL('image/jpeg', 0.8));
-
                     if (window.taskManager) {
                         window.taskManager.updateProgress('generate', (i + 1) / totalFrames);
                     }
                 }
 
                 this.processing = false;
-
-                const conceptsUsed = (mood._imageHints || []).map(h => h.label + '(x' + h.count + ')');
+                const conceptsUsed = hints.map(h => h.label + '(x' + h.count + ')');
                 return {
                     frames,
                     fps,
                     duration,
-                    description: (conceptsUsed.length > 0 ? '[' + conceptsUsed.join('・') + '] x ' : '') + this.moodToVideoDescription(mood),
+                    description: (conceptsUsed.length > 0
+                        ? '[' + conceptsUsed.join('・') + '] x '
+                        : '') + this.moodToVideoDescription(mood),
                     conceptsUsed
                 };
             }
@@ -6313,7 +6764,7 @@ MemoryLimitsConfig._instance = null;
             async generateFromMood(mood, conceptHints) {
                 this.processing = true;
 
-                // ConceptBridge: 学習済みプロトタイプを mood にブレンド
+                // ConceptBridge: 学習済みプロトタイプを取得
                 const imageHints = conceptHints || (
                     window.ao && window.ao.imageAdapter
                         ? extractImageConceptHints(window.ao.imageAdapter)
@@ -6325,87 +6776,82 @@ MemoryLimitsConfig._instance = null;
                 canvas.width = 800;
                 canvas.height = 600;
                 const ctx = canvas.getContext('2d');
+                const W = canvas.width, H = canvas.height;
+                const hints = mood._imageHints || [];
+                const hasHints = hints.length > 0;
 
-                // ── 学習統計から描画パラメータを決定 ──
-                const topHint = (mood._imageHints || [])[0] || null;
+                // ── 学習したことを空間的に表現する [v28] ──────────────
+                // spatialHintsがあればセルごとの統計で描画
+                // なければ従来の平均ベクトルにフォールバック
 
-                // 背景色: 学習した支配色 × 気分をブレンド
-                let bgHue, bgSat, bgLit;
-                if (topHint && topHint.hueReliability > 0.4) {
-                    // 学習した支配色相(0-7) → HSL色相(0-360)
-                    bgHue = (topHint.dominantHue / 8) * 360;
-                    bgSat = 30 + mood.curiosity * 40;
-                    bgLit = 10 + topHint.avgBrightness * 40 + mood.confidence * 20;
-                } else {
-                    bgHue = mood.mood > 0 ? 30 + mood.mood * 30 : 200 + mood.mood * 80;
-                    bgSat = 30 + mood.curiosity * 50;
-                    bgLit = 20 + mood.confidence * 60;
-                }
-                ctx.fillStyle = `hsl(${bgHue}, ${bgSat}%, ${bgLit}%)`;
-                ctx.fillRect(0, 0, canvas.width, canvas.height);
+                if (hasHints && hints[0].spatialHints) {
+                    const sp   = hints[0].spatialHints;
+                    const cm   = sp.cellMaps;
+                    const CELLS = 16;
+                    const cw = W / CELLS, ch = H / CELLS;
+                    const dirs = [0, Math.PI/8, Math.PI/4, 3*Math.PI/8,
+                                  Math.PI/2, 5*Math.PI/8, 3*Math.PI/4, 7*Math.PI/8];
 
-                // 質感スタイル: Gabor/LBPから決定
-                const isRough    = topHint && topHint.textureReliability > 0.4 && topHint.dominantGaborFreq >= 16;
-                const isUniform  = topHint && topHint.lbpUniformity > 0.3;
-                const lineWidth  = isRough ? 1 + mood.tension * 3 : 3 + mood.tension * 5;
-                const useTexture = isRough; // ザラザラ感→ノイズ描画
+                    for (let gy = 0; gy < CELLS; gy++) {
+                        for (let gx = 0; gx < CELLS; gx++) {
+                            const ci = gy * CELLS + gx;
 
-                // 形状数: curiosity × 学習概念数でスケール
-                const conceptCount = (mood._imageHints || []).length;
-                const shapeCount = Math.floor(3 + mood.curiosity * 5 + conceptCount * 0.5);
+                            const bRel  = cm.briReliability[ci];
+                            const hRel  = cm.hueReliability[ci];
+                            const eRel  = cm.hogReliability[ci];
+                            const bVal  = cm.brightness[ci];
+                            const hue   = cm.hue[ci];
+                            const eStr  = cm.hogStr[ci];
 
-                for (let i = 0; i < shapeCount; i++) {
-                    // 形状タイプ: HOG統計から決定
-                    let shapeType;
-                    if (topHint && topHint.shapeReliability > 0.4) {
-                        if (topHint.isVertical)        shapeType = mood.tension > 0.5 ? 'triangle' : 'line';
-                        else if (topHint.isHorizontal) shapeType = mood.curiosity > 0.5 ? 'wave' : 'line';
-                        else                           shapeType = mood.tension > 0.5 ? 'star' : 'spiral';
-                    } else {
-                        shapeType = this.moodToShapeType(mood);
-                    }
+                            // 信頼度が全部低いセル（未学習に等しい）は描かない
+                            if (bRel < 0.2 && hRel < 0.2 && eRel < 0.2) continue;
 
-                    // 形状色: 学習した色相 × 気分のオフセット
-                    let shapeHue;
-                    if (topHint && topHint.hueReliability > 0.4) {
-                        shapeHue = (bgHue + 30 + i * 15) % 360;
-                    } else {
-                        shapeHue = (mood.mood + 1) * 180 + i * 20;
-                    }
-                    const shapeSat   = 50 + mood.curiosity * 40;
-                    const shapeLit   = 40 + mood.confidence * 40;
-                    const shapeAlpha = isUniform ? 0.8 : 0.5 + Math.random() * 0.4;
-                    const shapeColor = `hsla(${shapeHue % 360}, ${shapeSat}%, ${shapeLit}%, ${shapeAlpha})`;
+                            // 明度: 信頼度で明暗コントラストを決める
+                            const lit = Math.min(90, Math.max(10, bVal * 100));
+                            // 色相: 信頼度で彩度を決める（低信頼→グレー）
+                            const sat = Math.round(hRel * 70);
 
-                    // サイズ: 明度統計 × 気分
-                    const brightnessFactor = topHint ? topHint.avgBrightness : 0.5;
-                    const shapeSize = 40 + brightnessFactor * 100 + Math.random() * 100 * mood.confidence;
+                            ctx.fillStyle = `hsl(${hue}, ${sat}%, ${lit}%)`;
+                            ctx.fillRect(gx * cw, gy * ch, cw + 1, ch + 1);
 
-                    // 位置
-                    const x = Math.random() * canvas.width;
-                    const y = Math.random() * canvas.height;
-
-                    // 質感を線幅に反映
-                    ctx.lineWidth = lineWidth;
-                    this.drawAbstractShape(ctx, shapeType, x, y, shapeSize, shapeColor, mood);
-
-                    // ザラザラ感: ノイズ点を散布
-                    if (useTexture && Math.random() > 0.5) {
-                        ctx.fillStyle = shapeColor;
-                        for (let n = 0; n < 30; n++) {
-                            const nx = x + (Math.random() - 0.5) * shapeSize;
-                            const ny = y + (Math.random() - 0.5) * shapeSize;
-                            ctx.fillRect(nx, ny, 2, 2);
+                            // エッジ: hogReliabilityが高くeStrが大きいセルのみ線を引く
+                            if (eRel >= 0.3 && eStr > 0.05) {
+                                const angle  = dirs[cm.hogDir[ci]];
+                                const cx     = gx * cw + cw / 2;
+                                const cy     = gy * ch + ch / 2;
+                                const len    = cw * 0.8 * eStr * eRel;
+                                const alpha  = eRel * eStr;
+                                // エッジ色は背景と対比させる（明度反転）
+                                const eLit   = lit > 50 ? 20 : 80;
+                                ctx.strokeStyle = `hsla(${hue}, ${sat}%, ${eLit}%, ${alpha})`;
+                                ctx.lineWidth   = 1 + eRel * 2;
+                                ctx.beginPath();
+                                ctx.moveTo(cx - Math.cos(angle)*len, cy - Math.sin(angle)*len);
+                                ctx.lineTo(cx + Math.cos(angle)*len, cy + Math.sin(angle)*len);
+                                ctx.stroke();
+                            }
                         }
+                    }
+                } else if (hasHints && hints[0].meanVector) {
+                    // 学習データなし → 気分だけで図形
+                    const shapeCount = Math.floor(3 + mood.curiosity * 5);
+                    for (let i = 0; i < shapeCount; i++) {
+                        const shapeType  = this.moodToShapeType(mood);
+                        const shapeColor = this.moodToShapeColor(mood, i / shapeCount);
+                        const shapeSize  = 50 + Math.random() * 150;
+                        this.drawAbstractShape(ctx, shapeType,
+                            Math.random() * W, Math.random() * H,
+                            shapeSize, shapeColor, mood);
                     }
                 }
 
                 this.processing = false;
-                
-                const conceptsUsed = (mood._imageHints || []).map(h => h.label + '(x' + h.count + ')');
+                const conceptsUsed = hints.map(h => h.label + '(x' + h.count + ')');
                 return {
                     dataUrl: canvas.toDataURL('image/png'),
-                    description: (conceptsUsed.length > 0 ? '[' + conceptsUsed.join('・') + '] x ' : '') + this.moodToDescription(mood),
+                    description: (conceptsUsed.length > 0
+                        ? '[' + conceptsUsed.join('・') + '] x '
+                        : '') + this.moodToDescription(mood),
                     conceptsUsed
                 };
             }
@@ -7249,6 +7695,110 @@ MemoryLimitsConfig._instance = null;
                 }
             }
 
+            // ---- [v28] 空間プロトタイプ学習: セルごとに独立した統計を蓄積 ----
+            // 猫の耳がセル(3,4)に安定して現れるなら、そのセルだけ高信頼になる
+            // 猫の色がセルごとにバラバラなら、そのセルの色信頼度は低くなる
+            learnSpatialPrototype(conceptLabel, features) {
+                if (!features || !features.hog_blocks) return;
+                const CELLS = 16;
+                const hueHist        = features.hue_hist        || [];
+                const brightnessGrid = features.brightness_grid || [];
+                const hogBlocks      = features.hog_blocks      || [];
+
+                if (!this.spatialPrototypes) this.spatialPrototypes = new Map();
+                if (!this.spatialPrototypes.has(conceptLabel)) {
+                    // cells[256]: 各セルにhue/brightness/hogを個別蓄積
+                    const cells = Array.from({ length: CELLS * CELLS }, () => ({
+                        hueSum:   new Float64Array(8),
+                        hueSumSq: new Float64Array(8),
+                        briSum:   0, briSumSq: 0,
+                        hogSum:   new Float64Array(8),
+                        hogSumSq: new Float64Array(8),
+                        n: 0
+                    }));
+                    this.spatialPrototypes.set(conceptLabel, { cells, count: 0 });
+                }
+                const proto = this.spatialPrototypes.get(conceptLabel);
+                proto.count++;
+
+                for (let ci = 0; ci < CELLS * CELLS; ci++) {
+                    const cell = proto.cells[ci];
+                    cell.n++;
+
+                    // 明度: このセルの明度値
+                    const b = brightnessGrid[ci] || 0;
+                    cell.briSum   += b;
+                    cell.briSumSq += b * b;
+
+                    // HOG: このセルの8方向
+                    for (let d = 0; d < 8; d++) {
+                        const v = hogBlocks[ci * 8 + d] || 0;
+                        cell.hogSum[d]   += v;
+                        cell.hogSumSq[d] += v * v;
+                    }
+
+                    // 色相: 全体色相をセルごとに蓄積（空間分布がないため全セル共通で入れる）
+                    // ただし明度が高いセルほど重みを増やして前景らしいセルに色を寄せる
+                    const bWeight = 0.3 + b * 0.7;
+                    for (let h = 0; h < 8; h++) {
+                        const v = (hueHist[h] || 0) * bWeight;
+                        cell.hueSum[h]   += v;
+                        cell.hueSumSq[h] += v * v;
+                    }
+                }
+            }
+
+            // ---- [v28] 空間プロトタイプからセルごとの信頼度マップを生成 ----
+            extractSpatialHints(conceptLabel) {
+                if (!this.spatialPrototypes) return null;
+                const proto = this.spatialPrototypes.get(conceptLabel);
+                if (!proto || proto.count < 1) return null;
+                const CELLS = 16;
+                const cellMaps = {
+                    brightness: new Float32Array(CELLS * CELLS), // 平均明度
+                    briReliability: new Float32Array(CELLS * CELLS),
+                    hogDir:     new Uint8Array(CELLS * CELLS),   // 支配的エッジ方向
+                    hogStr:     new Float32Array(CELLS * CELLS), // エッジ強度
+                    hogReliability: new Float32Array(CELLS * CELLS),
+                    hue:        new Float32Array(CELLS * CELLS), // 支配的色相(0-360)
+                    hueReliability: new Float32Array(CELLS * CELLS),
+                };
+                for (let ci = 0; ci < CELLS * CELLS; ci++) {
+                    const cell = proto.cells[ci];
+                    const n = cell.n || 1;
+
+                    // 明度の平均と信頼度
+                    const bMean = cell.briSum / n;
+                    const bVar  = Math.max(0, cell.briSumSq / n - bMean * bMean);
+                    cellMaps.brightness[ci]    = bMean;
+                    cellMaps.briReliability[ci] = 1 / (1 + bVar * 20);
+
+                    // HOGの平均と信頼度
+                    let maxHog = 0, domDir = 0, hogVarSum = 0;
+                    for (let d = 0; d < 8; d++) {
+                        const mean = cell.hogSum[d] / n;
+                        const vari = Math.max(0, cell.hogSumSq[d] / n - mean * mean);
+                        hogVarSum += vari;
+                        if (mean > maxHog) { maxHog = mean; domDir = d; }
+                    }
+                    cellMaps.hogDir[ci] = domDir;
+                    cellMaps.hogStr[ci] = maxHog;
+                    cellMaps.hogReliability[ci] = 1 / (1 + hogVarSum * 5);
+
+                    // 色相の平均と信頼度
+                    let maxHue = 0, domHueBin = 0, hueVarSum = 0;
+                    for (let h = 0; h < 8; h++) {
+                        const mean = cell.hueSum[h] / n;
+                        const vari = Math.max(0, cell.hueSumSq[h] / n - mean * mean);
+                        hueVarSum += vari;
+                        if (mean > maxHue) { maxHue = mean; domHueBin = h; }
+                    }
+                    cellMaps.hue[ci] = (domHueBin / 8) * 360;
+                    cellMaps.hueReliability[ci] = 1 / (1 + hueVarSum * 5);
+                }
+                return { label: conceptLabel, count: proto.count, cellMaps };
+            }
+
             // ---- [v27.0新規] 仮説テーブル更新: featuresオブジェクトから3チャンネルを分離して観測 ----
             // これにより「赤」「明るい」「丸い」等を
             // どのチャンネル（色/明度/形状）に帰属するかをボトムアップに学習する
@@ -7335,6 +7885,13 @@ MemoryLimitsConfig._instance = null;
                         // 2368次元の視覚ベクトル [v5]
                         const visual_vector = [...hueHist, ...brightnessGrid, ...gradHist, ...hogBlocks, ...gaborFeatures, ...lbpFeatures];
 
+                        // ── PoseEstimator用に生のHOGブロックと全特徴量をバッファに保存 ──
+                        // AxisCodec.encode()→onEncodeパイプラインが直後に使う
+                        window._aoRawFeaturesBuf = {
+                            visualVector: visual_vector,  // 生特徴量
+                            hogBlocks:    hogBlocks        // 視点推定用HOGブロック
+                        };
+
                         // プロトタイプ照合（学習済みがあれば）
                         const protoMatches = this.matchPrototype(visual_vector);
 
@@ -7365,6 +7922,27 @@ MemoryLimitsConfig._instance = null;
                         const dominantDir   = this.dirLabels[gradHist.indexOf(Math.max(...gradHist))];
 
                         this.processing = false;
+
+                        // ── AxisCodec: 画像特徴量を12軸に符号化 ──
+                        if (window._aoAxisCodec) {
+                            try {
+                                const axisDist = window._aoAxisCodec.encode(visual_vector, 'image');
+                                // 上位3軸をログ
+                                const top = window._aoAxisCodec.summary(axisDist).slice(0,3)
+                                    .map(a=>`${a.axis}:${a.mu.toFixed(2)}(σ${a.sigma.toFixed(2)})`).join(' ');
+                                console.log(`[AxisCodec/image] ${top}`);
+                                // worldViewの軸深さを学習結果で更新
+                                if (window.ao && window.ao.worldView) {
+                                    for(const [ax, d] of Object.entries(axisDist)) {
+                                        if(d.mu > 0.6) window.ao.worldView.growAxis(ax, d.mu * 0.01);
+                                    }
+                                }
+                                // クロスモーダル学習バッファに登録
+                                if (window._aoRegisterModalFeature) {
+                                    window._aoRegisterModalFeature('image', visual_vector);
+                                }
+                            } catch(e) { /* codec未準備時は無視 */ }
+                        }
 
                         resolve({
                             semantic_candidates: semantics.slice(0, 6),
@@ -7420,7 +7998,7 @@ MemoryLimitsConfig._instance = null;
                 const variance = proto.sumSq.map(
                     (sq, i) => Math.max(0.001, sq / n - (proto.sum[i] / n) ** 2)
                 );
-                // 160次元の内訳: [0-7]色相 [8-23]明度 [24-31]勾配 [32-159]HOG
+                // 2368次元の内訳: [0-7]色相 [8-263]明度 [264-271]勾配 [272-2319]HOG [2320-2351]Gabor [2352-2367]LBP
                 const hueHist        = mean.slice(0, 8);
                 const brightnessGrid = mean.slice(8, 264);      // 256次元(v4)
                 const gradHist       = mean.slice(264, 272);
@@ -7457,7 +8035,8 @@ MemoryLimitsConfig._instance = null;
                     textureReliability,                          // [v5] 質感信頼度
                     dominantGaborFreq: gaborFeatures.indexOf(Math.max(...gaborFeatures)), // 支配的テクスチャ周波数
                     lbpUniformity: lbpFeatures[0],              // 均一テクスチャ度
-                    meanVector: mean
+                    meanVector: mean,
+                    spatialHints: imageAdapter.extractSpatialHints(label) // [v28] セルごとの信頼度マップ
                 });
             });
             hints.sort((a, b) => b.count - a.count);
@@ -8241,19 +8820,60 @@ MemoryLimitsConfig._instance = null;
                         ? extractImageConceptHints(window.ao.imageAdapter) : [];
                     mood = blendHintsIntoMood(mood, imageHints, audioHints);
 
-                    // Layer2: 低次特徴を内部状態から決定
+                    // ConceptBridge: 学習した音響統計を直接波形パラメータにマッピング
+                    const blendedAudioHints = mood._audioHints || [];
+                    const hasAudioHints = blendedAudioHints.length > 0;
+
+                    // Layer2-5: 気分から知覚ベクトルを生成（既存処理）
                     let percept = this.featureExtractor.fromInternalState(mood);
-
-                    // Layer3: 時間構造を決定
                     percept = this.temporalIntegrator.fromInternalState(mood, percept);
-
-                    // Layer4: 韻律意図を付与（ここで「どういう気持ちで鳴らすか」が確定）
                     percept = this.prosodyInterpreter.fromInternalState(mood, percept);
-
-                    // Layer5: 意味ラベルを生成（ログ・UI用）
                     percept = this.semanticIntegrator.fromPercept(percept);
 
-                    // 波形合成（Layerを降りた結果を音にする）
+                    // ── 学習統計で波形パラメータを上書き ──
+                    if (hasAudioHints) {
+                        const top = blendedAudioHints[0];
+
+                        // avgEntropy → リズムの複雑さ（高エントロピー→不規則、低→規則的）
+                        if (top.avgEntropy !== undefined) {
+                            percept.duration.rhythm = top.avgEntropy > 0.6 ? 'irregular' : 'regular';
+                            // ノート数も学習値から
+                            const entropyScale = 0.5 + top.avgEntropy * 0.5;
+                            percept.duration.noteCount = Math.max(4,
+                                Math.floor(percept.duration.noteCount * entropyScale)
+                            );
+                        }
+
+                        // avgTempo → テンポ（BPM相当）
+                        if (top.avgTempo !== undefined) {
+                            const tempoFactor = 0.5 + top.avgTempo * 1.5;
+                            percept.duration.total = Math.max(1,
+                                percept.duration.total / tempoFactor
+                            );
+                        }
+
+                        // avgPMI → 音の密集度（高PMI→音が関連しあってる→協和音）
+                        if (top.avgPMI !== undefined) {
+                            percept.pitch.contour = top.avgPMI > 0.5 ? 'peaking' : 'rising';
+                        }
+
+                        // avgBrightness → 音色の明るさ（高→sine/triangle、低→sawtooth）
+                        if (top.avgBrightness !== undefined) {
+                            percept.timbre.waveform = top.avgBrightness > 0.6
+                                ? 'sine'
+                                : top.avgBrightness > 0.3 ? 'triangle' : 'sawtooth';
+                        }
+                    }
+
+                    // 気分でさらにスケール（学習統計 × 気分）
+                    // tension → ピッチを上げる
+                    percept.pitch.hz = percept.pitch.hz * (1 + mood.tension * 0.3);
+                    // joy → 音量を上げる
+                    percept.amplitude.level = Math.min(1,
+                        percept.amplitude.level * (0.7 + (mood.joy || 0) * 0.3)
+                    );
+
+                    // 波形合成
                     const audioContext = new (window.AudioContext || window.webkitAudioContext)();
                     const { total: duration, noteCount } = percept.duration;
                     const noteDuration = duration / noteCount;
@@ -8263,12 +8883,11 @@ MemoryLimitsConfig._instance = null;
 
                     const scale = [1, 9/8, 5/4, 4/3, 3/2, 5/3, 15/8, 2];
                     for (let i = 0; i < noteCount; i++) {
-                        // ピッチ輪郭を時間方向に反映
                         let freqMod = 1.0;
                         const progress = i / Math.max(1, noteCount - 1);
-                        if (percept.pitch.contour === 'rising')   freqMod = 0.85 + progress * 0.3;
-                        if (percept.pitch.contour === 'falling')  freqMod = 1.15 - progress * 0.3;
-                        if (percept.pitch.contour === 'peaking')  freqMod = 1.0 + Math.sin(progress * Math.PI) * 0.4;
+                        if (percept.pitch.contour === 'rising')  freqMod = 0.85 + progress * 0.3;
+                        if (percept.pitch.contour === 'falling') freqMod = 1.15 - progress * 0.3;
+                        if (percept.pitch.contour === 'peaking') freqMod = 1.0 + Math.sin(progress * Math.PI) * 0.4;
 
                         const scaleIndex = percept.duration.rhythm === 'irregular'
                             ? Math.floor(Math.random() * scale.length)
@@ -8285,12 +8904,16 @@ MemoryLimitsConfig._instance = null;
                     audioContext.close();
                     this.processing = false;
 
+                    const conceptsUsed = blendedAudioHints.map(h => h.label + '(x' + h.count + ')');
                     return {
-                        blob: blob,
+                        blob,
                         dataUrl: URL.createObjectURL(blob),
-                        description: percept.semantics.descriptor,
-                        duration: duration,
-                        percept: percept   // 中間表現を外部に公開（デバッグ・学習用）
+                        description: (conceptsUsed.length > 0
+                            ? '[' + conceptsUsed.join('・') + '] x '
+                            : '') + percept.semantics.descriptor,
+                        duration,
+                        percept,
+                        conceptsUsed
                     };
                 } catch (error) {
                     console.error('AudioGenerator error:', error);
@@ -8481,6 +9104,37 @@ MemoryLimitsConfig._instance = null;
                 percept = this.semanticIntegrator.fromPercept(percept);
 
                 this.processing = false;
+
+                // ── AxisCodec: 音声特徴量を12軸に符号化 ──
+                if (window._aoAxisCodec) {
+                    try {
+                        // 音声特徴を128次元ベクトルに正規化
+                        const audioVec = new Array(128).fill(0);
+                        const rawFeat  = percept.features || {};
+                        audioVec[0]  = percept.amplitude?.level   || 0;
+                        audioVec[1]  = Math.min(1, (percept.pitch?.hz || 0) / 800);
+                        audioVec[2]  = Math.min(1, (percept.duration?.total || 0) / 10);
+                        audioVec[3]  = percept.prosody?.valence   || 0.5;
+                        audioVec[4]  = percept.prosody?.arousal   || 0.5;
+                        if(percept.spectral) {
+                            const sp = percept.spectral;
+                            for(let i=0;i<Math.min(120, sp.length||0);i++) audioVec[5+i]=sp[i]||0;
+                        }
+                        const axisDist = window._aoAxisCodec.encode(audioVec, 'audio');
+                        const top = window._aoAxisCodec.summary(axisDist).slice(0,3)
+                            .map(a=>`${a.axis}:${a.mu.toFixed(2)}`).join(' ');
+                        console.log(`[AxisCodec/audio] ${top}`);
+                        if (window.ao && window.ao.worldView) {
+                            for(const [ax, d] of Object.entries(axisDist)) {
+                                if(d.mu > 0.6) window.ao.worldView.growAxis(ax, d.mu * 0.01);
+                            }
+                        }
+                        // クロスモーダル学習バッファに登録
+                        if (window._aoRegisterModalFeature) {
+                            window._aoRegisterModalFeature('audio', audioVec);
+                        }
+                    } catch(e) { /* ignore */ }
+                }
 
                 return {
                     semantic_candidates: percept.semantics.candidates,
@@ -16517,6 +17171,35 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                     // learnFromUtteranceがperceptualFeaturesを返すようになった
                     const perceptualFeatures = this.languageAcquisition.learnFromInput(text);
 
+                    // ── AxisCodec: 言語知覚特徴を12軸に符号化 ──
+                    if (perceptualFeatures && window._aoAxisCodec) {
+                        try {
+                            // 言語特徴を64次元ベクトルに変換
+                            const langVec = new Array(64).fill(0);
+                            langVec[0]  = perceptualFeatures.entropy     || 0;
+                            langVec[1]  = perceptualFeatures.avgPMI      || 0;
+                            langVec[2]  = perceptualFeatures.novelty     || 0;
+                            langVec[3]  = perceptualFeatures.complexity  || 0;
+                            langVec[4]  = perceptualFeatures.sentiment   || 0.5;
+                            // トークン分布をそのまま詰める
+                            if(perceptualFeatures.tokenVector) {
+                                for(let i=0;i<Math.min(59, perceptualFeatures.tokenVector.length);i++)
+                                    langVec[5+i] = perceptualFeatures.tokenVector[i]||0;
+                            }
+                            const axisDist = window._aoAxisCodec.encode(langVec, 'language');
+                            // worldViewの軸を更新
+                            if (this.being && this.being.worldView) {
+                                for(const [ax, d] of Object.entries(axisDist)) {
+                                    if(d.mu > 0.6) this.being.worldView.growAxis(ax, d.mu * 0.008);
+                                }
+                            }
+                            // クロスモーダル学習バッファに登録
+                            if (window._aoRegisterModalFeature) {
+                                window._aoRegisterModalFeature('language', langVec);
+                            }
+                        } catch(e) { /* ignore */ }
+                    }
+
                     // 知覚的特徴を未解釈プールに流す
                     // PerceptualParser→未解釈プール→原概念→内部状態 のパイプライン
                     if (perceptualFeatures && this.being && this.being.uninterpreted) {
@@ -16807,6 +17490,707 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
             }
         }
         
+        // ================================================================
+        // IdentityManager v1.0
+        // 「異なる視点でも同じ猫」を束ねる同一性管理
+        // 12軸ベクトルのコサイン類似度で既存identityか新規かを判定
+        // ================================================================
+        // ================================================================
+        // PoseEstimator v2.0
+        // HOGブロックの空間的非対称性から視点（yaw/pitch）を推定
+        // 猫の横顔=yaw≈90°、正面=yaw≈0° を数値化する
+        // ================================================================
+        class PoseEstimator {
+            // HOGブロック配列(2048次元=16x16セル×8方向)から視点を推定
+            // 返値: { yaw:[-1,1], pitch:[-1,1], confidence:[0,1] }
+            estimate(hogBlocks, gridW = 16, gridH = 16, dirs = 8) {
+                if (!hogBlocks || hogBlocks.length < gridW * gridH * dirs) {
+                    return { yaw: 0, pitch: 0, confidence: 0 };
+                }
+
+                // ── 左右非対称性 → yaw推定 ──────────────────────────────
+                // 左半分と右半分のエッジ強度を比較
+                // 正面顔: 左右ほぼ対称 → yaw ≈ 0
+                // 横顔:   片方に強いエッジ → yaw ≠ 0
+                let leftEnergy = 0, rightEnergy = 0;
+                let topEnergy  = 0, bottomEnergy = 0;
+
+                for (let gy = 0; gy < gridH; gy++) {
+                    for (let gx = 0; gx < gridW; gx++) {
+                        const base = (gy * gridW + gx) * dirs;
+                        let cellEnergy = 0;
+                        for (let d = 0; d < dirs; d++) cellEnergy += hogBlocks[base + d] || 0;
+
+                        if (gx < gridW / 2) leftEnergy  += cellEnergy;
+                        else                rightEnergy += cellEnergy;
+                        if (gy < gridH / 2) topEnergy   += cellEnergy;
+                        else                bottomEnergy+= cellEnergy;
+                    }
+                }
+
+                const totalH = leftEnergy + rightEnergy + 1e-6;
+                const totalV = topEnergy  + bottomEnergy + 1e-6;
+                // 非対称度: -1(右重)〜0(対称)〜+1(左重)
+                const yawRaw  = (leftEnergy - rightEnergy) / totalH;
+                const pitchRaw= (topEnergy  - bottomEnergy) / totalV;
+
+                // ── 垂直エッジ集中度 → 横顔らしさ ──────────────────────
+                // 方向0,4 = 垂直エッジ（横顔の輪郭に対応）
+                let verticalEdge = 0, totalEdge = 0;
+                for (let i = 0; i < hogBlocks.length; i++) {
+                    const v = hogBlocks[i] || 0;
+                    totalEdge += v;
+                    if (i % dirs === 0 || i % dirs === 4) verticalEdge += v;
+                }
+                const verticalRatio = totalEdge > 0 ? verticalEdge / totalEdge : 0.25;
+                // 垂直エッジが多いほど横顔らしい（正面: ~0.25, 横顔: ~0.45）
+                const profileLikelihood = Math.max(0, (verticalRatio - 0.25) / 0.20);
+
+                // yawを非対称度×横顔らしさで補正
+                const yaw   = yawRaw * (1 + profileLikelihood);
+                const pitch = pitchRaw * 0.5;
+                const confidence = Math.min(1, totalEdge / (gridW * gridH * dirs * 0.1 + 1));
+
+                return {
+                    yaw:   Math.max(-1, Math.min(1, yaw)),
+                    pitch: Math.max(-1, Math.min(1, pitch)),
+                    profileLikelihood,
+                    confidence
+                };
+            }
+        }
+
+        // ================================================================
+        // ViewpointNormalizer v2.0
+        // 視点情報を除去してcanonical（正準）特徴量を生成する
+        // 「横顔の猫」も「正面の猫」も同じcanonical空間に落とす
+        // ================================================================
+        class ViewpointNormalizer {
+            constructor() {
+                this.poseEstimator = new PoseEstimator();
+            }
+
+            // visual_vector全体(2368次元)とHOGブロックを受け取り
+            // 視点正規化されたcanonical特徴量(64次元)を返す
+            normalize(visualVector, hogBlocks) {
+                const pose = this.poseEstimator.estimate(hogBlocks);
+
+                // ── 色ヒスト(8次元): 視点不変なのでそのまま使う ──────
+                const hueHist = visualVector.slice(0, 8);
+
+                // ── 明るさグリッド(256次元): 視点でズレるので補正 ────
+                // yaw補正: 左右シフトで視点による位置ずれを相殺
+                const GCELLS = 16;
+                const brightnessRaw = visualVector.slice(8, 8 + GCELLS * GCELLS);
+                const brightnessNorm = this._shiftGrid(brightnessRaw, GCELLS,
+                    -pose.yaw * 3,   // 最大3セル分シフト
+                    -pose.pitch * 2
+                );
+                // 16x16→8x8にダウンサンプル（8次元×4=32次元）
+                const brightnessDS = this._downsample(brightnessNorm, GCELLS, 8);
+
+                // ── HOGエネルギープロファイル(8次元): 方向ヒスト ─────
+                // 視点によってエッジ方向が変わるので回転補正
+                const hogEnergy = this._hogDirectionHistogram(hogBlocks, pose.yaw);
+
+                // ── 形状対称性スコア(4次元) ───────────────────────────
+                const symmetry = this._symmetryFeatures(brightnessRaw, GCELLS);
+
+                // ── 視点パラメータ自体も特徴に(4次元) ─────────────────
+                // これにより「どの角度から見た」という情報も保持
+                const poseFeature = [
+                    pose.yaw,
+                    pose.pitch,
+                    pose.profileLikelihood,
+                    pose.confidence
+                ];
+
+                // 結合: 8 + 32 + 8 + 4 + 4 = 56次元 → 64次元にパディング
+                const canonical = [
+                    ...hueHist,      // 8
+                    ...brightnessDS, // 32
+                    ...hogEnergy,    // 8
+                    ...symmetry,     // 4
+                    ...poseFeature,  // 4
+                    ...new Array(8).fill(0)  // padding → 64次元
+                ];
+                return { canonical, pose };
+            }
+
+            // グリッドをdx,dyセル分シフト（視点補正）
+            _shiftGrid(grid, cells, dx, dy) {
+                const result = new Array(cells * cells).fill(0);
+                const sdx = Math.round(dx), sdy = Math.round(dy);
+                for (let y = 0; y < cells; y++) {
+                    for (let x = 0; x < cells; x++) {
+                        const sx = x - sdx, sy = y - sdy;
+                        if (sx >= 0 && sx < cells && sy >= 0 && sy < cells) {
+                            result[y * cells + x] = grid[sy * cells + sx] || 0;
+                        }
+                    }
+                }
+                return result;
+            }
+
+            // グリッドをdownsample (inCells → outCells)
+            _downsample(grid, inCells, outCells) {
+                const ratio = inCells / outCells;
+                const result = new Array(outCells * outCells).fill(0);
+                for (let oy = 0; oy < outCells; oy++) {
+                    for (let ox = 0; ox < outCells; ox++) {
+                        let sum = 0, count = 0;
+                        for (let dy = 0; dy < ratio; dy++) {
+                            for (let dx = 0; dx < ratio; dx++) {
+                                const iy = Math.floor(oy * ratio + dy);
+                                const ix = Math.floor(ox * ratio + dx);
+                                sum += grid[iy * inCells + ix] || 0;
+                                count++;
+                            }
+                        }
+                        result[oy * outCells + ox] = sum / (count || 1);
+                    }
+                }
+                return result;
+            }
+
+            // HOGブロックから方向ヒスト(8次元)をyaw補正付きで生成
+            _hogDirectionHistogram(hogBlocks, yaw) {
+                const dirs = 8;
+                const hist = new Array(dirs).fill(0);
+                for (let i = 0; i < hogBlocks.length; i++) {
+                    hist[i % dirs] += hogBlocks[i] || 0;
+                }
+                // yawに応じて方向をローテート（視点回転の補正）
+                const shift = Math.round(yaw * 2); // 最大2方向シフト
+                const rotated = new Array(dirs);
+                for (let d = 0; d < dirs; d++) {
+                    rotated[d] = hist[((d - shift) % dirs + dirs) % dirs];
+                }
+                // 正規化
+                const total = rotated.reduce((s, v) => s + v, 0) || 1;
+                return rotated.map(v => v / total);
+            }
+
+            // 左右対称性スコア(4次元)
+            _symmetryFeatures(brightnessGrid, cells) {
+                let hSymm = 0, vSymm = 0, count = 0;
+                for (let y = 0; y < cells; y++) {
+                    for (let x = 0; x < cells / 2; x++) {
+                        const left  = brightnessGrid[y * cells + x] || 0;
+                        const right = brightnessGrid[y * cells + (cells - 1 - x)] || 0;
+                        hSymm += 1 - Math.abs(left - right);
+                        count++;
+                    }
+                }
+                for (let x = 0; x < cells; x++) {
+                    for (let y = 0; y < cells / 2; y++) {
+                        const top    = brightnessGrid[y * cells + x] || 0;
+                        const bottom = brightnessGrid[(cells - 1 - y) * cells + x] || 0;
+                        vSymm += 1 - Math.abs(top - bottom);
+                    }
+                }
+                const n = count || 1;
+                const hS = hSymm / n;
+                const vS = vSymm / n;
+                return [hS, vS, hS * vS, Math.sqrt(hS * hS + vS * vS) / Math.sqrt(2)];
+            }
+        }
+
+        // ================================================================
+        // MotionTracker v2.0
+        // フレーム間の特徴差分から実際の空間速度を計算する
+        // 「歩く」= 連続フレームでcanonical位置が変化する
+        // ================================================================
+        class MotionTracker {
+            constructor() {
+                // identityId → { frames: [{canonical, pose, ts}], velocity: [vx,vy,vz] }
+                this.tracks = new Map();
+                this.MAX_FRAMES = 30;  // 約1秒分（30fps想定）
+            }
+
+            // canonical特徴量とposeを受け取り、フレームを追記して速度を計算
+            update(identityId, canonical, pose, timestamp = Date.now()) {
+                if (!this.tracks.has(identityId)) {
+                    this.tracks.set(identityId, { frames: [], velocity: [0, 0, 0], speed: 0 });
+                }
+                const track = this.tracks.get(identityId);
+                track.frames.push({ canonical, pose, ts: timestamp });
+                if (track.frames.length > this.MAX_FRAMES) track.frames.shift();
+
+                // 速度計算: 最新2フレーム間のcanonical差分
+                if (track.frames.length >= 2) {
+                    const f1 = track.frames[track.frames.length - 2];
+                    const f2 = track.frames[track.frames.length - 1];
+                    const dt = Math.max(1, f2.ts - f1.ts) / 1000; // 秒
+
+                    // canonical空間での変位ベクトル（最初の3次元をx,y,z代理）
+                    // → 明るさDS[0,1,2]を位置代理として使う
+                    const dx = (f2.canonical[8]  - f1.canonical[8])  / dt;
+                    const dy = (f2.canonical[9]  - f1.canonical[9])  / dt;
+                    const dz = (f2.canonical[10] - f1.canonical[10]) / dt;
+
+                    // yaw変化 → 回転速度
+                    const dYaw = (f2.pose.yaw - f1.pose.yaw) / dt;
+
+                    track.velocity = [dx, dy, dz];
+                    track.speed    = Math.sqrt(dx*dx + dy*dy + dz*dz);
+                    track.yawRate  = dYaw;
+
+                    // 動作パターン認識
+                    track.motionType = this._classifyMotion(track);
+                }
+                return track;
+            }
+
+            // 速度・yaw変化から動作を分類
+            _classifyMotion(track) {
+                const spd = track.speed || 0;
+                const yawRate = Math.abs(track.yawRate || 0);
+
+                if (spd < 0.01)       return 'still';     // 静止
+                if (yawRate > 0.5)    return 'rotating';  // 回転（視点変化）
+                if (spd < 0.05)       return 'slow';      // ゆっくり移動
+                if (spd < 0.15)       return 'walking';   // 歩行
+                return 'fast';                             // 速い移動
+            }
+
+            get(identityId) { return this.tracks.get(identityId) || null; }
+
+            // 直近Nフレームの平均速度
+            getAverageVelocity(identityId, n = 10) {
+                const track = this.tracks.get(identityId);
+                if (!track || track.frames.length < 2) return [0, 0, 0];
+                return track.velocity;
+            }
+
+            exportState() {
+                const obj = {};
+                for (const [id, t] of this.tracks) {
+                    obj[id] = { velocity: t.velocity, speed: t.speed,
+                                motionType: t.motionType, frames: t.frames.slice(-5) };
+                }
+                return obj;
+            }
+            importState(data) {
+                this.tracks.clear();
+                for (const [id, t] of Object.entries(data || {})) {
+                    this.tracks.set(id, { frames: t.frames || [], velocity: t.velocity || [0,0,0],
+                                          speed: t.speed || 0, motionType: t.motionType || 'still' });
+                }
+            }
+        }
+
+        // ================================================================
+        // IdentityManager v2.0
+        // 視点正規化されたcanonical特徴量で同一性を判定する
+        // 横顔・正面どちらの猫も同じidentityに束ねられる
+        // ================================================================
+        class IdentityManager {
+            constructor() {
+                this.identities = new Map();
+                this.nextId     = 1;
+                this.SIMILARITY_THRESHOLD = 0.68;  // canonical空間での閾値
+                this.MAX_IDENTITIES = 500;
+                this.vpNorm = new ViewpointNormalizer();  // 視点正規化器
+            }
+
+            _cosine(a, b) {
+                let dot = 0, na = 0, nb = 0;
+                const len = Math.min(a.length, b.length);
+                for (let i = 0; i < len; i++) {
+                    dot += a[i] * b[i];
+                    na  += a[i] * a[i];
+                    nb  += b[i] * b[i];
+                }
+                return (na && nb) ? dot / (Math.sqrt(na) * Math.sqrt(nb)) : 0;
+            }
+
+            // ── メインAPI ─────────────────────────────────────────────
+            // visualVector: 生の2368次元特徴量
+            // hogBlocks: 2048次元HOGブロック（視点推定用）
+            // axisDist: 12軸分布（言語・音声モダリティのフォールバック用）
+            assign(axisDist, modality, metadata = {}, rawFeatures = null) {
+                let canonical, pose;
+
+                if (modality === 'image' && rawFeatures?.visualVector && rawFeatures?.hogBlocks) {
+                    // 視点正規化してcanonical特徴量を生成
+                    const result = this.vpNorm.normalize(rawFeatures.visualVector, rawFeatures.hogBlocks);
+                    canonical = result.canonical;
+                    pose      = result.pose;
+                } else {
+                    // 言語・音声: 12軸μベクトルをcanonical代替として使う
+                    const AXIS = ['causality','hierarchy','information','evolution',
+                                  'constraint','feedback','meaning','narrative',
+                                  'selfReference','boundary','emotion','social'];
+                    canonical = AXIS.map(k => axisDist[k]?.mu ?? 0.5);
+                    pose      = { yaw: 0, pitch: 0, profileLikelihood: 0, confidence: 0.5 };
+                }
+
+                // canonical空間でコサイン類似度比較
+                let bestId = null, bestSim = -1;
+                for (const [id, identity] of this.identities) {
+                    const sim = this._cosine(canonical, identity.canonical);
+                    if (sim > bestSim) { bestSim = sim; bestId = id; }
+                }
+
+                if (bestSim >= this.SIMILARITY_THRESHOLD && bestId !== null) {
+                    return this._update(bestId, canonical, pose, axisDist, modality, metadata, bestSim);
+                } else {
+                    return this._create(canonical, pose, axisDist, modality, metadata);
+                }
+            }
+
+            _create(canonical, pose, axisDist, modality, metadata) {
+                if (this.identities.size >= this.MAX_IDENTITIES) this._pruneOld();
+                const id = `id_${this.nextId++}`;
+                const identity = {
+                    id,
+                    canonical:     canonical.slice(),   // canonical特徴量（視点除去済み）
+                    observedPoses: [pose],              // 観測された視点のリスト
+                    axisDist,
+                    modalities:    new Set([modality]),
+                    observeCount:  1,
+                    firstSeen:     Date.now(),
+                    lastSeen:      Date.now(),
+                    metadata:      { ...metadata },
+                    isNew:         true
+                };
+                this.identities.set(id, identity);
+                return { identity, isNew: true, similarity: 0, pose };
+            }
+
+            _update(id, canonical, pose, axisDist, modality, metadata, similarity) {
+                const identity = this.identities.get(id);
+                // canonical特徴量を指数移動平均で更新（α=0.25）
+                const α = 0.25;
+                for (let i = 0; i < canonical.length; i++) {
+                    identity.canonical[i] = (1 - α) * identity.canonical[i] + α * canonical[i];
+                }
+                // 観測された視点を記録（最新10件）
+                identity.observedPoses.push(pose);
+                if (identity.observedPoses.length > 10) identity.observedPoses.shift();
+
+                identity.axisDist     = axisDist;
+                identity.lastSeen     = Date.now();
+                identity.observeCount++;
+                identity.isNew        = false;
+                identity.modalities.add(modality);
+                Object.assign(identity.metadata, metadata);
+                return { identity, isNew: false, similarity, pose };
+            }
+
+            // 観測された視点の多様性（多方向から見られているほど高い）
+            getPoseDiversity(id) {
+                const identity = this.identities.get(id);
+                if (!identity || identity.observedPoses.length < 2) return 0;
+                const yaws = identity.observedPoses.map(p => p.yaw || 0);
+                const maxYaw = Math.max(...yaws), minYaw = Math.min(...yaws);
+                return Math.min(1, (maxYaw - minYaw) * 2); // 0.5差で diversity=1
+            }
+
+            _pruneOld() {
+                let oldest = null, oldestScore = Infinity;
+                for (const [id, identity] of this.identities) {
+                    const score = identity.lastSeen + identity.observeCount * 10000;
+                    if (score < oldestScore) { oldestScore = score; oldest = id; }
+                }
+                if (oldest) this.identities.delete(oldest);
+            }
+
+            get(id)  { return this.identities.get(id) || null; }
+            getAll() { return Array.from(this.identities.values()); }
+
+            getUnknownRate() {
+                const recent = Array.from(this.identities.values())
+                    .sort((a, b) => b.lastSeen - a.lastSeen).slice(0, 10);
+                if (!recent.length) return 0;
+                return recent.filter(i => i.observeCount === 1).length / recent.length;
+            }
+
+            exportState() {
+                const arr = [];
+                for (const [id, identity] of this.identities) {
+                    arr.push({ id, canonical: identity.canonical,
+                        observedPoses: identity.observedPoses,
+                        modalities: Array.from(identity.modalities),
+                        observeCount: identity.observeCount,
+                        firstSeen: identity.firstSeen, lastSeen: identity.lastSeen,
+                        metadata: identity.metadata });
+                }
+                return { identities: arr, nextId: this.nextId };
+            }
+
+            importState(data) {
+                this.identities.clear();
+                this.nextId = data.nextId || 1;
+                for (const d of (data.identities || [])) {
+                    d.modalities = new Set(d.modalities || []);
+                    d.isNew = false;
+                    d.observedPoses = d.observedPoses || [];
+                    this.identities.set(d.id, d);
+                }
+            }
+        }
+
+        // ================================================================
+        // SpatialStateManager（空間野）v2.0
+        // identity ごとに「実際の空間位置・速度」を管理
+        // 位置はcanonical特徴量から計算、velocityはMotionTrackerから取得
+        // ================================================================
+        class SpatialStateManager {
+            constructor() {
+                this.states       = new Map();
+                this.motionTracker = new MotionTracker();
+                this.VELOCITY_DECAY = 0.90;
+            }
+
+            _defaultState(identityId) {
+                return {
+                    identityId,
+                    shape_latent: new Array(64).fill(0),  // canonical特徴量(64次元)
+                    pose:     { yaw: 0, pitch: 0, profileLikelihood: 0, confidence: 0 },
+                    position: [0, 0, 0],   // [x, y, z] canonical空間での位置
+                    scale:    1.0,
+                    velocity: [0, 0, 0],   // MotionTrackerから取得
+                    motionType: 'still',
+                    poseDiversity: 0,      // 複数視点から観測された多様性
+                    confidence: 0.3,
+                    lastUpdated: Date.now(),
+                    predictionError: 0
+                };
+            }
+
+            // canonical特徴量・poseを受け取って状態を更新
+            update(identityId, canonical, pose, confidence = 0.5, identity = null) {
+                if (!this.states.has(identityId)) {
+                    this.states.set(identityId, this._defaultState(identityId));
+                }
+                const s = this.states.get(identityId);
+
+                // MotionTrackerにフレームを追記 → 速度を取得
+                const track = this.motionTracker.update(identityId, canonical, pose);
+                s.velocity   = track.velocity;
+                s.motionType = track.motionType || 'still';
+
+                // 予測誤差(canonical空間でのL2)
+                const dim = Math.min(canonical.length, s.shape_latent.length);
+                let err = 0;
+                for (let i = 0; i < dim; i++) err += (canonical[i] - s.shape_latent[i]) ** 2;
+                s.predictionError = Math.sqrt(err / dim);
+
+                // Kalmanゲインでcanonical更新
+                const K = Math.min(0.8, confidence * 0.6 + 0.1);
+                for (let i = 0; i < dim; i++) {
+                    s.shape_latent[i] = (1 - K) * s.shape_latent[i] + K * canonical[i];
+                }
+
+                // position: canonical明るさDSの先頭3値を空間位置の代理に
+                const prevPos = s.position.slice();
+                s.position = [
+                    canonical[8]  * 2 - 1,  // brightnessDS[0] → x
+                    canonical[9]  * 2 - 1,  // brightnessDS[1] → y
+                    canonical[10] * 2 - 1   // brightnessDS[2] → z
+                ];
+
+                // pose（視点）を記録
+                s.pose = pose;
+                // 視点多様性
+                if (identity) s.poseDiversity = identity.observedPoses
+                    ? (Math.max(...identity.observedPoses.map(p=>p.yaw||0))
+                     - Math.min(...identity.observedPoses.map(p=>p.yaw||0))) * 2
+                    : 0;
+
+                s.confidence  = Math.min(1, s.confidence + confidence * 0.08);
+                s.lastUpdated = Date.now();
+                return { state: s, predictionError: s.predictionError };
+            }
+
+            // 等速直線運動で次状態を予測
+            predict(identityId, dt = 0.1) {
+                const s = this.states.get(identityId) || this._defaultState(identityId);
+                return {
+                    ...s,
+                    position: s.position.map((p, i) => p + s.velocity[i] * dt),
+                    velocity:  s.velocity.map(v => v * this.VELOCITY_DECAY)
+                };
+            }
+
+            isStable(identityId) {
+                const s = this.states.get(identityId);
+                return s && s.confidence > 0.65 && s.predictionError < 0.25;
+            }
+
+            exportState() {
+                const obj = {};
+                for (const [id, s] of this.states) obj[id] = {
+                    ...s, pose: s.pose, velocity: s.velocity
+                };
+                return { states: obj, motionTracker: this.motionTracker.exportState() };
+            }
+
+            importState(data) {
+                this.states.clear();
+                for (const [id, s] of Object.entries(data?.states || {})) {
+                    this.states.set(id, s);
+                }
+                if (data?.motionTracker) this.motionTracker.importState(data.motionTracker);
+            }
+        }
+
+                // ================================================================
+        // PredictionUpdateLoop v1.0
+        // エピソード記憶と空間野を繋ぐ予測誤差フィードバックループ
+        // ================================================================
+        class PredictionUpdateLoop {
+            constructor(spatialState, episodicMemory) {
+                this.spatialState    = spatialState;
+                this.episodicMemory  = episodicMemory;
+                this.errorHistory    = [];   // 誤差履歴（直近100件）
+                this.MAX_HISTORY     = 100;
+            }
+
+            // 観測が来るたびに呼ぶ
+            // identity・axisVec(12軸)・emotionを受け取り予測誤差を記録する
+            // ※ SpatialStateの更新はパイプライン②で完了済み → 誤差記録のみ担当
+            cycle(identity, axisVec, emotionState = {}) {
+                const id    = identity.id;
+                const state = this.spatialState.states.get(id);
+                const predictionError = state ? state.predictionError : 0;
+
+                // 誤差記録
+                this.errorHistory.push({ id, error: predictionError, ts: Date.now() });
+                if (this.errorHistory.length > this.MAX_HISTORY) this.errorHistory.shift();
+
+                // 誤差が大きい or 動作パターンが変化 → エピソード記憶に刻む
+                const motionType = state?.motionType || 'unknown';
+                if (predictionError > 0.25 && this.episodicMemory) {
+                    this.episodicMemory.record(
+                        'prediction_loop',
+                        `identity:${id} motionType:${motionType} predErr:${predictionError.toFixed(3)}`,
+                        [id],
+                        emotionState,
+                        { predictionError, motionType,
+                          pose: state?.pose, velocity: state?.velocity }
+                    );
+                }
+
+                return { state, predictionError };
+            }
+
+            // 平均予測誤差（直近）
+            getAvgError() {
+                if (!this.errorHistory.length) return 0;
+                return this.errorHistory.reduce((s, e) => s + e.error, 0) / this.errorHistory.length;
+            }
+
+            // 誤差が高いidentityを再活性化候補として返す
+            getHighErrorIds(threshold = 0.3) {
+                const map = new Map();
+                for (const { id, error } of this.errorHistory) {
+                    if (!map.has(id) || map.get(id) < error) map.set(id, error);
+                }
+                return Array.from(map.entries())
+                    .filter(([, e]) => e >= threshold)
+                    .sort(([, a], [, b]) => b - a)
+                    .map(([id]) => id);
+            }
+        }
+
+        // ================================================================
+        // IntentGenerator v1.0
+        // 知覚状況を読んで「今何をすべきか」を決定し
+        // PrefrontalDecisionCoreV1_1に注入するintentを生成
+        // ================================================================
+        class IntentGenerator {
+            constructor() {
+                this.currentIntent = null;
+                this.history = [];
+                this.MAX_HISTORY = 30;
+            }
+
+            /**
+             * @param {object} ctx
+             *   unknownRate      - IdentityManagerのgetUnknownRate()
+             *   avgPredError     - PredictionUpdateLoopのgetAvgError()
+             *   uninterpretedDen - UninterpretedStatePool.getDensity()
+             *   topIdentity      - 最もactiveなIdentity（nullも可）
+             *   emotionState     - 現在の感情状態
+             */
+            generate(ctx) {
+                const {
+                    unknownRate      = 0,
+                    avgPredError     = 0,
+                    uninterpretedDen = 0,
+                    topIdentity      = null,
+                    emotionState     = {}
+                } = ctx;
+
+                let goal, targetId, priority;
+
+                if (unknownRate > 0.6) {
+                    // 未知が多い → 質問・確認モード
+                    goal     = 'ask';
+                    targetId = null;
+                    priority = 0.9;
+                } else if (avgPredError > 0.4) {
+                    // 予測が外れ続けている → 予測モデルを更新
+                    goal     = 'predict';
+                    targetId = topIdentity?.id || null;
+                    priority = 0.8;
+                } else if (uninterpretedDen > 0.7) {
+                    // 未解釈プールが溢れそう → 反応・整理
+                    goal     = 'react';
+                    targetId = null;
+                    priority = 0.7;
+                } else if (topIdentity && topIdentity.observeCount >= 3) {
+                    // 安定したidentityがある → 説明・表現
+                    goal     = 'explain';
+                    targetId = topIdentity.id;
+                    priority = Math.min(0.9, 0.4 + topIdentity.observeCount * 0.05);
+                } else {
+                    goal     = 'explain';
+                    targetId = topIdentity?.id || null;
+                    priority = 0.5;
+                }
+
+                // 感情でpriority補正
+                const tension = emotionState.tension || 0;
+                priority = Math.min(1, priority + tension * 0.1);
+
+                const intent = {
+                    goal,
+                    target:   targetId,
+                    priority,
+                    ctx:      { unknownRate, avgPredError, uninterpretedDen },
+                    created:  Date.now()
+                };
+
+                this.currentIntent = intent;
+                this.history.push(intent);
+                if (this.history.length > this.MAX_HISTORY) this.history.shift();
+                return intent;
+            }
+
+            // PrefrontalDecisionCoreV1_1.decide()のworldStateフィールドに注入する形式
+            toWorldState() {
+                if (!this.currentIntent) return {};
+                return {
+                    intent_goal:     this.currentIntent.goal,
+                    intent_target:   this.currentIntent.target,
+                    intent_priority: this.currentIntent.priority
+                };
+            }
+
+            exportState() {
+                return { currentIntent: this.currentIntent, history: this.history.slice(-10) };
+            }
+
+            importState(data) {
+                this.currentIntent = data?.currentIntent || null;
+                this.history       = data?.history || [];
+            }
+        }
+
         // ============ 失敗記憶（既存維持）============
         class IrreversibleFailureMemory {
             constructor() {
@@ -21315,6 +22699,7 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                 // v27.0: VideoEventCognitionSystemにepisodicMemoryを注入（因果確定イベントを記憶）
                 this.videoEventCognition._episodicMemory = this.episodicMemory;
                 this.humanBrainMetabolism = new HumanBrainMetabolism(this);
+
                 
                 // 編集統合（v18.0 追加）
                 try {
@@ -21379,6 +22764,22 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                 // ASI Class Systems（v24.0 追加）
                 try {
                     this.worldView = new WorldViewModel();
+                    // ── MultimodalAxisCodec: 12軸双方向コーデック ──
+                    this.axisCodec = new MultimodalAxisCodec();
+                    window._aoAxisCodec = this.axisCodec;  // worldViewから参照できるようグローバル登録
+
+                    // ── 神経接続 v1.0: Identity / State / Prediction / Intent ──
+                    this.identityManager   = new IdentityManager();
+                    this.spatialState      = new SpatialStateManager();
+                    this.predictionLoop    = null; // episodicMemory確定後に接続
+                    this.intentGenerator   = new IntentGenerator();
+
+                    // ── PredictionUpdateLoop: spatialState＆episodicMemory確定後に接続 ──
+                    this.predictionLoop = new PredictionUpdateLoop(
+                        this.spatialState, this.episodicMemory
+                    );
+                    window._aoIdentityManager = this.identityManager;
+
                     this.conceptIntegration = new ConceptIntegrationManager(this);
                     this.abstractionController = new AbstractionController();
                     this.otakuCultureIntegration = new OtakuCultureIntegration(this.worldView);
@@ -21633,6 +23034,27 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                         } catch (e) {
                             console.error('WorldView export failed:', e);
                         }
+                    }
+                    // ── AxisCodec 保存 ──
+                    if (this.axisCodec) {
+                        try {
+                            exportData.coreState.axisCodec = this.axisCodec.exportState();
+                        } catch (e) {
+                            console.error('AxisCodec export failed:', e);
+                        }
+                    }
+                    // ── Identity / SpatialState / Intent 保存 ──
+                    if (this.identityManager) {
+                        try { exportData.coreState.identityManager = this.identityManager.exportState(); }
+                        catch(e) { console.error('IdentityManager export failed:', e); }
+                    }
+                    if (this.spatialState) {
+                        try { exportData.coreState.spatialState = this.spatialState.exportState(); }
+                        catch(e) { console.error('SpatialState export failed:', e); }
+                    }
+                    if (this.intentGenerator) {
+                        try { exportData.coreState.intentGenerator = this.intentGenerator.exportState(); }
+                        catch(e) { console.error('IntentGenerator export failed:', e); }
                     }
                     if (this.conceptIntegration) {
                         try {
@@ -22064,6 +23486,36 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                             console.error('WorldView import failed:', e);
                         }
                     }
+                    // ── AxisCodec 復元 ──
+                    if (core.axisCodec && this.axisCodec) {
+                        try {
+                            this.axisCodec.importState(core.axisCodec);
+                            window._aoAxisCodec = this.axisCodec;
+                            this.addLog(`AxisCodec復元 (学習回数: ${this.axisCodec.trainCount})`);
+                        } catch (e) {
+                            console.error('AxisCodec import failed:', e);
+                        }
+                    }
+                    // ── Identity / SpatialState / Intent 復元 ──
+                    if (core.identityManager && this.identityManager) {
+                        try {
+                            this.identityManager.importState(core.identityManager);
+                            window._aoIdentityManager = this.identityManager;
+                            this.addLog(`IdentityManager復元 (${this.identityManager.identities.size}件)`);
+                        } catch(e) { console.error('IdentityManager import failed:', e); }
+                    }
+                    if (core.spatialState && this.spatialState) {
+                        try {
+                            this.spatialState.importState(core.spatialState);
+                            this.addLog('SpatialState復元');
+                        } catch(e) { console.error('SpatialState import failed:', e); }
+                    }
+                    if (core.intentGenerator && this.intentGenerator) {
+                        try {
+                            this.intentGenerator.importState(core.intentGenerator);
+                            this.addLog(`IntentGenerator復元 (intent:${this.intentGenerator.currentIntent?.goal||'none'})`);
+                        } catch(e) { console.error('IntentGenerator import failed:', e); }
+                    }
                     if (core.conceptIntegration && this.conceptIntegration) {
                         try {
                             this.conceptIntegration.importState(core.conceptIntegration);
@@ -22335,6 +23787,7 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                         if (imageResult.visual_vector && inputs.text && inputs.text.trim().length > 0) {
                             const label = inputs.text.trim().substring(0, 20);
                             this.imageAdapter.learnPrototype(label, imageResult.visual_vector);
+                            this.imageAdapter.learnSpatialPrototype(label, imageResult.features); // [v28]
                             // [v27.0] 仮説テーブル更新
                             this.imageAdapter.learnHypothesis(label, imageResult.features);
                             activeLabels.push(label);
@@ -22345,6 +23798,7 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                         if (imageResult.visual_vector && imageResult.semantic_candidates.length > 0) {
                             const topConcept = imageResult.semantic_candidates[0].concept;
                             this.imageAdapter.learnPrototype(topConcept, imageResult.visual_vector);
+                            this.imageAdapter.learnSpatialPrototype(topConcept, imageResult.features); // [v28]
                             if (!imageResult.semantic_candidates[0].fromHypothesis) {
                                 this.imageAdapter.learnHypothesis(topConcept, imageResult.features);
                             }
@@ -22414,13 +23868,61 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                         sensoryResults.push(videoResult);
                         this.addLog(`映像野: ${videoResult.sceneCount}シーン解析完了`);
 
+                        // ── AxisCodec: 動画特徴量を12軸に符号化（時間概念の学習）──
+                        if (window._aoAxisCodec && videoResult.avg_features) {
+                            try {
+                                // 動画の時間的特徴を64次元ベクトルに圧縮
+                                // avg_featuresはImageAdapterの160次元visual_vectorと同形式
+                                const vf = videoResult.avg_features;
+                                const videoVec = new Array(64).fill(0);
+                                // 空間特徴（前半32次元）
+                                if (vf.visual_vector) {
+                                    for(let i=0;i<32;i++) videoVec[i] = vf.visual_vector[i]||0;
+                                }
+                                // 時間特徴（後半32次元）: シーン数・連続性スコア・変化量
+                                videoVec[32] = Math.min(1, (videoResult.sceneCount||1) / 20);
+                                if (videoResult.continuousSegments) {
+                                    const scores = videoResult.continuousSegments.map(s=>s.continuityScore||0);
+                                    videoVec[33] = scores.reduce((a,b)=>a+b,0) / (scores.length||1); // 平均連続性
+                                    videoVec[34] = Math.max(...scores) - Math.min(...scores);          // 変化幅
+                                }
+                                const axisDist = window._aoAxisCodec.encode(videoVec, 'video');
+                                const top = window._aoAxisCodec.summary(axisDist).slice(0,3)
+                                    .map(a=>`${a.axis}:${a.mu.toFixed(2)}`).join(' ');
+                                this.addLog(`[AxisCodec/video] ${top}`);
+                                if (this.worldView) {
+                                    for(const [ax, d] of Object.entries(axisDist)) {
+                                        // 動画は因果・物語・進化軸に特に寄与
+                                        const bonus = ['causality','narrative','evolution'].includes(ax) ? 1.5 : 1.0;
+                                        if(d.mu > 0.5) this.worldView.growAxis(ax, d.mu * 0.012 * bonus);
+                                    }
+                                }
+                                // クロスモーダル学習バッファに登録（言語と対比させる）
+                                if (window._aoRegisterModalFeature) {
+                                    window._aoRegisterModalFeature('video', videoVec);
+                                }
+                            } catch(e) { /* ignore */ }
+                        }
+
                         // [v27.1] 動画共起学習（ImageAdapterの共起テーブルに乗せる）
                         if (videoResult.avg_features) {
                             const videoLabels = [];
                             if (inputs.text && inputs.text.trim().length > 0) {
-                                videoLabels.push(inputs.text.trim().substring(0, 20));
-                                // テキストラベルをImageAdapterの仮説テーブルにも登録
-                                this.imageAdapter.learnHypothesis(inputs.text.trim().substring(0, 20), videoResult.avg_features);
+                                const label = inputs.text.trim().substring(0, 20);
+                                videoLabels.push(label);
+                                this.imageAdapter.learnHypothesis(label, videoResult.avg_features);
+
+                                // [v28] 連続性スコアが高いフレームだけlearnSpatialPrototypeに渡す
+                                // 前フレームと似ている＝同じ対象が映っている→学習に値する
+                                if (videoResult.continuousSegments) {
+                                    for (const seg of videoResult.continuousSegments) {
+                                        if (seg.continuityScore >= 0.7) {
+                                            this.imageAdapter.learnSpatialPrototype(label, seg.features);
+                                        }
+                                    }
+                                    const used = videoResult.continuousSegments.filter(s => s.continuityScore >= 0.7).length;
+                                    this.addLog(`映像野: 連続性学習 「${label}」 ${used}/${videoResult.continuousSegments.length}フレーム採用`);
+                                }
                             }
                             if (videoResult.semantic_candidates.length > 0) {
                                 videoLabels.push(videoResult.semantic_candidates[0].concept);
@@ -25353,6 +26855,31 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                     // 自然減衰
                     this.internalState.naturalDecay();
                     
+                    // ── IntentGenerator: 自律ループにintentを反映 ──
+                    if (this.being) {
+                        const being = this.being;
+                        const ig = being.intentGenerator;
+                        const im = being.identityManager;
+                        const pl = being.predictionLoop;
+                        if (ig && im) {
+                            const allIds = im.getAll();
+                            const topIdentity = allIds.sort((a,b) => b.observeCount - a.observeCount)[0] || null;
+                            const intent = ig.generate({
+                                unknownRate:      im.getUnknownRate(),
+                                avgPredError:     pl ? pl.getAvgError() : 0,
+                                uninterpretedDen: being.uninterpreted?.getDensity() || 0,
+                                topIdentity,
+                                emotionState:     being.state ? { tension: being.state.tension||0, joy: being.state.joy||0, curiosity: being.state.curiosity||0 } : {}
+                            });
+                            being._latestIntentWorldState = ig.toWorldState();
+
+                            // intent=askの時は好奇心を少し高める
+                            if (intent.goal === 'ask' && being.state) {
+                                being.state.curiosity = Math.min(1, (being.state.curiosity||0) + 0.05);
+                            }
+                        }
+                    }
+
                     // 生成衝動チェック
                     const impulseResult = this.creativeImpulse.calculate();
                     
@@ -29284,6 +30811,324 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
         window.closeVideoModal               = closeVideoModal;
         window.createVideoProjectFromModal   = createVideoProjectFromModal;
         window.exportVideoProjectFromModal   = exportVideoProjectFromModal;
+
+        // ── AxisCodec UI更新ループ ──────────────────────────────────
+        // 最新のエンコード結果をリアルタイム表示
+        let _lastAxisDist = null;  // 最後にエンコードした12軸分布を保持
+
+        function _updateAxisCodecUI(axisDist, modality) {
+            if (!axisDist) return;
+            _lastAxisDist = { dist: axisDist, modality };
+
+            const display = document.getElementById('axisCodecDisplay');
+            const countEl = document.getElementById('axisCodecTrainCount');
+            if (!display) return;
+
+            const codec = window._aoAxisCodec;
+            if (countEl && codec) {
+                countEl.textContent = `学習${codec.trainCount}回`;
+            }
+
+            const summary = codec ? codec.summary(axisDist) : [];
+            const modalityColor = {
+                language: '#60a5fa', image: '#f97316',
+                audio: '#06b6d4',   video: '#8b5cf6'
+            };
+            const col = modalityColor[modality] || '#c084fc';
+            const axisJa = {
+                causality:'因果', hierarchy:'階層', information:'情報',
+                evolution:'進化', constraint:'制約', feedback:'FB',
+                meaning:'意味', narrative:'物語', selfReference:'自己言及',
+                boundary:'境界', emotion:'感情', social:'社会'
+            };
+
+            display.innerHTML = summary.map(({ axis, mu, sigma, confidence }) => {
+                const barW = (mu * 100).toFixed(0);
+                const sigW = Math.min(100, (sigma * 200)).toFixed(0);
+                const conf = confidence.toFixed(1);
+                return `
+                <div style="margin-bottom:0.35rem;">
+                    <div style="display:flex;justify-content:space-between;color:${col};">
+                        <span>${axisJa[axis]||axis}</span>
+                        <span style="color:#9ca3af;">μ${mu.toFixed(2)} σ${sigma.toFixed(2)} 信頼${conf}</span>
+                    </div>
+                    <div style="position:relative;height:3px;background:#1f2937;border-radius:2px;margin-top:2px;">
+                        <div style="position:absolute;height:3px;width:${barW}%;background:${col};border-radius:2px;opacity:0.8;"></div>
+                        <div style="position:absolute;height:3px;left:${barW}%;width:${sigW}%;max-width:${100-barW}%;background:${col};border-radius:2px;opacity:0.2;"></div>
+                    </div>
+                </div>`;
+            }).join('') + `<div style="font-size:0.6rem;color:#4b5563;margin-top:0.3rem;">[${modality}]</div>`;
+        }
+
+        // ── Identity / State / Intent UI 更新 ──────────────────────────
+        function _updateIdentityUI() {
+            if (!window.ao) return;
+            const being = window.ao;
+            const im  = being.identityManager;
+            const ss  = being.spatialState;
+            const pl  = being.predictionLoop;
+            const ig  = being.intentGenerator;
+            if (!im) return;
+
+            // Intent
+            const intentEl   = document.getElementById('intentDisplay');
+            const intentMetEl= document.getElementById('intentMetrics');
+            if (intentEl && ig?.currentIntent) {
+                const int = ig.currentIntent;
+                const goalColor = { ask:'#fbbf24', predict:'#60a5fa', react:'#f87171', explain:'#34d399' };
+                const col = goalColor[int.goal] || '#e2e8f0';
+                intentEl.innerHTML = `<span style="color:${col};font-weight:600;">${int.goal.toUpperCase()}</span>`
+                    + (int.target ? ` → <span style="color:#c084fc;">${int.target}</span>` : '')
+                    + ` <span style="color:#6b7280;">priority:${int.priority?.toFixed(2)}</span>`;
+                if (intentMetEl) {
+                    const c = int.ctx || {};
+                    intentMetEl.textContent =
+                        `未知率:${(c.unknownRate||0).toFixed(2)} `
+                      + `predErr:${(c.avgPredError||0).toFixed(3)} `
+                      + `未解釈:${(c.uninterpretedDen||0).toFixed(2)}`;
+                }
+            }
+
+            // SpatialState（最もactiveなidentityの状態を表示）
+            const topId = im.getAll().sort((a,b) => b.observeCount - a.observeCount)[0];
+            if (topId && ss) {
+                const s = ss.states.get(topId.id);
+                if (s) {
+                    const fmt3 = arr => (arr||[]).map(v => (+v).toFixed(2)).join(', ');
+                    const f2   = v => v != null ? (+v).toFixed(2) : '---';
+
+                    const motEl  = document.getElementById('spatialMotion');
+                    const poseEl = document.getElementById('spatialPose');
+                    const divEl  = document.getElementById('spatialDiversity');
+                    const posEl  = document.getElementById('spatialPos');
+                    const velEl  = document.getElementById('spatialVel');
+                    const errEl  = document.getElementById('spatialErr');
+                    const confEl = document.getElementById('spatialConf');
+
+                    // 動作タイプ色分け
+                    const motionColor = {
+                        still:'#6b7280', slow:'#60a5fa', walking:'#34d399',
+                        fast:'#f87171', rotating:'#c084fc', unknown:'#6b7280'
+                    };
+                    const mt = s.motionType || 'still';
+                    if (motEl) {
+                        motEl.textContent = mt;
+                        motEl.style.color = motionColor[mt] || '#e2e8f0';
+                    }
+
+                    // 視点（pose）
+                    if (poseEl && s.pose) {
+                        const yawDeg   = (s.pose.yaw   * 90).toFixed(0);
+                        const pitchDeg = (s.pose.pitch * 45).toFixed(0);
+                        const profile  = s.pose.profileLikelihood?.toFixed(2) || '0';
+                        poseEl.textContent = `yaw:${yawDeg}° pitch:${pitchDeg}° 横顔度:${profile}`;
+                    }
+
+                    // 視点多様性
+                    if (divEl) {
+                        const div = im.getPoseDiversity(topId.id);
+                        divEl.textContent = div.toFixed(2)
+                            + (div > 0.5 ? ' ✓複数視点' : ' (単一視点)');
+                    }
+
+                    if (posEl)  posEl.textContent  = fmt3(s.position);
+                    if (velEl)  velEl.textContent  = fmt3(s.velocity) + ` speed:${(s.speed||0).toFixed(3)}`;
+                    if (errEl)  errEl.textContent  = s.predictionError?.toFixed(4) || '---';
+                    if (confEl) confEl.textContent = s.confidence?.toFixed(3) || '---';
+                }
+            }
+
+            // IdentityList
+            const countEl   = document.getElementById('identityCount');
+            const unknownEl = document.getElementById('unknownRate');
+            const listEl    = document.getElementById('identityList');
+            if (countEl)   countEl.textContent   = `${im.identities.size}件`;
+            if (unknownEl) unknownEl.textContent  = `未知率:${im.getUnknownRate().toFixed(2)}`;
+            if (listEl) {
+                const recent = im.getAll()
+                    .sort((a, b) => b.lastSeen - a.lastSeen).slice(0, 8);
+                listEl.innerHTML = recent.map(id => {
+                    const mods    = Array.from(id.modalities).join(',');
+                    const stable  = ss?.isStable(id.id) ? '✓' : '·';
+                    const sState  = ss?.states.get(id.id);
+                    const mt      = sState?.motionType || '';
+                    const yaw     = sState?.pose?.yaw != null
+                        ? `${(sState.pose.yaw * 90).toFixed(0)}°` : '';
+                    const div     = im.getPoseDiversity(id.id);
+                    const divStr  = div > 0.3 ? '👁多視点' : '';
+                    const motionColor = { still:'#6b7280', slow:'#60a5fa', walking:'#34d399',
+                                          fast:'#f87171', rotating:'#c084fc' };
+                    return `<div style="border-bottom:1px solid #1f2937;padding:0.15rem 0;">`
+                        + `<div style="display:flex;justify-content:space-between;">`
+                        + `<span style="color:#c084fc;">${stable} ${id.id}</span>`
+                        + `<span style="color:#6b7280;">${mods}</span>`
+                        + `<span style="color:#86efac;">×${id.observeCount}</span>`
+                        + `</div>`
+                        + (mt ? `<div style="font-size:0.55rem;color:${motionColor[mt]||'#6b7280'};padding-left:0.5rem;">`
+                            + `${mt} ${yaw} ${divStr}</div>` : '')
+                        + `</div>`;
+                }).join('') || '<div style="color:#4b5563;">観測待ち...</div>';
+            }
+
+            // PredictionLoop
+            if (pl) {
+                const avgErrEl  = document.getElementById('predAvgErr');
+                const highErrEl = document.getElementById('predHighErr');
+                if (avgErrEl)  avgErrEl.textContent  = pl.getAvgError().toFixed(4);
+                if (highErrEl) highErrEl.textContent = pl.getHighErrorIds().slice(0,3).join(', ') || 'none';
+            }
+        }
+
+        // 500msごとにUI更新
+        setInterval(_updateIdentityUI, 500);
+
+        // ── codec.onEncode: UI更新 + Identity/State/Prediction/Intent パイプライン ──
+        // rawFeaturesBuf: 画像encode時に視点推定用のHOGブロックをここに格納しておく
+        window._aoRawFeaturesBuf = null;
+
+        if (window._aoAxisCodec) {
+            window._aoAxisCodec.onEncode = function(axisDist, modality) {
+                // UI更新
+                _updateAxisCodecUI(axisDist, modality);
+
+                // ── パイプライン本体 ──────────────────────────────────
+                if (!window.ao) return;
+                const being = window.ao;
+
+                try {
+                    // ① IdentityManager: 同一性判定
+                    //    画像モダリティは rawFeaturesBuf から視点正規化に必要な情報を渡す
+                    const im = being.identityManager;
+                    if (!im) return;
+                    const rawFeatures = (modality === 'image') ? window._aoRawFeaturesBuf : null;
+                    const { identity, isNew, similarity, pose } = im.assign(axisDist, modality, {}, rawFeatures);
+
+                    // ② SpatialStateManager: canonical特徴量+poseで空間状態を更新
+                    const confidence = identity.observeCount > 1
+                        ? Math.min(0.95, 0.4 + identity.observeCount * 0.05)
+                        : 0.3;
+
+                    if (being.spatialState) {
+                        // canonical: identity内に保存済み（視点除去済み64次元）
+                        const canonical = identity.canonical || [];
+                        const poseObj   = pose || { yaw:0, pitch:0, profileLikelihood:0, confidence:0.5 };
+                        being.spatialState.update(identity.id, canonical, poseObj, confidence, identity);
+                    }
+
+                    // PredictionLoopに渡すaxisVec（12軸）は従来通り
+                    const AXIS = ['causality','hierarchy','information','evolution',
+                                  'constraint','feedback','meaning','narrative',
+                                  'selfReference','boundary','emotion','social'];
+                    const axisVec = AXIS.map(k => axisDist[k]?.mu ?? 0.5);
+
+                    // ③ PredictionUpdateLoop: 予測誤差フィードバック
+                    if (being.predictionLoop) {
+                        const emotionState = being.state ? { tension: being.state.tension||0, joy: being.state.joy||0, curiosity: being.state.curiosity||0 } : {};
+                        being.predictionLoop.cycle(identity, axisVec, emotionState);
+                    }
+
+                    // ④ 原概念との橋渡し: 新規identityは未解釈プールへ
+                    if (isNew && being.uninterpreted) {
+                        being.uninterpreted.add(
+                            being.state ? { tension: being.state.tension||0.3, joy: being.state.joy||0, curiosity: being.state.curiosity||0 } : { tension: 0.3 },
+                            `identity:${identity.id}/${modality}`,
+                            { entropy: axisDist.information?.sigma || 0.5,
+                              avgPMI:  axisDist.meaning?.mu || 0,
+                              bigramDiversity: axisDist.narrative?.mu || 0,
+                              tokenCount: 1 }
+                        );
+                    }
+
+                    // ⑤ 安定identity → 抽象概念生成トリガー
+                    if (!isNew && identity.observeCount >= 5 && being.spatialState?.isStable(identity.id)) {
+                        if (being.protoGenerator) {
+                            being.protoGenerator.tryGenerate(being.uninterpreted.states);
+                        }
+                    }
+
+                    // ⑥ IntentGenerator: 状況を読んでintentを決定
+                    if (being.intentGenerator && being.predictionLoop) {
+                        const allIds = im.getAll();
+                        const topIdentity = allIds.sort((a, b) =>
+                            b.observeCount - a.observeCount)[0] || null;
+                        const intent = being.intentGenerator.generate({
+                            unknownRate:      im.getUnknownRate(),
+                            avgPredError:     being.predictionLoop.getAvgError(),
+                            uninterpretedDen: being.uninterpreted?.getDensity() || 0,
+                            topIdentity,
+                            emotionState:     being.state ? { tension: being.state.tension||0, joy: being.state.joy||0, curiosity: being.state.curiosity||0 } : {}
+                        });
+
+                        // ⑦ PrefrontalDecisionCoreV1_1にintentを注入
+                        if (being.prefrontalCoreV1_1) {
+                            // worldStateフィールドを毎回更新しておく
+                            being._latestIntentWorldState = being.intentGenerator.toWorldState();
+                        }
+
+                        // ログ（変化があった時だけ）
+                        if (isNew || intent.goal !== being._prevIntentGoal) {
+                            being.addLog && being.addLog(
+                                `[Identity] ${isNew ? '新規' : '既知'} ${identity.id} ` +
+                                `(${modality}) 観測${identity.observeCount}回 → Intent:${intent.goal}`
+                            );
+                            being._prevIntentGoal = intent.goal;
+                        }
+
+                    }
+                } catch(e) {
+                    console.error('[AxisCodec.onEncode pipeline]', e);
+                }
+            };
+        }
+
+        // ── クロスモーダル学習: 画像＋言語が揃った時に自動発火 ──────
+        // 同一ターンで画像と言語の両特徴量が取れたら対比学習
+        let _crossModalBuffer = {};
+        window._aoRegisterModalFeature = function(modality, featureVec) {
+            _crossModalBuffer[modality] = featureVec;
+            // 2種類以上揃ったらクロスモーダル学習
+            const keys = Object.keys(_crossModalBuffer);
+            if (keys.length >= 2 && window._aoAxisCodec) {
+                for (let i = 0; i < keys.length - 1; i++) {
+                    const loss = window._aoAxisCodec.trainCrossModal(
+                        _crossModalBuffer[keys[i]], keys[i],
+                        _crossModalBuffer[keys[i+1]], keys[i+1]
+                    );
+                    console.log(`[AxisCodec] crossModal ${keys[i]}↔${keys[i+1]} loss=${loss.toFixed(4)}`);
+                }
+                // バッファをリセット（次のターンへ）
+                _crossModalBuffer = {};
+            }
+        };
+
+        // ── デコードテスト: 12軸→各モダリティの生成テスト ─────────
+        window._aoAxisCodecDecodeTest = function(targetModality) {
+            if (!window._aoAxisCodec || !_lastAxisDist) {
+                ao.addLog('[AxisCodec] デコード: 先に何かを入力してください');
+                return;
+            }
+            try {
+                const { dist } = _lastAxisDist;
+                // サンプリングで揺らぎを加えてデコード
+                const sampled   = window._aoAxisCodec.sample(dist);
+                const decoded   = window._aoAxisCodec.decode(sampled, targetModality);
+                const norm      = decoded.reduce((s,v)=>s+v*v,0);
+                const magnitude = Math.sqrt(norm).toFixed(3);
+                const top5      = decoded
+                    .map((v,i)=>({i,v}))
+                    .sort((a,b)=>Math.abs(b.v)-Math.abs(a.v))
+                    .slice(0,5)
+                    .map(({i,v})=>`[${i}]${v.toFixed(3)}`)
+                    .join(' ');
+                ao.addLog(`[AxisCodec→${targetModality}] ノルム:${magnitude} 上位次元: ${top5}`);
+                // 軸分布サマリも表示
+                const summary = window._aoAxisCodec.summary(dist)
+                    .slice(0,3).map(a=>`${a.axis}:${a.mu.toFixed(2)}`).join(' ');
+                ao.addLog(`[AxisCodec] 12軸サマリ: ${summary}`);
+            } catch(e) {
+                ao.addLog(`[AxisCodec] デコードエラー: ${e.message}`);
+            }
+        };
 
         // beforeunload で window.ao を参照しているため代入
         window.ao = ao;
