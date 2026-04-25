@@ -1579,6 +1579,71 @@ async function aoActivateAfterPaypal() {
                 </div>
             </div>
 
+            <!-- ========== 視覚統合理解システム (VIS) v1.0 ========== -->
+            <div class="panel">
+                <div class="panel-title">👁 視覚統合理解システム</div>
+                <div id="visPanel" style="min-height:60px;font-size:0.65rem;color:#d8b4fe;">
+                    <span style="opacity:0.5;">初期化中...</span>
+                </div>
+                <div style="margin-top:0.4rem;font-size:0.6rem;color:#6b7280;display:flex;gap:0.8rem;flex-wrap:wrap;">
+                    <span>VIS処理数: <span id="visProcessCount" style="color:#10b981;">0</span></span>
+                    <span>クオリア: <span id="visQualiaStatus" style="color:#c084fc;">---</span></span>
+                    <span>entities: <span id="visEntityCount" style="color:#60a5fa;">0</span></span>
+                    <span>unknown: <span id="visUnknownRate" style="color:#fbbf24;">0%</span></span>
+                </div>
+            </div>
+            <!-- ===================================================== -->
+
+            <!-- ========== マルチモーダル出力レンダリング機構 (MRE) v1.0 ========== -->
+            <div class="panel">
+                <div class="panel-title">🎨 クオリア出力レンダリング (MRE)</div>
+                <div style="font-size:0.65rem;color:#d8b4fe;margin-bottom:0.5rem;">
+                    内部状態（クオリア）→ 画像・音声・動画 への直接変換
+                </div>
+                <div style="display:flex;gap:0.4rem;flex-wrap:wrap;">
+                    <button onclick="(async function(){try{if(window.ao&&window.ao.mre){await window.ao.renderToChat('image');}}catch(e){console.error(e);}})()"
+                        style="flex:1;padding:0.4rem 0.3rem;font-size:0.72rem;background:rgba(249,115,22,0.2);border:1px solid rgba(249,115,22,0.4);color:#f97316;border-radius:0.35rem;cursor:pointer;font-weight:600;">
+                        🖼 画像
+                    </button>
+                    <button onclick="(async function(){try{if(window.ao&&window.ao.mre){await window.ao.renderToChat('audio');}}catch(e){console.error(e);}})()"
+                        style="flex:1;padding:0.4rem 0.3rem;font-size:0.72rem;background:rgba(6,182,212,0.2);border:1px solid rgba(6,182,212,0.4);color:#06b6d4;border-radius:0.35rem;cursor:pointer;font-weight:600;">
+                        🎵 音声
+                    </button>
+                    <button onclick="(async function(){try{if(window.ao&&window.ao.mre){await window.ao.renderToChat('video');}}catch(e){console.error(e);}})()"
+                        style="flex:1;padding:0.4rem 0.3rem;font-size:0.72rem;background:rgba(139,92,246,0.2);border:1px solid rgba(139,92,246,0.4);color:#a78bfa;border-radius:0.35rem;cursor:pointer;font-weight:600;">
+                        🎬 動画
+                    </button>
+                </div>
+                <div style="margin-top:0.5rem;font-size:0.6rem;color:#6b7280;">
+                    最終意図: <span id="mreLastIntent" style="color:#c084fc;">未実行</span>
+                </div>
+                <div style="margin-top:0.2rem;font-size:0.6rem;color:#6b7280;">
+                    最終視点: <span id="mreLastViewpoint" style="color:#60a5fa;">---</span>
+                </div>
+            </div>
+            <!-- ======================================================== -->
+
+            <!-- ========== 概念生成・自律ラベル付け機構 (CSE) v1.0 ========== -->
+            <div class="panel">
+                <div class="panel-title">🧬 概念生成・ラベル付け機構</div>
+                <div id="csePanel" style="min-height:60px;font-size:0.65rem;color:#d8b4fe;">
+                    <span style="opacity:0.5;">初期化中...</span>
+                </div>
+                <div style="margin-top:0.4rem;font-size:0.6rem;color:#6b7280;display:flex;gap:0.5rem;flex-wrap:wrap;align-items:center;">
+                    <span title="採用済み">✅ <span id="cseValidCount" style="color:#10b981;">0</span></span>
+                    <span title="仮説保持">⚠ <span id="cseHypoCount" style="color:#f59e0b;">0</span></span>
+                    <span title="破棄">❌ <span id="cseDiscardCount" style="color:#ef4444;">0</span></span>
+                    <button onclick="(function(){try{if(window._aoCSE){window._aoCSE.cycle();}}catch(e){}})();"
+                        style="padding:0.15rem 0.4rem;font-size:0.6rem;background:rgba(139,92,246,0.2);border:1px solid rgba(139,92,246,0.3);color:#a78bfa;border-radius:0.25rem;cursor:pointer;margin-left:auto;">
+                        ▶ 手動生成
+                    </button>
+                </div>
+                <div style="margin-top:0.3rem;font-size:0.55rem;color:#4b5563;font-style:italic;">
+                    概念先行 → 検証 → ラベル付与（30秒周期）
+                </div>
+            </div>
+            <!-- ======================================================= -->
+
         </div>
         <div class="chat">
             <div class="messages" id="messages">
@@ -23825,6 +23890,15 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                                 this.addLog(`視覚野: 複合概念検出 [${coMatches.map(m => m.concept).join(', ')}]`);
                             }
                         }
+
+                        // ── VIS v1.0: 視覚統合理解システムへのフィード ──────────
+                        // 観測→予測→誤差→更新→注意→クオリア のパイプライン
+                        if (this.visSystem) {
+                            try {
+                                await this.visSystem.process({ imageFeature: imageResult });
+                            } catch (_visErr) { /* VIS は非破壊的 */ }
+                        }
+                        // ────────────────────────────────────────────────────────
                     }
                 }
                 
@@ -23859,6 +23933,14 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                                 this.addLog(`聴覚野: 複合概念検出 [${audioCoMatches.map(m => m.concept).join(', ')}]`);
                             }
                         }
+
+                        // ── VIS v1.0: 音声を視覚統合理解システムへフィード ─────
+                        if (this.visSystem) {
+                            try {
+                                await this.visSystem.process({ audioFeature: audioResult });
+                            } catch (_visErr) {}
+                        }
+                        // ─────────────────────────────────────────────────────────
                     }
                 }
                 
@@ -29312,6 +29394,8 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
         }
         
         function addMessage(type, text, internal = null, mediaElement = null) {
+            // ── MRE用: addMessageをグローバルに公開 ──
+            window._aoAddMessage = addMessage;
             const messagesDiv = document.getElementById('messages');
             const empty = messagesDiv.querySelector('div[style*="text-align: center"]');
             if (empty) empty.remove();
@@ -30977,6 +31061,30 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                 if (avgErrEl)  avgErrEl.textContent  = pl.getAvgError().toFixed(4);
                 if (highErrEl) highErrEl.textContent = pl.getHighErrorIds().slice(0,3).join(', ') || 'none';
             }
+
+            // ── VIS v1.0: 視覚統合理解システム UIサマリー更新 ──
+            if (window._aoVIS) {
+                try {
+                    const visSummary = window._aoVIS.getUISummary();
+                    const ec = document.getElementById('visEntityCount');
+                    const ur = document.getElementById('visUnknownRate');
+                    const pc = document.getElementById('visProcessCount');
+                    const qs = document.getElementById('visQualiaStatus');
+                    const ae = document.getElementById('predAvgErr');
+                    const he = document.getElementById('predHighErr');
+                    if (ec) ec.textContent = visSummary.identityCount;
+                    if (ur) ur.textContent = visSummary.unknownRate;
+                    if (pc) pc.textContent = visSummary.processCount;
+                    if (qs) qs.textContent = 'err=' + visSummary.avgPredError;
+                    // predAvgErr / predHighErr を VIS の値で上書き（より精度が高い）
+                    if (ae && window._aoVIS.pred) ae.textContent = window._aoVIS.pred.getAvgError().toFixed(4);
+                    if (he && window._aoVIS.pred) {
+                        he.textContent = window._aoVIS.pred.getHighErrorIds(3)
+                            .map(e => e.id.slice(-6) + ':' + e.error.toFixed(2)).join(' ') || 'none';
+                    }
+                } catch(_visUIErr) {}
+            }
+            // ───────────────────────────────────────────────────────
         }
 
         // 500msごとにUI更新
@@ -31130,6 +31238,55 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
             }
         };
 
+        // ── 視覚統合理解システム (VIS v1.0) の初期化 ──────────────────
+        // 設計思想: 観測→予測→誤差→更新→注意 のループで世界を継続的に理解する
+        if (typeof attachVisualIntegrationSystem === 'function') {
+            attachVisualIntegrationSystem(ao);
+
+            // クオリア更新コールバック
+            ao.visSystem.onUpdate = function(qualia) {
+                try {
+                    const el = document.getElementById('visQualiaStatus');
+                    if (el) el.textContent = 'err=' + qualia.avgPredError.toFixed(3);
+                    const pc = document.getElementById('visProcessCount');
+                    if (pc) pc.textContent = ao.visSystem._processCount;
+                    const ec = document.getElementById('visEntityCount');
+                    if (ec) ec.textContent = qualia.identityCount;
+                    const ur = document.getElementById('visUnknownRate');
+                    if (ur) ur.textContent = (qualia.unknownRate * 100).toFixed(0) + '%';
+                } catch(_) {}
+            };
+        }
+
+        // ── マルチモーダル出力（レンダリング）機構 MRE v1.0 の初期化 ──
+        // クオリア（内部状態）→ 画像・音声・動画 の直接レンダリング
+        if (typeof attachMultimodalRenderingEngine === 'function') {
+            attachMultimodalRenderingEngine(ao);
+        }
+
+        // ── 概念生成・自律ラベル付け機構 (CSE v1.0) の初期化 ────────────
+        // 設計原則: 概念先行 → 検証 → ラベル付与（言語は従）
+        setTimeout(function() {
+            try {
+                if (typeof attachConceptSynthesisEngine === 'function') {
+                    attachConceptSynthesisEngine(ao);
+
+                    // 初期サイクルを遅延実行（概念空間が充填されてから）
+                    setTimeout(function() {
+                        try {
+                            if (ao.conceptSynthesisEngine) {
+                                ao.conceptSynthesisEngine.cycle();
+                            }
+                        } catch(e) {
+                            ao.addLog && ao.addLog('[CSE] 初期サイクルエラー: ' + e.message);
+                        }
+                    }, 10000);
+                }
+            } catch(e) {
+                console.error('[CSE] attachError:', e);
+            }
+        }, 3000);
+
         // beforeunload で window.ao を参照しているため代入
         window.ao = ao;
 
@@ -31147,6 +31304,2867 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
         }
     </script>
     
+    <!-- ======================================================
+         概念生成・自律ラベル付け機構 (ConceptSynthesisEngine v1.0)
+         概念を先に作り、検証し、その後に言語で名前を与える
+         ====================================================== -->
+    <script>
+/**
+ * ============================================================
+ * Ao 概念生成・自律ラベル付け機構
+ * ConceptSynthesisEngine v1.0
+ *
+ * 基本原則：
+ *   1. 言語（ラベル）を先に作らない
+ *   2. 必ず「概念（内部構造）」を先に生成する
+ *   3. ラベルは概念の表現として後から生成する
+ *
+ * 全体フロー：
+ *   選択 → 分解 → 合成 → 仮説生成 → 検証 → 採用 → ラベル付け
+ * ============================================================
+ */
+
+// ─────────────────────────────────────────────────────────────
+// §1. SynthesizedConcept
+//     生成された合成概念の内部表現
+//     ラベルは検証通過後にのみ付与される
+// ─────────────────────────────────────────────────────────────
+class SynthesizedConcept {
+    /**
+     * @param {object} params
+     * @param {object} params.core      - 本質（形状・機能・振る舞い）
+     * @param {object} params.attributes - 属性（色・模様・サイズ等）
+     * @param {object} params.relations  - 他概念との関係
+     * @param {string[]} params.sourceIds - 生成元の概念ID
+     * @param {string}  params.operation  - 合成操作の種類
+     */
+    constructor({ core, attributes, relations, sourceIds, operation }) {
+        // 内部構造（ラベルより先に確定）
+        this.core       = { ...core };
+        this.attributes = { ...attributes };
+        this.relations  = { ...relations };
+        this.sourceIds  = sourceIds.slice();
+        this.operation  = operation; // 'merge' | 'add_attr' | 'remove_attr' | 'replace_attr'
+
+        // ラベルは未付与状態で始まる
+        this.labels     = [];          // 検証通過後に付与される
+        this.primaryLabel = null;      // 最終採用ラベル
+
+        // 検証・メタ情報
+        this.validationScore  = 0;     // 0〜1
+        this.isValid          = false;
+        this.isHypothesis     = false; // 検証失敗時に仮説保持
+        this.created          = Date.now();
+        this.useCount         = 0;
+        this.id               = `synth_${Date.now()}_${Math.random().toString(36).slice(2,7)}`;
+    }
+
+    /** 本質が崩壊しているか判定 */
+    isCoreIntact() {
+        return (
+            this.core &&
+            typeof this.core.function === 'string' &&
+            this.core.function.length > 0
+        );
+    }
+
+    exportState() {
+        return {
+            id: this.id,
+            core: this.core,
+            attributes: this.attributes,
+            relations: this.relations,
+            sourceIds: this.sourceIds,
+            operation: this.operation,
+            labels: this.labels,
+            primaryLabel: this.primaryLabel,
+            validationScore: this.validationScore,
+            isValid: this.isValid,
+            isHypothesis: this.isHypothesis,
+            created: this.created,
+            useCount: this.useCount
+        };
+    }
+
+    static fromState(data) {
+        const sc = Object.create(SynthesizedConcept.prototype);
+        Object.assign(sc, data);
+        return sc;
+    }
+}
+
+// ─────────────────────────────────────────────────────────────
+// §2. ConceptDecomposer
+//     既存概念を「本質」と「属性」に分解する
+// ─────────────────────────────────────────────────────────────
+class ConceptDecomposer {
+    /**
+     * ConceptSpace の Concept オブジェクトから分解表現を生成する。
+     * Concept.id（文字列）をヒューリスティックに解析して
+     * core / attributes を推定する。
+     *
+     * @param {Concept} concept
+     * @returns {{ core: object, attributes: object }}
+     */
+    decompose(concept) {
+        const id = concept.id || '';
+        const parts = id.split(/[_\s・＋＋\-]+/).filter(Boolean);
+
+        // 先頭トークンを「機能・形状の核」とみなす
+        const coreToken = parts[0] || id;
+
+        // 残りのトークンを属性とみなす
+        const attrTokens = parts.slice(1);
+
+        const core = {
+            function:  coreToken,          // 機能・振る舞いの核
+            form:      coreToken,          // 形状の核（簡易的に同一視）
+            behaviour: concept.isAbstract ? 'abstract' : 'concrete'
+        };
+
+        const attributes = {};
+        attrTokens.forEach((t, i) => {
+            attributes[`attr_${i}`] = t;
+        });
+
+        // 感情的痕跡から色彩属性を推定（比喩的）
+        if (concept.emotionalTrace && concept.emotionalTrace.length > 0) {
+            const last = concept.emotionalTrace[concept.emotionalTrace.length - 1];
+            if (last.joy > 0.6)      attributes.tone = '明';
+            else if (last.tension > 0.6) attributes.tone = '緊';
+            else if (last.curiosity > 0.6) attributes.tone = '探';
+        }
+
+        // モダリティ起源
+        if (concept.modalityOrigins && concept.modalityOrigins.size > 0) {
+            attributes.modality = Array.from(concept.modalityOrigins).join('+');
+        }
+
+        return { core, attributes };
+    }
+
+    /**
+     * 文字列IDのみから簡易分解（ConceptSpaceにない軽量概念向け）
+     */
+    decomposeFromId(id) {
+        const parts = id.split(/[_\s・＋＋\-]+/).filter(Boolean);
+        const core = { function: parts[0] || id, form: parts[0] || id, behaviour: 'concrete' };
+        const attributes = {};
+        parts.slice(1).forEach((t, i) => { attributes[`attr_${i}`] = t; });
+        return { core, attributes };
+    }
+}
+
+// ─────────────────────────────────────────────────────────────
+// §3. ConceptComposer
+//     分解済み概念を操作して新しい仮説概念を生成する
+//     ※ここではラベルを生成しない
+// ─────────────────────────────────────────────────────────────
+class ConceptComposer {
+    /**
+     * 概念Aと概念Bを合成する（猫 + 翼）
+     */
+    merge(decompA, decompB, idA, idB) {
+        const core = {
+            function:  `${decompA.core.function}×${decompB.core.function}`,
+            form:      `${decompA.core.form}_${decompB.core.form}`,
+            behaviour: decompA.core.behaviour === decompB.core.behaviour
+                ? decompA.core.behaviour : 'hybrid'
+        };
+        const attributes = { ...decompA.attributes, ...decompB.attributes };
+        return new SynthesizedConcept({
+            core,
+            attributes,
+            relations: { partOf: [idA, idB] },
+            sourceIds: [idA, idB],
+            operation: 'merge'
+        });
+    }
+
+    /**
+     * 属性を追加する（猫 + 三色模様）
+     */
+    addAttribute(decomp, id, attrKey, attrValue) {
+        const core = { ...decomp.core };
+        const attributes = { ...decomp.attributes, [attrKey]: attrValue };
+        return new SynthesizedConcept({
+            core,
+            attributes,
+            relations: { derivedFrom: [id] },
+            sourceIds: [id],
+            operation: 'add_attr'
+        });
+    }
+
+    /**
+     * 属性を削除する（猫 − 毛）
+     */
+    removeAttribute(decomp, id, attrKey) {
+        const core = { ...decomp.core };
+        const attributes = { ...decomp.attributes };
+        delete attributes[attrKey];
+        return new SynthesizedConcept({
+            core,
+            attributes,
+            relations: { derivedFrom: [id] },
+            sourceIds: [id],
+            operation: 'remove_attr'
+        });
+    }
+
+    /**
+     * 属性を置換する
+     */
+    replaceAttribute(decomp, id, attrKey, newValue) {
+        const core = { ...decomp.core };
+        const attributes = { ...decomp.attributes, [attrKey]: newValue };
+        return new SynthesizedConcept({
+            core,
+            attributes,
+            relations: { derivedFrom: [id] },
+            sourceIds: [id],
+            operation: 'replace_attr'
+        });
+    }
+}
+
+// ─────────────────────────────────────────────────────────────
+// §4. ConceptValidator
+//     生成された仮説概念を内部シミュレーションで検証する
+//     検証失敗 → 破棄または「仮説」として保持
+// ─────────────────────────────────────────────────────────────
+class ConceptValidator {
+    /**
+     * @param {SynthesizedConcept} candidate
+     * @param {ConceptSpace}       conceptSpace - 既存知識の参照用
+     * @returns {{ passed: boolean, score: number, reason: string }}
+     */
+    validate(candidate, conceptSpace) {
+        // ① 本質崩壊チェック
+        if (!candidate.isCoreIntact()) {
+            return { passed: false, score: 0, reason: '本質崩壊' };
+        }
+
+        // ② 内部矛盾チェック（属性間）
+        const contradiction = this._checkAttributeContradiction(candidate.attributes);
+        if (contradiction) {
+            return { passed: false, score: 0.1, reason: `属性矛盾: ${contradiction}` };
+        }
+
+        // ③ 空間・物理的整合性（ヒューリスティック）
+        const physicalScore = this._checkPhysicalConsistency(candidate);
+
+        // ④ 既存知識との整合性
+        const knowledgeScore = this._checkKnowledgeConsistency(candidate, conceptSpace);
+
+        // ⑤ 予測安定性（生成可能な特徴の一貫性）
+        const stabilityScore = this._checkPredictionStability(candidate);
+
+        const totalScore = (physicalScore + knowledgeScore + stabilityScore) / 3;
+
+        if (totalScore >= 0.55) {
+            return { passed: true,  score: totalScore, reason: 'OK' };
+        } else if (totalScore >= 0.3) {
+            // 仮説として保持（完全破棄しない）
+            return { passed: false, score: totalScore, reason: '仮説水準', keepAsHypothesis: true };
+        } else {
+            return { passed: false, score: totalScore, reason: '整合性不足' };
+        }
+    }
+
+    _checkAttributeContradiction(attributes) {
+        // 既知の矛盾ペアをチェック
+        const contradictions = [
+            ['液体', '固体'], ['生', '死'], ['有限', '無限'],
+            ['visible', 'invisible'], ['有機', '無機']
+        ];
+        const vals = Object.values(attributes).map(String);
+        for (const [a, b] of contradictions) {
+            if (vals.includes(a) && vals.includes(b)) return `${a}↔${b}`;
+        }
+        return null;
+    }
+
+    _checkPhysicalConsistency(candidate) {
+        // 合成の場合、元概念の関係数が多いほど整合性が高いと仮定
+        const attrCount = Object.keys(candidate.attributes).length;
+        // 属性が多すぎる（>8）と崩壊リスク
+        if (attrCount > 8) return 0.3;
+        // 適切な属性数
+        return Math.min(1, 0.5 + attrCount * 0.06);
+    }
+
+    _checkKnowledgeConsistency(candidate, conceptSpace) {
+        if (!conceptSpace || !conceptSpace.concepts) return 0.6;
+        // 生成元の概念が既存空間にあるほど整合性が高い
+        const known = candidate.sourceIds.filter(id => conceptSpace.concepts.has(id)).length;
+        return candidate.sourceIds.length > 0
+            ? 0.4 + (known / candidate.sourceIds.length) * 0.6
+            : 0.5;
+    }
+
+    _checkPredictionStability(candidate) {
+        // core.function が空でなく、attrが少なくとも1つあれば安定とみなす
+        const hasCore = candidate.core.function && candidate.core.function.length > 0;
+        const hasAttr = Object.keys(candidate.attributes).length > 0;
+        return hasCore ? (hasAttr ? 0.8 : 0.6) : 0.2;
+    }
+}
+
+// ─────────────────────────────────────────────────────────────
+// §5. ConceptLabelGenerator
+//     検証を通過した概念にのみラベルを生成する
+//     概念構造を反映した自然な名前を複数候補から選ぶ
+// ─────────────────────────────────────────────────────────────
+class ConceptLabelGenerator {
+    /**
+     * 検証済み概念からラベル候補を生成し、最適なものを primaryLabel に設定する
+     * @param {SynthesizedConcept} concept
+     * @returns {string[]} 候補ラベルリスト
+     */
+    generate(concept) {
+        const candidates = [];
+
+        // 操作に応じた候補生成
+        switch (concept.operation) {
+            case 'merge':
+                candidates.push(...this._generateMergeLabels(concept));
+                break;
+            case 'add_attr':
+                candidates.push(...this._generateAddAttrLabels(concept));
+                break;
+            case 'remove_attr':
+                candidates.push(...this._generateRemoveAttrLabels(concept));
+                break;
+            case 'replace_attr':
+                candidates.push(...this._generateReplaceAttrLabels(concept));
+                break;
+            default:
+                candidates.push(concept.core.function);
+        }
+
+        // 重複除去・空白除去
+        const unique = [...new Set(candidates.filter(l => l && l.length > 0))];
+
+        // 評価してスコア順にソート
+        const scored = unique.map(label => ({
+            label,
+            score: this._evalLabel(label, concept)
+        })).sort((a, b) => b.score - a.score);
+
+        const labels = scored.map(s => s.label);
+        concept.labels = labels;
+        concept.primaryLabel = labels[0] || concept.core.function;
+
+        return labels;
+    }
+
+    _generateMergeLabels(concept) {
+        const [idA, idB] = concept.sourceIds;
+        const coreA = concept.core.function.split('×')[0] || idA;
+        const coreB = concept.core.function.split('×')[1] || idB;
+
+        return [
+            // 自然な語順
+            `${coreA}の${coreB}`,
+            `${coreB}を持つ${coreA}`,
+            // 圧縮形
+            `${coreA}${coreB}`,
+            // 修飾形
+            `飛行${coreA}`,
+            `${coreB}型${coreA}`,
+        ].filter(l => l.length <= 12); // 短縮優先
+    }
+
+    _generateAddAttrLabels(concept) {
+        const base = concept.sourceIds[0] || concept.core.function;
+        const attrVals = Object.entries(concept.attributes)
+            .filter(([k]) => !['modality', 'tone'].includes(k))
+            .map(([, v]) => v);
+
+        const labels = [];
+        if (attrVals.length > 0) {
+            const attr = attrVals[attrVals.length - 1]; // 最後に追加された属性
+            labels.push(`${attr}の${base}`);
+            labels.push(`${attr}${base}`);
+            labels.push(`${base}（${attr}）`);
+        }
+        labels.push(`強化${base}`);
+        return labels;
+    }
+
+    _generateRemoveAttrLabels(concept) {
+        const base = concept.sourceIds[0] || concept.core.function;
+        return [
+            `簡素${base}`,
+            `${base}（原型）`,
+            `原始${base}`,
+            `核${base}`,
+        ];
+    }
+
+    _generateReplaceAttrLabels(concept) {
+        const base = concept.sourceIds[0] || concept.core.function;
+        const attrVals = Object.values(concept.attributes).filter(Boolean);
+        const attr = attrVals[0] || '変容';
+        return [
+            `${attr}${base}`,
+            `変容${base}`,
+            `${base}（${attr}版）`,
+        ];
+    }
+
+    /**
+     * ラベル評価スコア（0〜1）
+     * - 意味との一致度: core.function を含むか
+     * - 分かりやすさ: 長すぎない
+     * - 簡潔さ: 短いほど加点
+     * - 言語的自然さ: 日本語の語順
+     */
+    _evalLabel(label, concept) {
+        let score = 0;
+
+        // 意味との一致（core機能トークンを含む）
+        const coreParts = concept.core.function.split(/[×_]+/);
+        const matchCount = coreParts.filter(p => label.includes(p)).length;
+        score += (matchCount / Math.max(1, coreParts.length)) * 0.4;
+
+        // 分かりやすさ（長さ）
+        if (label.length <= 4) score += 0.3;
+        else if (label.length <= 7) score += 0.2;
+        else if (label.length <= 12) score += 0.1;
+
+        // 自然さ（語順ヒューリスティック）
+        if (/の|を持つ|型|版/.test(label)) score += 0.2;
+
+        // 簡潔さボーナス
+        if (label.length <= 5) score += 0.1;
+
+        return score;
+    }
+}
+
+// ─────────────────────────────────────────────────────────────
+// §6. ConceptSynthesisEngine
+//     全体オーケストレーション
+//     being に attach して使う
+// ─────────────────────────────────────────────────────────────
+class ConceptSynthesisEngine {
+    constructor(being) {
+        this.being         = being;
+        this.decomposer    = new ConceptDecomposer();
+        this.composer      = new ConceptComposer();
+        this.validator     = new ConceptValidator();
+        this.labelGen      = new ConceptLabelGenerator();
+
+        // 生成済み概念プール
+        this.synthesized   = [];        // 検証通過済み
+        this.hypotheses    = [];        // 仮説（検証失敗・保留）
+        this.discarded     = 0;         // 破棄数
+
+        // 無制限生成防止：1サイクルあたりの最大生成数
+        this.MAX_PER_CYCLE = 3;
+        this.MAX_POOL      = 200;
+        this.MAX_HYPO      = 50;
+
+        // UIパネル更新用コールバック
+        this.onSynthesize = null;
+
+        this._log('[CSE] ConceptSynthesisEngine v1.0 初期化');
+    }
+
+    // ──────────────────────────────────────────────────
+    // 公開API: 外部から呼び出すエントリポイント
+    // ──────────────────────────────────────────────────
+
+    /**
+     * 自律的な概念生成サイクルを1回実行する。
+     * being.concepts から概念をランダムに選択して合成を試みる。
+     */
+    cycle() {
+        const space = this.being && this.being.concepts;
+        if (!space || !space.concepts || space.concepts.size < 2) return;
+
+        const conceptArr = Array.from(space.concepts.values());
+        const generated = [];
+
+        // 1サイクルあたり MAX_PER_CYCLE 回まで生成を試みる
+        for (let i = 0; i < this.MAX_PER_CYCLE; i++) {
+            const result = this._tryOneGeneration(conceptArr, space);
+            if (result) generated.push(result);
+        }
+
+        // UIパネル更新
+        if (generated.length > 0 && typeof this.onSynthesize === 'function') {
+            this.onSynthesize(generated);
+        }
+        this._updatePanel();
+
+        return generated;
+    }
+
+    /**
+     * 指定した2概念IDを合成する（明示的呼び出し用）
+     * @param {string} idA
+     * @param {string} idB
+     * @returns {SynthesizedConcept|null}
+     */
+    synthesize(idA, idB) {
+        const space = this.being && this.being.concepts;
+        if (!space) return null;
+
+        const cA = space.concepts.get(idA);
+        const cB = space.concepts.get(idB);
+        if (!cA || !cB) return null;
+
+        return this._generateAndValidate(cA, cB, 'merge', space);
+    }
+
+    /**
+     * 既存概念に属性を追加して新概念を生成する
+     */
+    addAttribute(id, attrKey, attrValue) {
+        const space = this.being && this.being.concepts;
+        if (!space) return null;
+        const concept = space.concepts.get(id);
+        if (!concept) return null;
+
+        const decomp = this.decomposer.decompose(concept);
+        const candidate = this.composer.addAttribute(decomp, id, attrKey, attrValue);
+        return this._validateAndStore(candidate, space);
+    }
+
+    /**
+     * 既存概念から属性を削除して新概念を生成する
+     */
+    removeAttribute(id, attrKey) {
+        const space = this.being && this.being.concepts;
+        if (!space) return null;
+        const concept = space.concepts.get(id);
+        if (!concept) return null;
+
+        const decomp = this.decomposer.decompose(concept);
+        const candidate = this.composer.removeAttribute(decomp, id, attrKey);
+        return this._validateAndStore(candidate, space);
+    }
+
+    // ──────────────────────────────────────────────────
+    // 内部実装
+    // ──────────────────────────────────────────────────
+
+    _tryOneGeneration(conceptArr, space) {
+        // ランダムに操作を選択
+        const op = this._pickOperation();
+
+        try {
+            if (op === 'merge' && conceptArr.length >= 2) {
+                const [cA, cB] = this._pickTwo(conceptArr);
+                return this._generateAndValidate(cA, cB, 'merge', space);
+
+            } else if (op === 'add_attr') {
+                const cA = this._pickOne(conceptArr);
+                const decomp = this.decomposer.decompose(cA);
+                const key = `ext_${Date.now() % 1000}`;
+                const val = this._pickAttrValue();
+                const candidate = this.composer.addAttribute(decomp, cA.id, key, val);
+                return this._validateAndStore(candidate, space);
+
+            } else if (op === 'remove_attr') {
+                const cA = this._pickOne(conceptArr);
+                const decomp = this.decomposer.decompose(cA);
+                const attrKeys = Object.keys(decomp.attributes);
+                if (attrKeys.length === 0) return null;
+                const key = attrKeys[Math.floor(Math.random() * attrKeys.length)];
+                const candidate = this.composer.removeAttribute(decomp, cA.id, key);
+                return this._validateAndStore(candidate, space);
+
+            } else if (op === 'replace_attr') {
+                const cA = this._pickOne(conceptArr);
+                const decomp = this.decomposer.decompose(cA);
+                const attrKeys = Object.keys(decomp.attributes);
+                if (attrKeys.length === 0) return null;
+                const key = attrKeys[Math.floor(Math.random() * attrKeys.length)];
+                const newVal = this._pickAttrValue();
+                const candidate = this.composer.replaceAttribute(decomp, cA.id, key, newVal);
+                return this._validateAndStore(candidate, space);
+            }
+        } catch (e) {
+            this._log(`[CSE] 生成エラー: ${e.message}`);
+        }
+        return null;
+    }
+
+    _generateAndValidate(cA, cB, op, space) {
+        const dA = this.decomposer.decompose(cA);
+        const dB = this.decomposer.decompose(cB);
+        const candidate = this.composer.merge(dA, dB, cA.id, cB.id);
+        return this._validateAndStore(candidate, space);
+    }
+
+    /**
+     * 検証 → 採用またはhypothesis保持
+     * ラベルは採用後にのみ生成
+     */
+    _validateAndStore(candidate, space) {
+        const result = this.validator.validate(candidate, space);
+        candidate.validationScore = result.score;
+
+        if (result.passed) {
+            // ✅ 検証通過 → ラベル生成（概念が先、言語は後）
+            this.labelGen.generate(candidate);
+            candidate.isValid = true;
+
+            // プール上限管理
+            if (this.synthesized.length >= this.MAX_POOL) {
+                this.synthesized.shift();
+            }
+            this.synthesized.push(candidate);
+            this._log(`[CSE] 採用: 「${candidate.primaryLabel}」(${result.score.toFixed(2)}) op=${candidate.operation}`);
+
+        } else if (result.keepAsHypothesis) {
+            // ⚠️ 仮説として保持（ラベルなし）
+            candidate.isHypothesis = true;
+            if (this.hypotheses.length >= this.MAX_HYPO) {
+                this.hypotheses.shift();
+            }
+            this.hypotheses.push(candidate);
+            this._log(`[CSE] 仮説: score=${result.score.toFixed(2)} reason=${result.reason}`);
+
+        } else {
+            // ❌ 破棄
+            this.discarded++;
+            this._log(`[CSE] 破棄: reason=${result.reason}`);
+            return null;
+        }
+
+        return candidate;
+    }
+
+    _pickOperation() {
+        const ops = ['merge', 'merge', 'add_attr', 'remove_attr', 'replace_attr'];
+        return ops[Math.floor(Math.random() * ops.length)];
+    }
+
+    _pickOne(arr) {
+        return arr[Math.floor(Math.random() * arr.length)];
+    }
+
+    _pickTwo(arr) {
+        const i = Math.floor(Math.random() * arr.length);
+        let j = Math.floor(Math.random() * (arr.length - 1));
+        if (j >= i) j++;
+        return [arr[i], arr[j]];
+    }
+
+    _pickAttrValue() {
+        const vals = ['明', '暗', '速', '静', '小', '大', '軽', '重',
+                      '熱', '冷', '柔', '硬', '新', '旧', '透明', '不透明'];
+        return vals[Math.floor(Math.random() * vals.length)];
+    }
+
+    _log(msg) {
+        if (this.being && typeof this.being.addLog === 'function') {
+            this.being.addLog(msg);
+        }
+        console.log(msg);
+    }
+
+    // ──────────────────────────────────────────────────
+    // UIパネル更新
+    // ──────────────────────────────────────────────────
+    _updatePanel() {
+        try {
+            const el = document.getElementById('csePanel');
+            if (!el) return;
+
+            const recent = this.synthesized.slice(-5).reverse();
+            const hypoCount = this.hypotheses.length;
+
+            let html = `<div style="font-size:0.6rem;color:#6b7280;margin-bottom:0.3rem;">
+                採用: <span style="color:#10b981;">${this.synthesized.length}</span> &nbsp;
+                仮説: <span style="color:#f59e0b;">${hypoCount}</span> &nbsp;
+                破棄: <span style="color:#ef4444;">${this.discarded}</span>
+            </div>`;
+
+            if (recent.length === 0) {
+                html += `<div style="color:#4b5563;font-size:0.65rem;">（概念生成待機中）</div>`;
+            } else {
+                recent.forEach(sc => {
+                    const opIcon = {
+                        merge: '⊕', add_attr: '＋', remove_attr: '－', replace_attr: '↔'
+                    }[sc.operation] || '◆';
+                    html += `<div class="concept-node evolved" style="margin-bottom:0.25rem;display:block;">
+                        ${opIcon} <strong>${sc.primaryLabel || '？'}</strong>
+                        <span style="color:#6b7280;font-size:0.6rem;">${sc.labels.slice(1,3).join(' / ')}</span>
+                        <br><span style="color:#4b5563;font-size:0.58rem;">
+                            核: ${sc.core.function} &nbsp; 検証: ${(sc.validationScore*100).toFixed(0)}%
+                        </span>
+                    </div>`;
+                });
+            }
+
+            // 仮説表示
+            if (hypoCount > 0) {
+                const h = this.hypotheses[this.hypotheses.length - 1];
+                html += `<div class="concept-node proto" style="margin-top:0.3rem;display:block;font-size:0.6rem;">
+                    ⚠ 仮説: ${h.core.function} (${(h.validationScore*100).toFixed(0)}%)
+                </div>`;
+            }
+
+            el.innerHTML = html;
+
+            // 外側のカウンターspanも同期更新
+            const vc = document.getElementById('cseValidCount');
+            if (vc) vc.textContent = this.synthesized.length;
+            const hc = document.getElementById('cseHypoCount');
+            if (hc) hc.textContent = this.hypotheses.length;
+            const dc = document.getElementById('cseDiscardCount');
+            if (dc) dc.textContent = this.discarded;
+
+        } catch (e) {
+            console.error('[CSE] panel update error:', e);
+        }
+    }
+
+    // ──────────────────────────────────────────────────
+    // 永続化
+    // ──────────────────────────────────────────────────
+    exportState() {
+        return {
+            synthesized: this.synthesized.map(s => s.exportState()),
+            hypotheses:  this.hypotheses.map(s => s.exportState()),
+            discarded:   this.discarded
+        };
+    }
+
+    importState(data) {
+        this.synthesized = (data.synthesized || []).map(s => SynthesizedConcept.fromState(s));
+        this.hypotheses  = (data.hypotheses  || []).map(s => SynthesizedConcept.fromState(s));
+        this.discarded   = data.discarded || 0;
+        this._log(`[CSE] 復元: 採用${this.synthesized.length} 仮説${this.hypotheses.length}`);
+    }
+}
+
+// ─────────────────────────────────────────────────────────────
+// §7. attachConceptSynthesisEngine
+//     being に CSE を取り付ける（VISと同じ設計パターン）
+// ─────────────────────────────────────────────────────────────
+function attachConceptSynthesisEngine(being) {
+    if (!being) { console.error('[CSE] being が null です'); return; }
+    if (being.conceptSynthesisEngine) { console.log('[CSE] 既に初期化済みです'); return; }
+
+    const cse = new ConceptSynthesisEngine(being);
+    being.conceptSynthesisEngine = cse;
+
+    // 定期実行（30秒ごとに1サイクル）
+    // 無制限生成を防ぐため意図的に遅い間隔を採用
+    const cycleTimer = setInterval(() => {
+        try {
+            if (being.concepts && being.concepts.concepts &&
+                being.concepts.concepts.size >= 2) {
+                cse.cycle();
+            }
+        } catch (e) {
+            console.error('[CSE] cycle error:', e);
+        }
+    }, 30000);
+
+    // beforeunload 時にクリア
+    window.addEventListener('beforeunload', () => clearInterval(cycleTimer));
+
+    // SaveManager への統合
+    if (being.saveManager) {
+        const origExport = being.saveManager.exportState?.bind(being.saveManager);
+        if (origExport) {
+            being.saveManager.exportState = function() {
+                const state = origExport();
+                state.conceptSynthesisEngine = cse.exportState();
+                return state;
+            };
+        }
+        const origImport = being.saveManager.importState?.bind(being.saveManager);
+        if (origImport) {
+            being.saveManager.importState = function(data) {
+                origImport(data);
+                if (data?.conceptSynthesisEngine) cse.importState(data.conceptSynthesisEngine);
+            };
+        }
+    }
+
+    // グローバル登録
+    window._aoCSE = cse;
+
+    being.addLog && being.addLog('[CSE] 概念生成・自律ラベル付け機構 v1.0 初期化');
+    being.addLog && being.addLog('[CSE] 概念先行 → 検証 → ラベル付与 ループ開始');
+
+    console.log('[CSE] ConceptSynthesisEngine attached to being');
+    return cse;
+}
+
+// グローバル公開
+window.ConceptSynthesisEngine    = ConceptSynthesisEngine;
+window.SynthesizedConcept        = SynthesizedConcept;
+window.ConceptDecomposer         = ConceptDecomposer;
+window.ConceptComposer           = ConceptComposer;
+window.ConceptValidator          = ConceptValidator;
+window.ConceptLabelGenerator     = ConceptLabelGenerator;
+window.attachConceptSynthesisEngine = attachConceptSynthesisEngine;
+
+// 内部クラスも公開（テスト・拡張用）
+window._CSEClasses = {
+    SynthesizedConcept,
+    ConceptDecomposer,
+    ConceptComposer,
+    ConceptValidator,
+    ConceptLabelGenerator,
+};
+    </script>
+
+    <!-- ======================================================
+         視覚統合理解システム (VIS v1.0)
+         観測→予測→誤差→更新→注意 ループ実装
+         ====================================================== -->
+    <script>
+/**
+ * ============================================================
+ * Ao 視覚統合理解システム (Visual Integration Understanding System)
+ * v1.0 — 観測→予測→誤差→更新→注意 ループ実装
+ * ============================================================
+ *
+ * 設計思想:
+ *   - 直接理解しない（state → qualia → 12軸を必ず経由）
+ *   - 同一性（identity）を維持する（本質 vs 変化の分離）
+ *   - 空間野で世界の座標系を構成する
+ *   - 予測が「見る」の本体
+ *   - 誤差で状態を更新する（カルマンフィルタ的）
+ *   - サリエンシーで注意を管理する
+ *   - クオリアは空間×時間の主観的世界状態
+ *   - 12軸は意味解釈の補助（予測の主役ではない）
+ *
+ * 既存コードとの統合:
+ *   - window._aoVIS として登録
+ *   - being.visSystem = new VisualIntegrationSystem(being) で使用
+ *   - AxisCodec / IdentityManager / PredictionLoop との接続ポイントを提供
+ * ============================================================
+ */
+
+'use strict';
+
+// ────────────────────────────────────────────────────────────
+// §1. 特徴量エンコーダ (ModalEncoder)
+//     各モダリティの原データを統一特徴ベクトルに変換する。
+//     「本質特徴」と「視点特徴」を分離するのが最重要目的。
+// ────────────────────────────────────────────────────────────
+
+class ModalEncoder {
+    /**
+     * @param {number} essenceDim  本質（同一性）側の次元数
+     * @param {number} viewDim     視点・姿勢側の次元数
+     */
+    constructor(essenceDim = 32, viewDim = 16) {
+        this.essenceDim = essenceDim;
+        this.viewDim    = viewDim;
+        this.totalDim   = essenceDim + viewDim;
+    }
+
+    /**
+     * 画像特徴量から本質ベクトルと視点ベクトルを抽出する。
+     *
+     * ImageAdapter が返す visual_vector (160次元) を受け取り、
+     *   - 前半 essenceDim 次元 → 色・テクスチャ・形（変わりにくい）
+     *   - 後半 viewDim 次元    → HOG方向・輝度重心位置（視点依存）
+     * に分割する。
+     *
+     * @param {Object} imageFeature  ImageAdapter.extractMeaning() の戻り値
+     * @returns {{ essence: Float32Array, viewpoint: Float32Array, modality: 'image' }}
+     */
+    encodeImage(imageFeature) {
+        const vv = imageFeature?.visual_vector || imageFeature?.avg_features?.visual_vector;
+        const raw = vv instanceof Float32Array ? vv : new Float32Array(vv || new Array(160).fill(0));
+
+        // 正規化しながらスライス
+        const essence   = this._slice(raw, 0, this.essenceDim, true);
+        const viewpoint = this._slice(raw, this.essenceDim, this.essenceDim + this.viewDim, false);
+
+        return { essence, viewpoint, modality: 'image' };
+    }
+
+    /**
+     * 音声特徴量（MFCCベクトル等）を分解する。
+     *   - essence  → フォルマント・音色（話者に依存しにくい部分）
+     *   - viewpoint→ ピッチ・音量・速さ（発声状態依存）
+     *
+     * @param {Object} audioFeature  AudioAdapter.extractMeaning() の戻り値
+     * @returns {{ essence: Float32Array, viewpoint: Float32Array, modality: 'audio' }}
+     */
+    encodeAudio(audioFeature) {
+        const raw = this._anyVectorFrom(audioFeature, 64);
+
+        const essence   = this._slice(raw, 0, this.essenceDim, true);
+        const viewpoint = this._slice(raw, this.essenceDim, this.essenceDim + this.viewDim, false);
+
+        return { essence, viewpoint, modality: 'audio' };
+    }
+
+    /**
+     * テキスト特徴量（埋め込みベクトル）を分解する。
+     *   - essence  → 意味的内容（what）
+     *   - viewpoint→ 文体・語調・感情調（how）
+     */
+    encodeLanguage(langFeature) {
+        const raw = this._anyVectorFrom(langFeature, 64);
+
+        const essence   = this._slice(raw, 0, this.essenceDim, true);
+        const viewpoint = this._slice(raw, this.essenceDim, this.essenceDim + this.viewDim, false);
+
+        return { essence, viewpoint, modality: 'language' };
+    }
+
+    /**
+     * コサイン類似度（本質ベクトル同士の比較用）
+     */
+    cosine(a, b) {
+        if (!a || !b || a.length !== b.length) return 0;
+        let dot = 0, na = 0, nb = 0;
+        for (let i = 0; i < a.length; i++) {
+            dot += a[i] * b[i];
+            na  += a[i] * a[i];
+            nb  += b[i] * b[i];
+        }
+        return (na > 0 && nb > 0) ? dot / (Math.sqrt(na) * Math.sqrt(nb)) : 0;
+    }
+
+    // ── private ──────────────────────────────────────────────
+
+    _anyVectorFrom(feature, targetLen) {
+        const candidates = [
+            feature?.visual_vector,
+            feature?.embedding,
+            feature?.mfcc_vector,
+            feature?.avg_features?.visual_vector,
+        ];
+        for (const c of candidates) {
+            if (c && (Array.isArray(c) || c instanceof Float32Array) && c.length > 0) {
+                const arr = c instanceof Float32Array ? c : new Float32Array(c);
+                // padding / truncate to targetLen
+                const out = new Float32Array(targetLen);
+                for (let i = 0; i < Math.min(arr.length, targetLen); i++) out[i] = arr[i];
+                return out;
+            }
+        }
+        return new Float32Array(targetLen);
+    }
+
+    _slice(src, start, end, normalize) {
+        const out = new Float32Array(end - start);
+        for (let i = start; i < end && i < src.length; i++) out[i - start] = src[i];
+        if (normalize) {
+            let norm = 0;
+            for (const v of out) norm += v * v;
+            norm = Math.sqrt(norm);
+            if (norm > 0) for (let i = 0; i < out.length; i++) out[i] /= norm;
+        }
+        return out;
+    }
+}
+
+
+// ────────────────────────────────────────────────────────────
+// §2. IdentityRecord
+//     同一存在の「永続的な記録」。
+//     本質ベクトルと変化追跡を分けて保持する。
+// ────────────────────────────────────────────────────────────
+
+class VISIdentityRecord {
+    /**
+     * @param {string}     id         グローバルユニークID
+     * @param {Float32Array} essence  最初に観測した本質ベクトル
+     * @param {string}     modality   初回モダリティ
+     */
+    constructor(id, essence, modality) {
+        this.id            = id;
+        this.essence       = essence;          // 変わらないもの（本質）
+        this.essenceHistory= [essence];        // 本質の微細な変化履歴
+        this.observeCount  = 1;
+        this.firstSeen     = Date.now();
+        this.lastSeen      = Date.now();
+        this.modalities    = new Set([modality]);
+
+        // 変わるもの（視点・姿勢・位置は SpatialStateField が管理）
+        this.viewpointHistory = [];            // 直近N個の視点ベクトル
+        this.maxViewpointHistory = 30;
+
+        // 状態ベクトル（カルマンフィルタ的な内部推定値）
+        // 初期値は本質ベクトルを複製して使う
+        this.stateVec = new Float32Array(essence);  // 推定状態
+        this.stateVar = new Float32Array(essence.length).fill(1.0); // 推定分散
+
+        // サリエンシー重み
+        this.saliency = 0.5;
+
+        // 12軸との接続（AxisCodecが書き込む）
+        this.axisDistribution = null;
+
+        // 未知フラグ（12軸で意味付けできていない間は true）
+        this.isUnknown = true;
+    }
+
+    /**
+     * 新規観測で本質を更新する（指数移動平均）。
+     * α=0.05 → 本質はほぼ変わらない；α=0.3 → 徐々に変わる。
+     */
+    updateEssence(newEssence, alpha = 0.05) {
+        if (!newEssence || newEssence.length !== this.essence.length) return;
+        for (let i = 0; i < this.essence.length; i++) {
+            this.essence[i] = (1 - alpha) * this.essence[i] + alpha * newEssence[i];
+        }
+        this.essenceHistory.push(new Float32Array(this.essence));
+        if (this.essenceHistory.length > 10) this.essenceHistory.shift();
+    }
+
+    /**
+     * 視点ベクトルを記録する（変化量をサリエンシーに反映）。
+     */
+    recordViewpoint(viewpointVec) {
+        if (this.viewpointHistory.length > 0) {
+            const prev  = this.viewpointHistory[this.viewpointHistory.length - 1];
+            const delta = this._l2dist(prev, viewpointVec);
+            // 視点変化 > 0.2 → サリエンシー増加
+            this.saliency = Math.min(1.0, this.saliency + delta * 0.5);
+        }
+        this.viewpointHistory.push(new Float32Array(viewpointVec));
+        if (this.viewpointHistory.length > this.maxViewpointHistory) {
+            this.viewpointHistory.shift();
+        }
+    }
+
+    /**
+     * カルマンフィルタ的な状態更新。
+     * innovation = observation - prediction
+     * gain = var / (var + noise)
+     * state += gain * innovation
+     * var   = (1 - gain) * var
+     */
+    kalmanUpdate(observedVec, noiseLevel = 0.1) {
+        if (!observedVec || observedVec.length !== this.stateVec.length) return;
+        for (let i = 0; i < this.stateVec.length; i++) {
+            const gain        = this.stateVar[i] / (this.stateVar[i] + noiseLevel);
+            const innovation  = observedVec[i] - this.stateVec[i];
+            this.stateVec[i] += gain * innovation;
+            this.stateVar[i]  = (1 - gain) * this.stateVar[i];
+        }
+    }
+
+    /**
+     * サリエンシーを時間減衰させる（毎フレーム呼ぶ）。
+     */
+    decaySaliency(factor = 0.92) {
+        this.saliency *= factor;
+    }
+
+    _l2dist(a, b) {
+        let s = 0;
+        const n = Math.min(a.length, b.length);
+        for (let i = 0; i < n; i++) { const d = a[i] - b[i]; s += d * d; }
+        return Math.sqrt(s / n);
+    }
+
+    exportState() {
+        return {
+            id:           this.id,
+            essence:      Array.from(this.essence),
+            stateVec:     Array.from(this.stateVec),
+            stateVar:     Array.from(this.stateVar),
+            observeCount: this.observeCount,
+            firstSeen:    this.firstSeen,
+            lastSeen:     this.lastSeen,
+            modalities:   Array.from(this.modalities),
+            saliency:     this.saliency,
+            isUnknown:    this.isUnknown,
+            axisDistribution: this.axisDistribution,
+        };
+    }
+
+    static fromState(data) {
+        const rec = Object.create(VISIdentityRecord.prototype);
+        rec.id             = data.id;
+        rec.essence        = new Float32Array(data.essence || []);
+        rec.essenceHistory = [];
+        rec.stateVec       = new Float32Array(data.stateVec || data.essence || []);
+        rec.stateVar       = new Float32Array(data.stateVar || new Array((data.essence||[]).length).fill(1.0));
+        rec.observeCount   = data.observeCount  || 1;
+        rec.firstSeen      = data.firstSeen     || Date.now();
+        rec.lastSeen       = data.lastSeen      || Date.now();
+        rec.modalities     = new Set(data.modalities || []);
+        rec.viewpointHistory      = [];
+        rec.maxViewpointHistory   = 30;
+        rec.saliency              = data.saliency  ?? 0.5;
+        rec.isUnknown             = data.isUnknown ?? true;
+        rec.axisDistribution      = data.axisDistribution || null;
+        return rec;
+    }
+}
+
+
+// ────────────────────────────────────────────────────────────
+// §3. VisIdentityManager
+//     「誰が」「何が」観測されたかを管理する。
+//     同一存在の同定・マッチングを担当。
+//
+//     既存の IdentityManager (being.im) との違い:
+//       - VISIdentityManager は本質ベクトルによる数値マッチングに特化
+//       - 既存の IdentityManager はテキスト概念ベースのリスト管理
+//       - 両者は独立して動作し、VIS→既存の方向に情報を流す
+// ────────────────────────────────────────────────────────────
+
+class VisIdentityManager {
+    /**
+     * @param {ModalEncoder} encoder
+     * @param {number} matchThreshold  コサイン類似度のマッチ閾値
+     */
+    constructor(encoder, matchThreshold = 0.82) {
+        this.encoder        = encoder;
+        this.matchThreshold = matchThreshold;
+        this.records        = new Map();   // id → VISIdentityRecord
+        this.maxRecords     = 2000;
+
+        // 統計
+        this._newCount     = 0;
+        this._matchCount   = 0;
+    }
+
+    /**
+     * 観測（特徴量セット）を受け取り、既知のidentityと照合する。
+     * 見つかれば状態を更新し、見つからなければ新規作成する。
+     *
+     * @param {{ essence: Float32Array, viewpoint: Float32Array, modality: string }} encoded
+     * @returns {{ identity: VISIdentityRecord, isNew: boolean, similarity: number }}
+     */
+    observe(encoded) {
+        const { essence, viewpoint, modality } = encoded;
+
+        // 既知のidentityとマッチング
+        let bestId   = null;
+        let bestSim  = -1;
+
+        for (const [id, rec] of this.records) {
+            const sim = this.encoder.cosine(essence, rec.essence);
+            if (sim > bestSim) {
+                bestSim = sim;
+                bestId  = id;
+            }
+        }
+
+        // マッチ判定
+        const isNew = bestSim < this.matchThreshold;
+
+        if (isNew) {
+            // 新規identity
+            const newId = `vis_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+            const rec   = new VISIdentityRecord(newId, essence, modality);
+            rec.recordViewpoint(viewpoint);
+            this.records.set(newId, rec);
+            this._newCount++;
+            this._prune();
+
+            return { identity: rec, isNew: true, similarity: 0 };
+
+        } else {
+            // 既知identity更新
+            const rec = this.records.get(bestId);
+            rec.updateEssence(essence, 0.05);
+            rec.recordViewpoint(viewpoint);
+            rec.observeCount++;
+            rec.lastSeen = Date.now();
+            rec.modalities.add(modality);
+
+            // カルマン更新（観測で状態を修正）
+            rec.kalmanUpdate(essence, 0.1);
+
+            // 新規観測でサリエンシーをわずかに上げる
+            rec.saliency = Math.min(1.0, rec.saliency + 0.05);
+
+            this._matchCount++;
+
+            return { identity: rec, isNew: false, similarity: bestSim };
+        }
+    }
+
+    /**
+     * IDでidentityを取得する。
+     */
+    get(id) { return this.records.get(id) || null; }
+
+    /**
+     * 全identityを取得する。
+     */
+    getAll() { return Array.from(this.records.values()); }
+
+    /**
+     * 未知率（isUnknown の割合）を返す。
+     */
+    getUnknownRate() {
+        if (this.records.size === 0) return 0;
+        let unknown = 0;
+        for (const r of this.records.values()) if (r.isUnknown) unknown++;
+        return unknown / this.records.size;
+    }
+
+    /**
+     * サリエンシー上位N件を返す。
+     */
+    getTopSalient(n = 5) {
+        return Array.from(this.records.values())
+            .sort((a, b) => b.saliency - a.saliency)
+            .slice(0, n);
+    }
+
+    /**
+     * 全identityのサリエンシーを時間減衰させる（毎フレーム呼ぶ）。
+     */
+    decayAll(factor = 0.95) {
+        for (const rec of this.records.values()) rec.decaySaliency(factor);
+    }
+
+    // ── private ──────────────────────────────────────────────
+
+    /** 上限を超えたらサリエンシー最低の記録を削除 */
+    _prune() {
+        if (this.records.size <= this.maxRecords) return;
+        let minSal = Infinity, minId = null;
+        for (const [id, rec] of this.records) {
+            if (rec.saliency < minSal) { minSal = rec.saliency; minId = id; }
+        }
+        if (minId) this.records.delete(minId);
+    }
+
+    exportState() {
+        return {
+            records: Array.from(this.records.entries()).map(([id, r]) => [id, r.exportState()]),
+            newCount:   this._newCount,
+            matchCount: this._matchCount,
+        };
+    }
+
+    importState(data) {
+        try {
+            if (data.records && Array.isArray(data.records)) {
+                this.records = new Map(
+                    data.records.map(([id, s]) => [id, VISIdentityRecord.fromState(s)])
+                );
+            }
+            this._newCount   = data.newCount   || 0;
+            this._matchCount = data.matchCount || 0;
+        } catch (e) {
+            console.error('[VisIdentityManager] importState failed:', e);
+        }
+    }
+}
+
+
+// ────────────────────────────────────────────────────────────
+// §4. SpatialStateField（空間野）
+//     各identityの「どこに」「どちらを向いて」「どう動いているか」を保持する。
+//     世界の座標系を作ることが役割。
+// ────────────────────────────────────────────────────────────
+
+class SpatialStateField {
+    constructor() {
+        // identityId → SpatialState
+        this.states = new Map();
+    }
+
+    /**
+     * 空間状態を更新または新規登録する。
+     *
+     * @param {string} identityId
+     * @param {Object} obs  { x, y, z, orientation, velocity, timestamp }
+     *   - x, y, z        : 正規化座標 (0~1 の場合もある)
+     *   - orientation    : [ox, oy, oz] 向きベクトル (optional)
+     *   - velocity       : [vx, vy, vz] 速度ベクトル (optional)
+     *   - confidence     : 観測信頼度 0~1
+     */
+    update(identityId, obs) {
+        if (!this.states.has(identityId)) {
+            this.states.set(identityId, this._createState(obs));
+            return;
+        }
+
+        const s   = this.states.get(identityId);
+        const now = Date.now();
+        const dt  = (now - s.timestamp) / 1000.0;  // 秒
+
+        // 速度推定（位置差分）
+        const dx = (obs.x ?? s.x) - s.x;
+        const dy = (obs.y ?? s.y) - s.y;
+        const dz = (obs.z ?? s.z) - s.z;
+        s.velocity = [dx / Math.max(dt, 0.001), dy / Math.max(dt, 0.001), dz / Math.max(dt, 0.001)];
+
+        // 位置更新
+        s.x = obs.x ?? s.x;
+        s.y = obs.y ?? s.y;
+        s.z = obs.z ?? s.z;
+
+        // 向き更新
+        if (obs.orientation) s.orientation = [...obs.orientation];
+
+        // 時間更新
+        s.timestamp      = now;
+        s.observeCount   = (s.observeCount || 0) + 1;
+        s.confidence     = obs.confidence ?? s.confidence;
+
+        // 安定性フラグ更新
+        const speed = Math.sqrt(s.velocity[0]**2 + s.velocity[1]**2 + s.velocity[2]**2);
+        s.isMoving  = speed > 0.01;
+        s.isStable  = !s.isMoving && s.observeCount >= 3;
+    }
+
+    /**
+     * 位置変化（サリエンシーの根拠として使う）を返す。
+     */
+    getMotionScore(identityId) {
+        const s = this.states.get(identityId);
+        if (!s) return 0;
+        return Math.min(1.0, Math.sqrt(s.velocity[0]**2 + s.velocity[1]**2 + s.velocity[2]**2) * 10);
+    }
+
+    /**
+     * 安定かどうかを返す。
+     */
+    isStable(identityId) {
+        const s = this.states.get(identityId);
+        return s ? s.isStable : false;
+    }
+
+    /**
+     * 全空間状態をまとめて取得する（クオリア生成に使う）。
+     */
+    getAll() {
+        return Array.from(this.states.entries()).map(([id, s]) => ({ identityId: id, ...s }));
+    }
+
+    // ── private ──────────────────────────────────────────────
+
+    _createState(obs) {
+        return {
+            x:           obs.x ?? 0.5,
+            y:           obs.y ?? 0.5,
+            z:           obs.z ?? 0.0,
+            orientation: obs.orientation || [0, 0, 1],
+            velocity:    [0, 0, 0],
+            timestamp:   Date.now(),
+            observeCount: 1,
+            confidence:  obs.confidence ?? 0.5,
+            isMoving:    false,
+            isStable:    false,
+        };
+    }
+
+    exportState() {
+        return { states: Array.from(this.states.entries()) };
+    }
+
+    importState(data) {
+        try {
+            if (data.states && Array.isArray(data.states)) {
+                this.states = new Map(data.states);
+            }
+        } catch (e) {
+            console.error('[SpatialStateField] importState failed:', e);
+        }
+    }
+}
+
+
+// ────────────────────────────────────────────────────────────
+// §5. VisPredictionLoop（視覚予測ループ）
+//     「次にどうなるか」を予測し、実際の観測とのズレを計算する。
+//     これが「見る」の本体。
+//
+//     アーキテクチャ:
+//       predict(identityId) → predictedVec
+//       observe(identityId, actualVec) → error
+//       update(identityId, error) → stateUpdate
+// ────────────────────────────────────────────────────────────
+
+class VisPredictionLoop {
+    constructor(visIdentityManager, spatialStateField) {
+        this.im          = visIdentityManager;
+        this.spatial     = spatialStateField;
+        this.errorHistory = new Map();   // identityId → error[]
+        this.maxHistory   = 50;
+
+        // 全体平均誤差
+        this._avgError   = 0.0;
+        this._errorCount = 0;
+    }
+
+    /**
+     * 次状態を予測する。
+     * 現在の stateVec に velocity を加えた単純線形予測（v1.0）。
+     *
+     * @param {string} identityId
+     * @returns {{ predicted: Float32Array, confidence: number }}
+     */
+    predict(identityId) {
+        const rec     = this.im.get(identityId);
+        const spatial = this.spatial.states.get(identityId);
+
+        if (!rec) {
+            return { predicted: new Float32Array(32), confidence: 0.0 };
+        }
+
+        // 状態ベクトルをそのまま次フレーム予測として使う
+        // （より精緻な予測は v2.0 で拡張）
+        const predicted    = new Float32Array(rec.stateVec);
+        const motionScore  = spatial ? this.spatial.getMotionScore(identityId) : 0;
+        const confidence   = Math.max(0.1, 1.0 - motionScore * 0.5);  // 動くほど不確実
+
+        return { predicted, confidence };
+    }
+
+    /**
+     * 実際の観測を受け取り、予測との誤差を計算する。
+     * 誤差が大きいほどサリエンシーが上がる（注意を引く）。
+     *
+     * @param {string}      identityId
+     * @param {Float32Array} actualVec   実際に観測された本質ベクトル
+     * @returns {{ error: number, innovation: Float32Array }}
+     */
+    computeError(identityId, actualVec) {
+        const { predicted } = this.predict(identityId);
+        const innovation    = new Float32Array(actualVec.length);
+        let   sumSq         = 0;
+
+        for (let i = 0; i < actualVec.length; i++) {
+            innovation[i] = actualVec[i] - predicted[i];
+            sumSq        += innovation[i] ** 2;
+        }
+
+        const error = Math.sqrt(sumSq / actualVec.length);
+
+        // 誤差履歴に追記
+        if (!this.errorHistory.has(identityId)) this.errorHistory.set(identityId, []);
+        const history = this.errorHistory.get(identityId);
+        history.push({ error, timestamp: Date.now() });
+        if (history.length > this.maxHistory) history.shift();
+
+        // 全体平均を更新（指数移動平均）
+        this._avgError   = 0.95 * this._avgError + 0.05 * error;
+        this._errorCount++;
+
+        return { error, innovation };
+    }
+
+    /**
+     * 誤差に基づいてidentityの状態を更新し、サリエンシーを調整する。
+     * 誤差が大きい → サリエンシー大（注意を向ける）
+     * 誤差が小さい → サリエンシー小（安定、背景化）
+     *
+     * @param {string}      identityId
+     * @param {number}      error
+     * @param {Float32Array} innovation
+     */
+    updateState(identityId, error, innovation) {
+        const rec = this.im.get(identityId);
+        if (!rec) return;
+
+        // カルマン更新（誤差が大きいほど強く修正）
+        const noiseLevel = Math.max(0.01, 0.1 - error * 0.08);  // 誤差大→noise小→gain大
+        rec.kalmanUpdate(
+            rec.stateVec.map((v, i) => v + innovation[i]),  // innovation込みの観測値
+            noiseLevel
+        );
+
+        // サリエンシー更新
+        // 誤差 > 0.5 → サリエンシーを大幅に上げる
+        // 誤差 < 0.1 → サリエンシーをわずかに下げる
+        if (error > 0.5) {
+            rec.saliency = Math.min(1.0, rec.saliency + error * 0.6);
+        } else if (error < 0.1) {
+            rec.saliency = Math.max(0.0, rec.saliency - 0.02);
+        }
+    }
+
+    /**
+     * 予測→観測→誤差→更新の1サイクルをまとめて実行する。
+     * VisualIntegrationSystem.process() から呼ばれる。
+     *
+     * @param {string}      identityId
+     * @param {Float32Array} actualEssence  今回の観測本質ベクトル
+     * @returns {{ error: number, innovation: Float32Array, updated: boolean }}
+     */
+    cycle(identityId, actualEssence) {
+        const { error, innovation } = this.computeError(identityId, actualEssence);
+        this.updateState(identityId, error, innovation);
+        return { error, innovation, updated: true };
+    }
+
+    /** 全体平均誤差 */
+    getAvgError() { return this._avgError; }
+
+    /** 誤差が高いidentityトップN */
+    getHighErrorIds(n = 3) {
+        const results = [];
+        for (const [id, hist] of this.errorHistory) {
+            if (hist.length === 0) continue;
+            const latest = hist[hist.length - 1].error;
+            results.push({ id, error: latest });
+        }
+        return results.sort((a, b) => b.error - a.error).slice(0, n);
+    }
+
+    exportState() {
+        return {
+            avgError: this._avgError,
+            errorCount: this._errorCount,
+        };
+    }
+
+    importState(data) {
+        this._avgError   = data.avgError   || 0;
+        this._errorCount = data.errorCount || 0;
+    }
+}
+
+
+// ────────────────────────────────────────────────────────────
+// §6. SaliencyMap（サリエンシーマップ）
+//     「何に注意を向けるか」を決定する。
+//     変化・動き・新規出現に優先度を与える。
+// ────────────────────────────────────────────────────────────
+
+class SaliencyMap {
+    constructor(visIdentityManager, spatialStateField, predictionLoop) {
+        this.im      = visIdentityManager;
+        this.spatial = spatialStateField;
+        this.pred    = predictionLoop;
+
+        // 注意ウィンドウ: 同時に強く注意できる数
+        this.attentionSlots = 3;
+    }
+
+    /**
+     * サリエンシースコアを計算して、注意対象のリストを返す。
+     * スコアの構成要素:
+     *   - 予測誤差（error） × 0.4
+     *   - 空間的動き（motion） × 0.3
+     *   - 新規出現（isNew） × 0.3
+     *
+     * @returns {Array<{ identityId, score, reason }>}  スコア順
+     */
+    compute() {
+        const allIds       = this.im.getAll();
+        const highErrorIds = new Set(this.pred.getHighErrorIds(10).map(e => e.id));
+
+        const scores = allIds.map(rec => {
+            const motion    = this.spatial.getMotionScore(rec.id);
+            const errorScore= highErrorIds.has(rec.id) ? 0.8 : 0.1;
+            const newScore  = rec.observeCount <= 2 ? 0.9 : 0.0;
+
+            const totalScore =
+                errorScore * 0.4 +
+                motion     * 0.3 +
+                newScore   * 0.3;
+
+            const reasons = [];
+            if (errorScore > 0.5)  reasons.push('予測誤差大');
+            if (motion     > 0.3)  reasons.push('動いている');
+            if (newScore   > 0.5)  reasons.push('新規出現');
+
+            return {
+                identityId: rec.id,
+                score:      Math.min(1.0, totalScore),
+                reason:     reasons.join('/') || '平常',
+                saliency:   rec.saliency,
+            };
+        });
+
+        return scores.sort((a, b) => b.score - a.score);
+    }
+
+    /**
+     * 注意スロット内に収まるtop-N identityを返す。
+     */
+    getFocused() {
+        return this.compute().slice(0, this.attentionSlots);
+    }
+
+    /**
+     * 全identityに対してサリエンシーの書き込みを行う。
+     * （predict loop の結果を identity.saliency に反映）
+     */
+    applyToIdentities() {
+        const scores = this.compute();
+        for (const { identityId, score } of scores) {
+            const rec = this.im.get(identityId);
+            if (rec) rec.saliency = score;
+        }
+    }
+}
+
+
+// ────────────────────────────────────────────────────────────
+// §7. QualiaState（クオリア）
+//     「空間と時間を持った、主観的な世界の状態」
+//     観測→予測→誤差→更新→注意 の全結果を統合したもの。
+//     12軸による意味解釈の前段に位置する。
+// ────────────────────────────────────────────────────────────
+
+class QualiaState {
+    constructor() {
+        this.timestamp     = Date.now();
+
+        // どこに何があるか（空間野から）
+        this.spatialField  = [];   // [{ identityId, x, y, z, orientation, velocity }]
+
+        // 何が重要か（サリエンシーマップから）
+        this.focused       = [];   // [{ identityId, score, reason }]
+
+        // 何が起きているか（予測ループから）
+        this.avgPredError  = 0.0;
+        this.activeEvents  = [];   // [{ type, identityId, errorScore }]
+
+        // 全identityの概要
+        this.identityCount = 0;
+        this.unknownRate   = 0.0;
+        this.newCount      = 0;
+
+        // 内的状態との接続（being.state から）
+        this.emotionTone   = { joy: 0, tension: 0, curiosity: 0 };
+
+        // 12軸への接続（AxisCodec が読み取る）
+        this.axisHints     = {};   // axisName → strength
+    }
+
+    /**
+     * 全コンポーネントからクオリアを組み立てる。
+     * これが「主観的な世界状態の形成」に相当する。
+     *
+     * @param {VisIdentityManager}  im
+     * @param {SpatialStateField}   spatial
+     * @param {VisPredictionLoop}   pred
+     * @param {SaliencyMap}         saliency
+     * @param {Object}              emotionState  { joy, tension, curiosity }
+     */
+    build(im, spatial, pred, saliency, emotionState = {}) {
+        this.timestamp = Date.now();
+
+        // 空間野
+        this.spatialField = spatial.getAll().slice(0, 50);
+
+        // 注意フォーカス
+        this.focused = saliency.getFocused();
+
+        // 予測誤差
+        this.avgPredError = pred.getAvgError();
+
+        // イベント（予測誤差が高い = 何か起きている）
+        this.activeEvents = pred.getHighErrorIds(5).map(({ id, error }) => ({
+            type:       error > 0.6 ? '異変' : '変化',
+            identityId: id,
+            errorScore: error,
+        }));
+
+        // Identity統計
+        this.identityCount = im.records.size;
+        this.unknownRate   = im.getUnknownRate();
+        this.newCount      = 0;  // build呼び出し時点での新規数は外部から設定
+
+        // 感情トーン
+        this.emotionTone = {
+            joy:      emotionState.joy      ?? 0,
+            tension:  emotionState.tension  ?? 0,
+            curiosity:emotionState.curiosity?? 0,
+        };
+
+        // 12軸ヒント（サリエンシー + 予測誤差 から計算）
+        this.axisHints = this._computeAxisHints();
+
+        return this;
+    }
+
+    /**
+     * クオリアから12軸への補助ヒントを計算する。
+     * AxisCodec の encode() に渡すことで12軸符号化を補助する。
+     * （12軸が予測の主役ではなく、補助として使われる）
+     */
+    _computeAxisHints() {
+        const hints = {};
+
+        // 異変が多い → causality（因果）軸が活性化
+        const highError = this.activeEvents.filter(e => e.errorScore > 0.6).length;
+        hints.causality = Math.min(1.0, highError * 0.3);
+
+        // 動いているものが多い → evolution（変化）軸
+        const moving = this.spatialField.filter(s => s.isMoving).length;
+        hints.evolution = Math.min(1.0, moving * 0.2);
+
+        // 未知が多い → mystery（謎）軸  ※12軸にない場合は無視される
+        hints.mystery = this.unknownRate;
+
+        // 好奇心高 → exploration
+        hints.exploration = this.emotionTone.curiosity;
+
+        // 緊張高 → tension
+        hints.tension_axis = this.emotionTone.tension;
+
+        return hints;
+    }
+
+    /**
+     * クオリアのサマリー文字列（ログ表示用）
+     */
+    summarize() {
+        const focused = this.focused.slice(0, 2).map(f => `${f.identityId.slice(-6)}(${f.score.toFixed(2)})`).join(', ');
+        return `クオリア: entities=${this.identityCount} focus=[${focused}] error=${this.avgPredError.toFixed(3)} unknown=${(this.unknownRate*100).toFixed(0)}%`;
+    }
+
+    exportState() {
+        return {
+            timestamp:     this.timestamp,
+            identityCount: this.identityCount,
+            unknownRate:   this.unknownRate,
+            avgPredError:  this.avgPredError,
+            emotionTone:   this.emotionTone,
+            activeEvents:  this.activeEvents.length,
+        };
+    }
+}
+
+
+// ────────────────────────────────────────────────────────────
+// §8. VisualIntegrationSystem（統合オーケストレーター）
+//     全コンポーネントを束ね、being に統合するファサード。
+//
+//     使い方:
+//       const vis = new VisualIntegrationSystem(being);
+//       being.visSystem = vis;
+//
+//       // 入力処理時（being.processMultimodalInput の中など）
+//       const result = await vis.process({
+//           imageFeature: ...,   // ImageAdapter の戻り値
+//           audioFeature: ...,   // AudioAdapter の戻り値
+//           langFeature:  ...,   // LanguageOutputDL の特徴量
+//           spatialObs:   { x, y, z, orientation, confidence }  // optional
+//       });
+//
+//       // result.qualia を AxisCodec に渡して12軸符号化
+//       if (window._aoAxisCodec && result.featureVec) {
+//           const axisDist = window._aoAxisCodec.encode(result.featureVec, 'image');
+//       }
+// ────────────────────────────────────────────────────────────
+
+class VisualIntegrationSystem {
+    /**
+     * @param {Object} being  Ao の being インスタンス
+     */
+    constructor(being) {
+        this.being   = being;
+
+        // サブシステム初期化
+        this.encoder = new ModalEncoder(32, 16);
+        this.im      = new VisIdentityManager(this.encoder, 0.82);
+        this.spatial = new SpatialStateField();
+        this.pred    = new VisPredictionLoop(this.im, this.spatial);
+        this.sal     = new SaliencyMap(this.im, this.spatial, this.pred);
+        this.qualia  = new QualiaState();
+
+        // 処理統計
+        this._processCount  = 0;
+        this._lastProcessAt = 0;
+
+        // UIアップデートコールバック（外部から差し込み可能）
+        this.onUpdate = null;
+    }
+
+    /**
+     * メイン処理エントリーポイント。
+     * 「観測→予測→誤差→更新→注意→クオリア」の1サイクル。
+     *
+     * @param {Object} inputs
+     *   - imageFeature: ImageAdapter.extractMeaning() の戻り値 (optional)
+     *   - audioFeature: AudioAdapter.extractMeaning() の戻り値 (optional)
+     *   - langFeature:  言語特徴量オブジェクト (optional)
+     *   - spatialObs:   { x, y, z, orientation, confidence } (optional)
+     *   - text:         入力テキスト（ログ用、optional）
+     *
+     * @returns {{
+     *   identity:    VISIdentityRecord,
+     *   isNew:       boolean,
+     *   error:       number,
+     *   qualia:      QualiaState,
+     *   featureVec:  Float32Array,
+     *   modality:    string
+     * }}
+     */
+    async process(inputs) {
+        this._processCount++;
+
+        try {
+            // ────── Step 1: モダリティを特徴量に変換 ──────
+            let encoded = null;
+            let modality = 'language';
+
+            if (inputs.imageFeature) {
+                encoded  = this.encoder.encodeImage(inputs.imageFeature);
+                modality = 'image';
+            } else if (inputs.audioFeature) {
+                encoded  = this.encoder.encodeAudio(inputs.audioFeature);
+                modality = 'audio';
+            } else if (inputs.langFeature) {
+                encoded  = this.encoder.encodeLanguage(inputs.langFeature);
+                modality = 'language';
+            }
+
+            // 特徴量が取れなかった場合はスキップ
+            if (!encoded) {
+                return this._emptyResult();
+            }
+
+            // ────── Step 2: 同一性（identity）照合 ──────
+            const { identity, isNew, similarity } = this.im.observe(encoded);
+
+            // ────── Step 3: 空間野更新 ──────
+            if (inputs.spatialObs) {
+                this.spatial.update(identity.id, inputs.spatialObs);
+            } else {
+                // 空間観測がない場合は位置をランダム微動（視覚的存在感維持）
+                const prevState = this.spatial.states.get(identity.id);
+                this.spatial.update(identity.id, {
+                    x:          (prevState?.x ?? 0.5) + (Math.random() - 0.5) * 0.02,
+                    y:          (prevState?.y ?? 0.5) + (Math.random() - 0.5) * 0.02,
+                    z:          prevState?.z ?? 0.0,
+                    confidence: 0.3,
+                });
+            }
+
+            // ────── Step 4: 予測ループ（予測→誤差→更新）──────
+            const { error, innovation } = this.pred.cycle(identity.id, encoded.essence);
+
+            // ────── Step 5: サリエンシー更新 ──────
+            this.sal.applyToIdentities();
+
+            // 全identityのサリエンシー減衰
+            this.im.decayAll(0.95);
+
+            // ────── Step 6: クオリア組み立て ──────
+            const emotionState = this.being?.state || {};
+            this.qualia.build(this.im, this.spatial, this.pred, this.sal, emotionState);
+
+            // 新規identityかつ既存 IdentityManager がある場合、概念空間に通知
+            if (isNew && this.being?.im && typeof this.being.im.register === 'function') {
+                this.being.im.register(identity.id, encoded.essence, modality);
+            }
+
+            // ────── Step 7: 12軸への接続（補助的） ──────
+            // AxisCodec が存在する場合、クオリアのヒントを渡す
+            // （12軸は予測の主役ではなく、意味解釈の補助として使う）
+            const featureVec = this._buildAxisInputVec(encoded.essence, this.qualia);
+            if (window._aoAxisCodec && !isNew) {
+                try {
+                    const axisDist = window._aoAxisCodec.encode(featureVec, modality);
+                    identity.axisDistribution = axisDist;
+                    identity.isUnknown        = false;
+                } catch (_) { /* AxisCodec は optional */ }
+            }
+
+            // ────── ログ ──────
+            if (this.being?.addLog) {
+                const salTop = this.sal.getFocused()[0];
+                const salStr = salTop ? ` 注目:${salTop.identityId.slice(-6)}(${salTop.reason})` : '';
+                this.being.addLog(
+                    `[VIS] ${isNew ? '新規' : '既知'} ${identity.id.slice(-8)} ` +
+                    `sim=${similarity.toFixed(2)} err=${error.toFixed(3)}${salStr}`
+                );
+            }
+
+            // UIコールバック
+            if (typeof this.onUpdate === 'function') this.onUpdate(this.qualia);
+
+            this._lastProcessAt = Date.now();
+
+            return {
+                identity,
+                isNew,
+                error,
+                qualia:     this.qualia,
+                featureVec,
+                modality,
+                similarity,
+            };
+
+        } catch (e) {
+            console.error('[VisualIntegrationSystem] process error:', e);
+            return this._emptyResult();
+        }
+    }
+
+    /**
+     * クオリアの現在状態を取得する（読み取り専用）。
+     */
+    getQualia() { return this.qualia; }
+
+    /**
+     * サリエンシーが最も高いidentityを返す。
+     */
+    getMostSalient() {
+        return this.im.getTopSalient(1)[0] || null;
+    }
+
+    /**
+     * UIパネル更新用のサマリーを返す。
+     */
+    getUISummary() {
+        return {
+            identityCount: this.im.records.size,
+            unknownRate:   (this.im.getUnknownRate() * 100).toFixed(0) + '%',
+            avgPredError:  this.pred.getAvgError().toFixed(3),
+            focusedCount:  this.sal.getFocused().length,
+            processCount:  this._processCount,
+            qualiaSummary: this.qualia.summarize(),
+            highErrorIds:  this.pred.getHighErrorIds(3).map(e => `${e.id.slice(-6)}:${e.error.toFixed(2)}`).join(' '),
+        };
+    }
+
+    // ── private ──────────────────────────────────────────────
+
+    /**
+     * 本質ベクトルとクオリアヒントを結合して AxisCodec 入力ベクトルを作る。
+     * 本質(32) + ヒント(5) = 37次元 → AxisCodec の入力に渡す
+     */
+    _buildAxisInputVec(essence, qualia) {
+        const vec = new Float32Array(64);
+        // 前半: 本質ベクトル
+        for (let i = 0; i < Math.min(32, essence.length); i++) vec[i] = essence[i];
+        // 後半: クオリアヒント
+        const h = qualia.axisHints;
+        vec[32] = h.causality   || 0;
+        vec[33] = h.evolution   || 0;
+        vec[34] = h.mystery     || 0;
+        vec[35] = h.exploration || 0;
+        vec[36] = h.tension_axis|| 0;
+        // 残りはゼロ
+        return vec;
+    }
+
+    _emptyResult() {
+        return {
+            identity:   null,
+            isNew:      false,
+            error:      0,
+            qualia:     this.qualia,
+            featureVec: new Float32Array(64),
+            modality:   'unknown',
+            similarity: 0,
+        };
+    }
+
+    // ── 保存・復元 ───────────────────────────────────────────
+
+    exportState() {
+        return {
+            version:     '1.0',
+            im:          this.im.exportState(),
+            spatial:     this.spatial.exportState(),
+            pred:        this.pred.exportState(),
+            qualia:      this.qualia.exportState(),
+            processCount:this._processCount,
+        };
+    }
+
+    importState(data) {
+        try {
+            if (!data || data.version !== '1.0') return;
+            if (data.im)      this.im.importState(data.im);
+            if (data.spatial) this.spatial.importState(data.spatial);
+            if (data.pred)    this.pred.importState(data.pred);
+            if (data.processCount) this._processCount = data.processCount;
+        } catch (e) {
+            console.error('[VisualIntegrationSystem] importState failed:', e);
+        }
+    }
+}
+
+
+// ────────────────────────────────────────────────────────────
+// §9. UIパネルレンダラー
+//     既存の左パネルに VIS 情報を表示するためのヘルパー。
+//     HTML に #visPanel があれば自動的に描画する。
+// ────────────────────────────────────────────────────────────
+
+class VisPanelRenderer {
+    constructor(vis) {
+        this.vis = vis;
+        this._panelEl = null;
+        this._intervalId = null;
+    }
+
+    /**
+     * UIの定期更新を開始する（1秒ごと）。
+     */
+    start(intervalMs = 1000) {
+        this._intervalId = setInterval(() => this.render(), intervalMs);
+    }
+
+    stop() {
+        if (this._intervalId) clearInterval(this._intervalId);
+    }
+
+    render() {
+        try {
+            const panel = document.getElementById('visPanel');
+            if (!panel) return;
+
+            const summary = this.vis.getUISummary();
+            const focused = this.vis.sal.getFocused();
+            const highErr = this.vis.pred.getHighErrorIds(3);
+
+            let html = `
+                <div style="font-size:0.65rem;color:#10b981;margin-bottom:0.25rem;">
+                    entities: <b>${summary.identityCount}</b>
+                    &nbsp; unknown: <b>${summary.unknownRate}</b>
+                    &nbsp; avgErr: <b>${summary.avgPredError}</b>
+                </div>
+            `;
+
+            // 注意フォーカス
+            if (focused.length > 0) {
+                html += `<div style="font-size:0.6rem;color:#c084fc;margin-top:0.25rem;">注意フォーカス</div>`;
+                for (const f of focused) {
+                    html += `<div style="font-size:0.6rem;color:#e9d5ff;padding:0.1rem 0.3rem;">
+                        ● ${f.identityId.slice(-10)} &nbsp; score=${f.score.toFixed(2)} &nbsp; [${f.reason}]
+                    </div>`;
+                }
+            }
+
+            // 予測誤差 TOP
+            if (highErr.length > 0) {
+                html += `<div style="font-size:0.6rem;color:#f87171;margin-top:0.25rem;">予測誤差 TOP</div>`;
+                for (const e of highErr) {
+                    html += `<div style="font-size:0.6rem;color:#fca5a5;padding:0.1rem 0.3rem;">
+                        △ ${e.id.slice(-10)} : ${e.error.toFixed(3)}
+                    </div>`;
+                }
+            }
+
+            panel.innerHTML = html;
+        } catch (_) {}
+    }
+}
+
+
+// ────────────────────────────────────────────────────────────
+// §10. 既存 being への統合ヘルパー
+//      being.init() または _aoDoStartApp() の末尾で呼ぶ。
+// ────────────────────────────────────────────────────────────
+
+/**
+ * being に VisualIntegrationSystem を取り付ける。
+ *
+ * 使い方（既存の _aoDoStartApp 末尾に追記）:
+ *   attachVisualIntegrationSystem(ao);
+ *
+ * これにより:
+ *   ao.visSystem → VisualIntegrationSystem インスタンス
+ *   ao.visPanel  → VisPanelRenderer インスタンス
+ *
+ * そして既存の processMultimodalInput や AxisCodec.onEncode パイプラインに
+ * フックが自動的に差し込まれる。
+ */
+function attachVisualIntegrationSystem(being) {
+    if (!being) { console.error('[VIS] being が null です'); return; }
+    if (being.visSystem) { console.log('[VIS] 既に初期化済みです'); return; }
+
+    // ── インスタンス作成 ──
+    const vis = new VisualIntegrationSystem(being);
+    being.visSystem = vis;
+
+    // ── UIパネルレンダラー ──
+    const renderer = new VisPanelRenderer(vis);
+    being.visPanel = renderer;
+    renderer.start(1500);
+
+    // ── 保存・復元フック ──
+    // SaveManager が既に存在する場合、VIS の状態を追記する
+    if (being.saveManager) {
+        const origExport = being.saveManager.exportState?.bind(being.saveManager);
+        if (origExport) {
+            being.saveManager._origExportState = origExport;
+            being.saveManager.exportState = function() {
+                const state = origExport();
+                state.visSystem = vis.exportState();
+                return state;
+            };
+        }
+        const origImport = being.saveManager.importState?.bind(being.saveManager);
+        if (origImport) {
+            being.saveManager._origImportState = origImport;
+            being.saveManager.importState = function(data) {
+                origImport(data);
+                if (data?.visSystem) vis.importState(data.visSystem);
+            };
+        }
+    }
+
+    // ── AxisCodec.onEncode パイプラインへのフック ──
+    // 既存の window._aoAxisCodec パイプラインが完成した後に
+    // VIS の process() を呼び出すよう onEncode をラップする。
+    // （この処理は _aoAxisCodec が存在する場合のみ有効）
+    const _patchAxisCodec = () => {
+        if (!window._aoAxisCodec) return;
+        if (window._aoAxisCodec._visPatchApplied) return;
+
+        const originalOnEncode = window._aoAxisCodec.onEncode;
+        if (typeof originalOnEncode === 'function') {
+            window._aoAxisCodec.onEncode = async function(featureVec, modality, rawInput) {
+                // 既存パイプライン実行
+                if (typeof originalOnEncode === 'function') {
+                    await originalOnEncode.call(this, featureVec, modality, rawInput);
+                }
+                // VIS パイプライン実行
+                try {
+                    const fakeFeature = { visual_vector: featureVec };
+                    const inputs = modality === 'image'    ? { imageFeature: fakeFeature } :
+                                   modality === 'audio'   ? { audioFeature: fakeFeature } :
+                                                            { langFeature:  fakeFeature };
+                    await vis.process(inputs);
+                } catch (e) {
+                    console.error('[VIS hook] process error:', e);
+                }
+            };
+            window._aoAxisCodec._visPatchApplied = true;
+            being.addLog && being.addLog('[VIS] AxisCodec パイプラインにフックしました');
+        }
+    };
+
+    // AxisCodec が遅延初期化される可能性があるため、少し待ってからパッチ
+    setTimeout(_patchAxisCodec, 2000);
+
+    // ── グローバル登録 ──
+    window._aoVIS = vis;
+
+    if (being.addLog) {
+        being.addLog('[VIS] 視覚統合理解システム v1.0 を初期化しました');
+        being.addLog('[VIS] 観測→予測→誤差→更新→注意 ループ開始');
+    }
+
+    console.log('[VIS] VisualIntegrationSystem attached to being');
+    return vis;
+}
+
+
+// ────────────────────────────────────────────────────────────
+// §11. UIパネル用 HTML スニペット
+//      既存の左パネルに以下を追加することで VIS 情報が表示される:
+//
+//  <div class="panel">
+//      <div class="panel-title">👁 視覚統合 (VIS)</div>
+//      <div id="visPanel" style="min-height:60px;"></div>
+//  </div>
+//
+// ────────────────────────────────────────────────────────────
+
+// ── エクスポート（既存コードと共存するためグローバルにも登録）──
+window.VisualIntegrationSystem = VisualIntegrationSystem;
+window.VisPanelRenderer        = VisPanelRenderer;
+window.attachVisualIntegrationSystem = attachVisualIntegrationSystem;
+
+// ── VIS 内部クラスも公開（テスト・拡張用）──
+window._VISClasses = {
+    ModalEncoder,
+    VISIdentityRecord,
+    VisIdentityManager,
+    SpatialStateField,
+    VisPredictionLoop,
+    SaliencyMap,
+    QualiaState,
+};
+
+
+// ════════════════════════════════════════════════════════════════════════
+// §11. MultimodalRenderingEngine v1.0
+//      クオリア（内部状態）→ 画像・音声・動画 レンダリング機構
+//
+//      依頼書の基本原則：
+//        1. 出力は必ずクオリア（内部状態）から行う
+//        2. 言語から直接画像や音声を生成しない
+//        3. まず「何を表現するか（意図）」を内部で確定する
+//        4. 出力は内部状態の"レンダリング"とする
+// ════════════════════════════════════════════════════════════════════════
+
+// ────────────────────────────────────────────────────────────
+// §11.1  RenderIntent — 出力意図の確定
+//        「何を、どこから見て、どこまで詳細に、何のために出すか」
+// ────────────────────────────────────────────────────────────
+class RenderIntent {
+    /**
+     * @param {Object} being  - Aoインスタンス
+     * @param {'image'|'audio'|'video'} modality
+     */
+    constructor(being, modality) {
+        this.being    = being;
+        this.modality = modality;
+        this.intent   = null;
+    }
+
+    /**
+     * クオリアから出力意図を生成する。
+     * @returns {Object} intent  { target, viewpoint, granularity, purpose }
+     */
+    generate() {
+        const s = this._getState();
+
+        // ── 対象（何を出すか）──
+        // 最も活性化している概念を対象とする
+        const topConcepts = this._getTopConcepts(3);
+        const target = topConcepts.length > 0
+            ? topConcepts[0]
+            : { id: '存在', depth: 0.5, modalityOrigins: new Set(['language']) };
+
+        // ── 視点（どこから見るか）──
+        // curiosityが高いほど内側の視点、tensionが高いほど外側の視点
+        const viewpoint = s.curiosity > 0.6 ? 'inner'
+                        : s.tension   > 0.6 ? 'outer'
+                        : 'balanced';
+
+        // ── 粒度（どこまで詳細に）──
+        // calmが高いほど詳細、joyが高いほど粗め（感情優先）
+        const granularity = s.calm > 0.7 ? 'fine'
+                          : s.joy  > 0.6 ? 'coarse'
+                          : 'medium';
+
+        // ── 目的（説明・再現・強調）──
+        const purpose = s.curiosity > 0.65 ? 'explain'
+                      : s.tension   > 0.6  ? 'emphasize'
+                      : s.joy       > 0.6  ? 'reproduce'
+                      : 'explain';
+
+        this.intent = { target, viewpoint, granularity, purpose, state: s, concepts: topConcepts };
+        return this.intent;
+    }
+
+    _getState() {
+        // being.stateを安全に取得
+        const b = this.being;
+        return {
+            joy:       b?.state?.joy       ?? 0.5,
+            tension:   b?.state?.tension   ?? 0.3,
+            curiosity: b?.state?.curiosity ?? 0.5,
+            calm:      b?.state?.calm      ?? 0.5,
+        };
+    }
+
+    _getTopConcepts(n) {
+        try {
+            return Array.from(this.being.concepts.concepts.values())
+                .sort((a, b) => b.depth - a.depth)
+                .slice(0, n);
+        } catch (_) { return []; }
+    }
+}
+
+
+// ────────────────────────────────────────────────────────────
+// §11.2  QualiaSnapshot — クオリア状態の取得・正規化
+//        空間情報・時間情報・属性・重要度（saliency）を統合
+// ────────────────────────────────────────────────────────────
+class QualiaSnapshot {
+    /**
+     * @param {Object} being
+     * @param {Object} intent  - RenderIntentの出力
+     */
+    constructor(being, intent) {
+        this.being  = being;
+        this.intent = intent;
+    }
+
+    /**
+     * 内部状態からレンダリングに必要な情報を抽出・正規化する。
+     * @returns {Object} snapshot
+     */
+    capture() {
+        const intent  = this.intent;
+        const s       = intent.state;
+        const target  = intent.target;
+        const concepts = intent.concepts;
+
+        // ── 空間情報（位置・形状・関係）──
+        // qualiaFieldが存在すれば力場座標を利用
+        let spatialPos = { x: 0.5, y: 0.5 };
+        try {
+            if (this.being.qualiaField) {
+                const qs = this.being.qualiaField.states.get('current');
+                if (qs?.position) {
+                    spatialPos = {
+                        x: (qs.position.x + 2) / 4, // -2~2 → 0~1
+                        y: (qs.position.y + 2) / 4,
+                    };
+                }
+            }
+        } catch (_) {}
+
+        // ── 時間情報（動き・変化）──
+        // episodicMemoryの最近記録から変化率を推定
+        let temporalDelta = 0;
+        try {
+            const eps = this.being.episodicMemory.getRecent(5);
+            if (eps.length >= 2) {
+                const w0 = eps[0].temporalWeight ?? 0.5;
+                const w1 = eps[eps.length - 1].temporalWeight ?? 0.5;
+                temporalDelta = Math.abs(w1 - w0);
+            }
+        } catch (_) {}
+
+        // ── 属性（色・質感・音）──
+        // joy   → 暖色 (hue 0°-60°)、tensionが高いほど暗く
+        // curiosity → 彩度高め、calm → 低め
+        const hue        = s.joy * 60 + (1 - s.tension) * 20;       // 0~80°
+        const saturation = 0.4 + s.curiosity * 0.5;                  // 0.4~0.9
+        const brightness = 0.3 + s.calm * 0.5 + s.joy * 0.2;        // 0.3~1.0
+        const roughness  = s.tension * 0.7;                          // 0.0~0.7
+
+        // ── 重要度（Saliency）──
+        // 深度・感情的重みで概念にsaliencyを付与
+        const saliencyMap = concepts.map((c, i) => ({
+            concept:  c.id,
+            depth:    c.depth,
+            saliency: c.depth * (1 - i * 0.2) * (0.5 + s.curiosity * 0.5),
+        }));
+
+        // 注意フィルタ: purpose / granulaityで閾値設定
+        const saliencyThreshold = intent.granularity === 'fine'   ? 0.1
+                                : intent.granularity === 'medium' ? 0.3
+                                : 0.5;
+
+        const focusedSaliency = saliencyMap.filter(c => c.saliency >= saliencyThreshold);
+
+        return {
+            spatial:    spatialPos,
+            temporal:   { delta: temporalDelta, speed: temporalDelta * 10 },
+            attributes: { hue, saturation, brightness, roughness },
+            saliency:   focusedSaliency,
+            rawState:   s,
+            intent:     this.intent,
+        };
+    }
+}
+
+
+// ────────────────────────────────────────────────────────────
+// §11.3  ImageRenderer — クオリアを静止画としてレンダリング
+//        Canvas2Dを使用。依頼書 §①に対応。
+// ────────────────────────────────────────────────────────────
+class ImageRenderer {
+    /**
+     * @param {Object} snapshot - QualiaSnapshotの出力
+     * @param {number} w  幅
+     * @param {number} h  高さ
+     */
+    render(snapshot, w = 320, h = 320) {
+        const canvas = document.createElement('canvas');
+        canvas.width  = w;
+        canvas.height = h;
+        const ctx = canvas.getContext('2d');
+
+        const { spatial, attributes, saliency, intent } = snapshot;
+        const { hue, saturation, brightness, roughness } = attributes;
+
+        // ── 背景グラデーション（視点に応じて）──
+        const viewBias = intent.viewpoint === 'inner' ? 0.3 : 0.7;
+        const bg = ctx.createRadialGradient(
+            w * spatial.x, h * spatial.y, 0,
+            w * viewBias,  h * viewBias,  Math.max(w, h)
+        );
+        const bgHsl = `hsl(${hue}, ${(saturation * 60).toFixed(0)}%, ${(brightness * 30).toFixed(0)}%)`;
+        const bgHsl2 = `hsl(${hue + 30}, ${(saturation * 40).toFixed(0)}%, ${(brightness * 15).toFixed(0)}%)`;
+        bg.addColorStop(0, bgHsl);
+        bg.addColorStop(1, bgHsl2);
+        ctx.fillStyle = bg;
+        ctx.fillRect(0, 0, w, h);
+
+        // ── テクスチャ（質感: roughnessに比例したノイズ）──
+        if (roughness > 0.2) {
+            const noiseDensity = Math.floor(roughness * 2000);
+            ctx.fillStyle = `rgba(255,255,255,${(roughness * 0.15).toFixed(3)})`;
+            for (let i = 0; i < noiseDensity; i++) {
+                const nx = Math.random() * w;
+                const ny = Math.random() * h;
+                ctx.fillRect(nx, ny, 1, 1);
+            }
+        }
+
+        // ── 概念オブジェクト（saliencyに基づく）──
+        saliency.forEach((item, idx) => {
+            const angle   = (idx / Math.max(saliency.length, 1)) * Math.PI * 2;
+            const radius  = 0.3 + item.saliency * 0.3;                           // 0~0.6
+            const cx      = w * (0.5 + Math.cos(angle) * radius * 0.4);
+            const cy      = h * (0.5 + Math.sin(angle) * radius * 0.4);
+            const size    = 8 + item.saliency * 40;
+
+            // メインカラー
+            const conceptHue = (hue + idx * 40) % 360;
+            const alpha      = 0.3 + item.saliency * 0.6;
+
+            // 外輪グロー（重要概念を強調）
+            if (item.saliency > 0.5) {
+                const glow = ctx.createRadialGradient(cx, cy, 0, cx, cy, size * 2.5);
+                glow.addColorStop(0, `hsla(${conceptHue}, 80%, 70%, ${(alpha * 0.5).toFixed(2)})`);
+                glow.addColorStop(1, 'transparent');
+                ctx.fillStyle = glow;
+                ctx.beginPath();
+                ctx.arc(cx, cy, size * 2.5, 0, Math.PI * 2);
+                ctx.fill();
+            }
+
+            // コアサークル
+            ctx.fillStyle = `hsla(${conceptHue}, ${(saturation * 100).toFixed(0)}%, ${(brightness * 80).toFixed(0)}%, ${alpha.toFixed(2)})`;
+            ctx.beginPath();
+            ctx.arc(cx, cy, size, 0, Math.PI * 2);
+            ctx.fill();
+
+            // ラベル（granularity='fine'のみ）
+            if (intent.granularity === 'fine' && item.saliency > 0.3) {
+                ctx.font       = `${Math.floor(10 + item.saliency * 6)}px monospace`;
+                ctx.fillStyle  = `rgba(255,255,255,${(0.5 + item.saliency * 0.4).toFixed(2)})`;
+                ctx.textAlign  = 'center';
+                ctx.fillText(item.concept.substring(0, 8), cx, cy + size + 14);
+            }
+        });
+
+        // ── 空間位置マーカー（主観的焦点）──
+        const fx = w * spatial.x;
+        const fy = h * spatial.y;
+        const focusGrad = ctx.createRadialGradient(fx, fy, 0, fx, fy, 40);
+        focusGrad.addColorStop(0, `rgba(255,255,255,0.25)`);
+        focusGrad.addColorStop(1, 'transparent');
+        ctx.fillStyle = focusGrad;
+        ctx.beginPath();
+        ctx.arc(fx, fy, 40, 0, Math.PI * 2);
+        ctx.fill();
+
+        // ── 意図アノテーション（左下に小さく）──
+        ctx.font      = '9px monospace';
+        ctx.fillStyle = 'rgba(255,255,255,0.35)';
+        ctx.textAlign = 'left';
+        ctx.fillText(`intent:${intent.purpose}`, 6, h - 6);
+
+        return canvas.toDataURL('image/png');
+    }
+}
+
+
+// ────────────────────────────────────────────────────────────
+// §11.4  AudioRenderer — クオリアを音声としてレンダリング
+//        Web Audio APIを使用。依頼書 §②に対応。
+// ────────────────────────────────────────────────────────────
+class AudioRenderer {
+    /**
+     * @param {Object} snapshot
+     * @returns {Promise<AudioBuffer>}
+     */
+    async render(snapshot) {
+        const { attributes, saliency, temporal, intent } = snapshot;
+        const { hue, saturation, brightness, roughness } = attributes;
+        const s = snapshot.rawState;
+
+        const sampleRate = 44100;
+        // duration: curiosityが高いほど長い（2~8秒）
+        const duration   = 2 + s.curiosity * 6;
+        const frameCount = Math.floor(sampleRate * duration);
+
+        const audioCtx  = new (window.AudioContext || window.webkitAudioContext)();
+        const buffer    = audioCtx.createBuffer(1, frameCount, sampleRate);
+        const data      = buffer.getChannelData(0);
+
+        // ── イベント（概念）ごとに音を時間軸上に配置 ──
+        saliency.forEach((item, idx) => {
+            // 概念の重要度 → 音量
+            const amplitude = item.saliency * 0.6;
+            // 概念の位置（時間）
+            const startSec  = (idx / Math.max(saliency.length, 1)) * duration * 0.8;
+            const startIdx  = Math.floor(startSec * sampleRate);
+            // 音の長さ: granularity=fine → 短い、coarse → 長い
+            const noteDur   = intent.granularity === 'fine' ? 0.2 : 0.5;
+            const noteLen   = Math.floor(noteDur * sampleRate);
+
+            // ── 音の種類: hue → 基本周波数 ──
+            // hue(0-80) → freq(220-880Hz)
+            const baseFreq = 220 + (hue / 80) * 660;
+            // saturation → 倍音豊かさ
+            const harmonics = Math.floor(1 + saturation * 6);
+
+            // ── エンベロープ: tension → 鋭いアタック ──
+            const attackLen  = Math.floor(sampleRate * (0.18 - s.tension * 0.15));
+            const releaseLen = Math.floor(sampleRate * (0.35 - s.tension * 0.2));
+
+            for (let i = 0; i < noteLen && (startIdx + i) < frameCount; i++) {
+                const t        = i / sampleRate;
+                // エンベロープ
+                let env = 1;
+                if (i < attackLen) env = i / attackLen;
+                else if (i > noteLen - releaseLen) env = (noteLen - i) / releaseLen;
+                env = Math.max(0, env);
+
+                // 波形（倍音合成）
+                let sample = 0;
+                for (let h = 1; h <= harmonics; h++) {
+                    // roughness → 奇数倍音強調（矩形波寄り）
+                    const weight = roughness > 0.4 ? (h % 2 === 1 ? 1 / h : 0.1 / h) : 1 / h;
+                    sample += Math.sin(2 * Math.PI * baseFreq * h * t) * weight;
+                }
+                // 正規化
+                sample = sample / harmonics;
+
+                data[startIdx + i] += sample * amplitude * env;
+            }
+        });
+
+        // ── 全体クリッピング防止 ──
+        let peak = 0;
+        for (let i = 0; i < frameCount; i++) peak = Math.max(peak, Math.abs(data[i]));
+        if (peak > 0.9) {
+            const scale = 0.9 / peak;
+            for (let i = 0; i < frameCount; i++) data[i] *= scale;
+        }
+
+        await audioCtx.close();
+        return buffer;
+    }
+
+    /**
+     * AudioBufferをWAV DataURLに変換する。
+     * @param {AudioBuffer} buffer
+     * @returns {string} data URL
+     */
+    bufferToWav(buffer) {
+        const numCh   = buffer.numberOfChannels;
+        const len     = buffer.length;
+        const rate    = buffer.sampleRate;
+        const ab      = new ArrayBuffer(44 + len * numCh * 2);
+        const view    = new DataView(ab);
+
+        const writeStr = (off, str) => { for (let i = 0; i < str.length; i++) view.setUint8(off + i, str.charCodeAt(i)); };
+        writeStr(0,  'RIFF');
+        view.setUint32(4,  36 + len * numCh * 2, true);
+        writeStr(8,  'WAVE');
+        writeStr(12, 'fmt ');
+        view.setUint32(16, 16, true);
+        view.setUint16(20, 1, true);
+        view.setUint16(22, numCh, true);
+        view.setUint32(24, rate, true);
+        view.setUint32(28, rate * numCh * 2, true);
+        view.setUint16(32, numCh * 2, true);
+        view.setUint16(34, 16, true);
+        writeStr(36, 'data');
+        view.setUint32(40, len * numCh * 2, true);
+
+        let off = 44;
+        for (let i = 0; i < len; i++) {
+            for (let ch = 0; ch < numCh; ch++) {
+                const s = Math.max(-1, Math.min(1, buffer.getChannelData(ch)[i]));
+                view.setInt16(off, s < 0 ? s * 0x8000 : s * 0x7FFF, true);
+                off += 2;
+            }
+        }
+
+        const blob = new Blob([ab], { type: 'audio/wav' });
+        return URL.createObjectURL(blob);
+    }
+}
+
+
+// ────────────────────────────────────────────────────────────
+// §11.5  VideoRenderer — クオリアの時間変化をフレームアニメとしてレンダリング
+//        ImageRendererを連続フレームで呼び出す。依頼書 §③に対応。
+// ────────────────────────────────────────────────────────────
+class VideoRenderer {
+    /**
+     * @param {number} frameCount  生成フレーム数
+     * @param {number} fps
+     */
+    constructor(frameCount = 12, fps = 8) {
+        this.frameCount  = frameCount;
+        this.fps         = fps;
+        this.imgRenderer = new ImageRenderer();
+    }
+
+    /**
+     * snapshotを時間変化させながらフレームを生成する。
+     * @param {Object}  snapshot
+     * @param {Object}  being     - 時間変化の参照用
+     * @returns {string[]} dataURLs
+     */
+    render(snapshot, being) {
+        const frames = [];
+        const { attributes, temporal, intent } = snapshot;
+
+        for (let f = 0; f < this.frameCount; f++) {
+            const t = f / (this.frameCount - 1);  // 0.0 ~ 1.0
+
+            // ── フレームごとにstateを微変化させる ──
+            const speed = 0.05 + temporal.delta * 0.3;
+
+            // フレームスナップショットを生成（時間変化を加える）
+            const frameSnap = {
+                ...snapshot,
+                attributes: {
+                    ...attributes,
+                    hue:        (attributes.hue        + t * 30 * speed) % 360,
+                    brightness: Math.min(1, attributes.brightness + Math.sin(t * Math.PI * 2) * 0.1 * speed),
+                    roughness:  Math.max(0, attributes.roughness  - t * 0.1 * speed),
+                },
+                spatial: {
+                    x: snapshot.spatial.x + Math.sin(t * Math.PI * 2) * 0.05 * speed,
+                    y: snapshot.spatial.y + Math.cos(t * Math.PI * 2) * 0.05 * speed,
+                },
+                saliency: snapshot.saliency.map((item, idx) => ({
+                    ...item,
+                    // 動いている対象は重要度が上がる
+                    saliency: item.saliency * (1 + temporal.delta * Math.sin(t * Math.PI * 2 + idx) * 0.3),
+                })),
+            };
+
+            frames.push(this.imgRenderer.render(frameSnap, 240, 240));
+        }
+
+        return frames;
+    }
+}
+
+
+// ────────────────────────────────────────────────────────────
+// §11.6  MultimodalRenderingEngine — メインエンジン
+//        依頼書の全体の流れを統括する。
+// ────────────────────────────────────────────────────────────
+class MultimodalRenderingEngine {
+    /**
+     * @param {Object} being  - Aoインスタンス
+     */
+    constructor(being) {
+        this.being        = being;
+        this.imgRenderer  = new ImageRenderer();
+        this.audioRender  = new AudioRenderer();
+        this.vidRenderer  = new VideoRenderer();
+        this._lastSnapshot = null;
+        console.log('[MRE] MultimodalRenderingEngine v1.0 initialized');
+    }
+
+    // ────────────────────────────
+    // Step 1: 出力意図を生成する
+    // ────────────────────────────
+    _buildIntent(modality) {
+        const intentObj = new RenderIntent(this.being, modality);
+        return intentObj.generate();
+    }
+
+    // ────────────────────────────
+    // Step 2-3: クオリアからstateを取得し、注意でフィルタ
+    // ────────────────────────────
+    _captureQualia(intent) {
+        const snap = new QualiaSnapshot(this.being, intent);
+        const snapshot = snap.capture();
+        this._lastSnapshot = snapshot;
+        return snapshot;
+    }
+
+    // ────────────────────────────
+    // Step 4-5: モーダルごとに変換・出力
+    // ────────────────────────────
+
+    /**
+     * ① 画像出力
+     * クオリアの空間状態を静止状態として投影する。
+     * @returns {{ dataUrl: string, description: string, intent: Object }}
+     */
+    renderImage() {
+        const intent   = this._buildIntent('image');
+        const snapshot = this._captureQualia(intent);
+
+        this.being.addLog(`[MRE] 画像レンダリング開始: intent=${intent.purpose}, viewpoint=${intent.viewpoint}`);
+
+        const dataUrl = this.imgRenderer.render(snapshot);
+
+        const desc = this._describeOutput(snapshot, 'image');
+        this.being.addLog(`[MRE] 画像レンダリング完了: ${desc}`);
+
+        return { dataUrl, description: desc, intent, snapshot };
+    }
+
+    /**
+     * ② 音声出力
+     * クオリアの時間変化・イベントを音として変換する。
+     * @returns {Promise<{ wavUrl: string, description: string, intent: Object }>}
+     */
+    async renderAudio() {
+        const intent   = this._buildIntent('audio');
+        const snapshot = this._captureQualia(intent);
+
+        this.being.addLog(`[MRE] 音声レンダリング開始: intent=${intent.purpose}, granularity=${intent.granularity}`);
+
+        const buffer = await this.audioRender.render(snapshot);
+        const wavUrl = this.audioRender.bufferToWav(buffer);
+
+        const desc = this._describeOutput(snapshot, 'audio');
+        this.being.addLog(`[MRE] 音声レンダリング完了: ${desc}`);
+
+        return { wavUrl, description: desc, intent, snapshot };
+    }
+
+    /**
+     * ③ 動画出力
+     * クオリアの時間変化を連続フレームとして出力する。
+     * @param {number} frameCount
+     * @param {number} fps
+     * @returns {{ frames: string[], fps: number, description: string, intent: Object }}
+     */
+    renderVideo(frameCount = 12, fps = 8) {
+        const intent   = this._buildIntent('video');
+        const snapshot = this._captureQualia(intent);
+
+        this.being.addLog(`[MRE] 動画レンダリング開始: ${frameCount}フレーム @ ${fps}fps`);
+
+        this.vidRenderer.frameCount = frameCount;
+        this.vidRenderer.fps        = fps;
+        const frames = this.vidRenderer.render(snapshot, this.being);
+
+        const desc = this._describeOutput(snapshot, 'video');
+        this.being.addLog(`[MRE] 動画レンダリング完了: ${frames.length}フレーム, ${desc}`);
+
+        return { frames, fps, description: desc, intent, snapshot };
+    }
+
+    /**
+     * 同じ内部状態から一貫した出力を得るために、
+     * 既存snapshotを再利用して別モーダルで出力する。
+     * （成功条件: 同じ内部状態から一貫した出力）
+     */
+    rerenderWithViewpoint(modality, viewpointOverride) {
+        if (!this._lastSnapshot) return null;
+        const snap = {
+            ...this._lastSnapshot,
+            intent: { ...this._lastSnapshot.intent, viewpoint: viewpointOverride },
+        };
+        if (modality === 'image') return { dataUrl: this.imgRenderer.render(snap), snapshot: snap };
+        if (modality === 'video') return { frames: this.vidRenderer.render(snap, this.being), snapshot: snap };
+        return null;
+    }
+
+    // ────────────────────────────
+    // 内部ヘルパー
+    // ────────────────────────────
+    _describeOutput(snapshot, modality) {
+        const topConcept = snapshot.saliency[0]?.concept ?? '無名';
+        const viewLabel  = snapshot.intent.viewpoint === 'inner' ? '内側' : snapshot.intent.viewpoint === 'outer' ? '外側' : '均衡';
+        const moodLabel  = snapshot.rawState.joy > 0.6 ? '喜' : snapshot.rawState.tension > 0.6 ? '緊' : '静';
+        return `${topConcept} [${viewLabel}視点 ${moodLabel}]`;
+    }
+
+    exportState() {
+        return {
+            lastSnapshotTimestamp: this._lastSnapshot ? Date.now() : null,
+        };
+    }
+}
+
+
+// ────────────────────────────────────────────────────────────
+// §11.7  attachMultimodalRenderingEngine
+//        being に MRE を取り付ける統合ヘルパー。
+//        _aoDoStartApp() の末尾で attachVisualIntegrationSystem の後に呼ぶ。
+// ────────────────────────────────────────────────────────────
+function attachMultimodalRenderingEngine(being) {
+    if (!being) { console.error('[MRE] being が null です'); return; }
+    if (being.mre) { console.log('[MRE] 既に初期化済みです'); return; }
+
+    const mre = new MultimodalRenderingEngine(being);
+    being.mre = mre;
+
+    // ── SaveManager フック ──
+    if (being.saveManager) {
+        const origExport = being.saveManager.exportState?.bind(being.saveManager);
+        if (origExport) {
+            being.saveManager.exportState = function() {
+                const state = origExport();
+                state.mre = mre.exportState();
+                return state;
+            };
+        }
+    }
+
+    // ── グローバル登録 ──
+    window._aoMRE = mre;
+
+    // ── チャットへの出力ヘルパーを注入 ──
+    // addMessage が利用可能になってから呼ばれることを想定
+    // (window._aoAddMessage は _aoDoStartApp 内でセットする)
+    being.renderToChat = async function(modality) {
+        const emit = window._aoAddMessage;
+        if (!emit) { console.warn('[MRE] _aoAddMessage 未登録'); return; }
+
+        try {
+            if (modality === 'image') {
+                const result = being.mre.renderImage();
+                emit('ao',
+                    `クオリアより「${result.description}」を描いた`,
+                    `視点:${result.intent.viewpoint} 粒度:${result.intent.granularity}`,
+                    { type: 'image', src: result.dataUrl }
+                );
+
+            } else if (modality === 'audio') {
+                const result = await being.mre.renderAudio();
+                emit('ao',
+                    `クオリアより「${result.description}」を音にした`,
+                    `視点:${result.intent.viewpoint} 概念数:${result.intent.concepts.length}`,
+                    { type: 'audio', src: result.wavUrl }
+                );
+
+            } else if (modality === 'video') {
+                const result = being.mre.renderVideo(12, 8);
+                emit('ao',
+                    `クオリアより「${result.description}」を動かした`,
+                    `${result.frames.length}フレーム`,
+                    { type: 'video', frames: result.frames, fps: result.fps }
+                );
+            }
+
+            // ── MREパネルのUI状態を更新 ──
+            const snap = being.mre._lastSnapshot;
+            if (snap) {
+                const intentEl = document.getElementById('mreLastIntent');
+                if (intentEl) intentEl.textContent = snap.intent.purpose + ' / ' + modality;
+                const viewEl = document.getElementById('mreLastViewpoint');
+                if (viewEl) viewEl.textContent = snap.intent.viewpoint + ' (' + snap.intent.granularity + ')';
+            }
+
+        } catch (err) {
+            console.error('[MRE] renderToChat failed:', err);
+            being.addLog(`[MRE] エラー: ${err.message}`);
+        }
+    };
+
+    if (being.addLog) {
+        being.addLog('[MRE] マルチモーダル出力エンジン v1.0 を初期化しました');
+        being.addLog('[MRE] クオリア → 画像・音声・動画 レンダリング準備完了');
+    }
+
+    console.log('[MRE] MultimodalRenderingEngine attached to being');
+    return mre;
+}
+
+
+// ── グローバル登録 ──
+window.MultimodalRenderingEngine = MultimodalRenderingEngine;
+window.attachMultimodalRenderingEngine = attachMultimodalRenderingEngine;
+window.RenderIntent    = RenderIntent;
+window.QualiaSnapshot  = QualiaSnapshot;
+window.ImageRenderer   = ImageRenderer;
+window.AudioRenderer   = AudioRenderer;
+window.VideoRenderer   = VideoRenderer;
+
+
+    </script>
+
     <!-- Video Project Modal -->
     <div id="videoModal" class="modal" style="display: none;">
         <div class="modal-content">
@@ -31209,6 +34227,1771 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
             </div>
         </div>
     </div>
-    
+
+    <!-- ======================================================
+         Ao v26.5.0 拡張実装
+         ①StatisticalTokenizer  ②SpatialInteractionModel
+         ③CausalReasoning(介入)  ④DeterministicMode
+    ====================================================== -->
+    <script>
+    'use strict';
+
+    // ═══════════════════════════════════════════════════════════
+    // ① 統計トークナイザ（StatisticalTokenizer）
+    //    辞書ゼロ・PMI + 左右エントロピーでバイグラムを統計的に発見
+    //    Tokenizer → TokenClusterEngine → ConceptSynthesisEngine
+    // ═══════════════════════════════════════════════════════════
+
+    class StatisticalTokenizer {
+        constructor() {
+            // ─── 頻度表 ───
+            this.unigramFreq  = new Map();   // char/bigram → freq
+            this.bigramFreq   = new Map();   // pair "AB" → freq
+            this.trigramFreq  = new Map();   // "ABC" → freq
+            this.totalChars   = 0;
+
+            // ─── 学習済みトークン辞書 ───
+            this.vocab        = new Set();   // 採用されたn-gram
+            this.tokenScores  = new Map();   // token → {pmi, lEnt, rEnt, score}
+
+            // ─── ハイパーパラメータ ───
+            this.MIN_FREQ     = 2;           // 最小出現回数
+            this.MIN_LEN      = 2;           // 最小トークン長
+            this.MAX_LEN      = 5;           // 最大トークン長
+            this.SCORE_THRESH = 0.5;         // 採用スコア閾値
+            this.MAX_VOCAB    = 500;         // 最大語彙数
+
+            // ─── コーパスバッファ（学習用） ───
+            this._corpus      = [];          // 生入力文字列リスト
+            this._learnEvery  = 30;          // N文ごとに再学習
+            this._learnCount  = 0;
+
+            console.log('[StatTok] StatisticalTokenizer v1.0 初期化');
+        }
+
+        // ──────────────────────────────────────────────────────
+        // 公開API: テキストをトークンに分割する
+        // ──────────────────────────────────────────────────────
+        tokenize(text) {
+            if (!text || text.length === 0) return [];
+
+            // まずコーパスに追加して学習
+            this._feed(text);
+
+            // 語彙が空なら文字単位フォールバック
+            if (this.vocab.size === 0) {
+                return [...text].map(c => ({ surface: c, score: 0, method: 'char' }));
+            }
+
+            return this._segment(text);
+        }
+
+        // ──────────────────────────────────────────────────────
+        // 内部: コーパス追加 & 統計更新
+        // ──────────────────────────────────────────────────────
+        _feed(text) {
+            this._corpus.push(text);
+            this._updateFrequencies(text);
+            this._learnCount++;
+
+            if (this._learnCount % this._learnEvery === 0 || this._learnCount <= 3) {
+                this._rebuildVocab();
+            }
+        }
+
+        _updateFrequencies(text) {
+            const chars = [...text];
+            this.totalChars += chars.length;
+
+            // ユニグラム
+            for (const c of chars) {
+                this.unigramFreq.set(c, (this.unigramFreq.get(c) || 0) + 1);
+            }
+
+            // バイグラム〜MAX_LEN-gram
+            for (let n = 2; n <= this.MAX_LEN; n++) {
+                for (let i = 0; i <= chars.length - n; i++) {
+                    const gram = chars.slice(i, i + n).join('');
+                    const key = `${n}:${gram}`;
+                    if (n === 2) {
+                        this.bigramFreq.set(gram, (this.bigramFreq.get(gram) || 0) + 1);
+                    } else if (n === 3) {
+                        this.trigramFreq.set(gram, (this.trigramFreq.get(gram) || 0) + 1);
+                    }
+                }
+            }
+        }
+
+        // ──────────────────────────────────────────────────────
+        // 語彙再構築: PMI + 左右文脈エントロピーでスコアリング
+        // ──────────────────────────────────────────────────────
+        _rebuildVocab() {
+            const candidates = new Map(); // gram → score
+
+            // バイグラムのPMIスコア
+            for (const [bigram, cnt] of this.bigramFreq) {
+                if (cnt < this.MIN_FREQ) continue;
+                if ([...bigram].length < 2) continue;
+
+                const chars = [...bigram];
+                const pA    = (this.unigramFreq.get(chars[0]) || 1) / Math.max(this.totalChars, 1);
+                const pB    = (this.unigramFreq.get(chars[1]) || 1) / Math.max(this.totalChars, 1);
+                const pAB   = cnt / Math.max(this.totalChars, 1);
+
+                const pmi   = pAB > 0 && pA > 0 && pB > 0
+                    ? Math.log2(pAB / (pA * pB))
+                    : -99;
+
+                // 左右エントロピー（文脈安定性）
+                const lEnt  = this._contextEntropy(bigram, 'left');
+                const rEnt  = this._contextEntropy(bigram, 'right');
+
+                // 複合スコア: PMI重視 + 文脈安定性
+                const rawScore = (pmi / 10) + 0.3 * (1 / (1 + lEnt)) + 0.3 * (1 / (1 + rEnt));
+                const score    = Math.max(0, Math.min(1, rawScore));
+
+                candidates.set(bigram, { pmi, lEnt, rEnt, score, freq: cnt });
+            }
+
+            // スコア上位のみを採用
+            const sorted = [...candidates.entries()]
+                .sort((a, b) => b[1].score - a[1].score)
+                .slice(0, this.MAX_VOCAB);
+
+            this.vocab.clear();
+            this.tokenScores.clear();
+
+            for (const [gram, info] of sorted) {
+                if (info.score >= this.SCORE_THRESH || info.freq >= 5) {
+                    this.vocab.add(gram);
+                    this.tokenScores.set(gram, info);
+                }
+            }
+
+            console.log(`[StatTok] 語彙再構築 → ${this.vocab.size}語（コーパス${this._corpus.length}文）`);
+        }
+
+        // 左右文脈エントロピー（バイグラム前後の文字多様性）
+        _contextEntropy(target, dir) {
+            const contextFreq = new Map();
+            for (const text of this._corpus) {
+                const idx = text.indexOf(target);
+                if (idx < 0) continue;
+                if (dir === 'left'  && idx > 0)                    { const c = text[idx - 1];           contextFreq.set(c, (contextFreq.get(c) || 0) + 1); }
+                if (dir === 'right' && idx + target.length < text.length) { const c = text[idx + target.length]; contextFreq.set(c, (contextFreq.get(c) || 0) + 1); }
+            }
+            const total = [...contextFreq.values()].reduce((a, b) => a + b, 0);
+            if (total === 0) return 0;
+            let H = 0;
+            for (const cnt of contextFreq.values()) {
+                const p = cnt / total;
+                H -= p * Math.log2(p);
+            }
+            return H;
+        }
+
+        // ──────────────────────────────────────────────────────
+        // セグメンテーション（最長一致法）
+        // ──────────────────────────────────────────────────────
+        _segment(text) {
+            const result = [];
+            const chars  = [...text];
+            let   i      = 0;
+
+            while (i < chars.length) {
+                let matched    = null;
+                let matchedLen = 0;
+                let matchScore = 0;
+
+                // 長いものから優先的に試みる
+                for (let len = Math.min(this.MAX_LEN, chars.length - i); len >= this.MIN_LEN; len--) {
+                    const candidate = chars.slice(i, i + len).join('');
+                    if (this.vocab.has(candidate)) {
+                        const info = this.tokenScores.get(candidate);
+                        if (!matched || (info && info.score > matchScore)) {
+                            matched    = candidate;
+                            matchedLen = len;
+                            matchScore = info ? info.score : 0.5;
+                        }
+                        break; // 最長一致を優先
+                    }
+                }
+
+                if (matched) {
+                    result.push({ surface: matched, score: matchScore, method: 'stat' });
+                    i += matchedLen;
+                } else {
+                    // 単文字フォールバック
+                    result.push({ surface: chars[i], score: 0, method: 'char' });
+                    i++;
+                }
+            }
+
+            return result;
+        }
+
+        // ──────────────────────────────────────────────────────
+        // exportState / importState（セーブ連携）
+        // ──────────────────────────────────────────────────────
+        exportState() {
+            return {
+                vocab:        [...this.vocab],
+                tokenScores:  [...this.tokenScores.entries()],
+                unigramFreq:  [...this.unigramFreq.entries()],
+                bigramFreq:   [...this.bigramFreq.entries()],
+                trigramFreq:  [...this.trigramFreq.entries()],
+                totalChars:   this.totalChars,
+                learnCount:   this._learnCount,
+                corpusLen:    this._corpus.length,
+            };
+        }
+
+        importState(data) {
+            try {
+                if (data.vocab)       this.vocab       = new Set(data.vocab);
+                if (data.tokenScores) this.tokenScores = new Map(data.tokenScores);
+                if (data.unigramFreq) this.unigramFreq = new Map(data.unigramFreq);
+                if (data.bigramFreq)  this.bigramFreq  = new Map(data.bigramFreq);
+                if (data.trigramFreq) this.trigramFreq = new Map(data.trigramFreq);
+                if (data.totalChars !== undefined) this.totalChars = data.totalChars;
+                if (data.learnCount !== undefined) this._learnCount = data.learnCount;
+            } catch(e) {
+                console.error('[StatTok] importState error:', e);
+            }
+        }
+    }
+
+
+    // ═══════════════════════════════════════════════════════════
+    // ② 空間相互作用モデル（SpatialInteractionModel）
+    //    SpatialStateField 上の全物体ペアの衝突・接近を検出
+    //    → 推論・意図生成に影響
+    // ═══════════════════════════════════════════════════════════
+
+    class SpatialInteractionModel {
+        constructor(spatialStateField) {
+            this.ssf              = spatialStateField;   // SpatialStateField 参照
+
+            // ─── 閾値 ───
+            this.COLLISION_THRESH = 0.08;  // 衝突判定距離
+            this.APPROACH_THRESH  = 0.25;  // 接近判定距離
+            this.PREDICT_DT       = 0.5;   // 未来予測秒数
+
+            // ─── 最新イベントログ ───
+            this.collisionEvents  = [];    // { a, b, dist, timestamp }
+            this.approachEvents   = [];    // { a, b, dist, closing, timestamp }
+            this.avoidanceNeeds   = [];    // { id, threat, urgency }
+            this.MAX_EVENTS       = 50;
+
+            // ─── 推論へのフィードバック ───
+            this.tensionLevel     = 0.0;   // 0〜1: 衝突緊張度
+            this.alertIds         = new Set(); // 注意が必要なID
+
+            console.log('[SIM] SpatialInteractionModel v1.0 初期化');
+        }
+
+        // ──────────────────────────────────────────────────────
+        // メインループ: 1サイクル分の相互作用を計算
+        // ──────────────────────────────────────────────────────
+        update() {
+            if (!this.ssf) return;
+
+            const objects = this.ssf.getAll();
+            if (objects.length < 2) return;
+
+            const newCollisions  = [];
+            const newApproaches  = [];
+            const newAvoidances  = [];
+            const now            = Date.now();
+
+            for (let i = 0; i < objects.length; i++) {
+                for (let j = i + 1; j < objects.length; j++) {
+                    const A = objects[i];
+                    const B = objects[j];
+
+                    // 現在距離
+                    const dist = this._euclidean(A, B);
+
+                    // 未来位置（線形予測）
+                    const futA = this._futurePos(A);
+                    const futB = this._futurePos(B);
+                    const futDist = this._euclideanXYZ(futA, futB);
+
+                    const closing = futDist < dist; // 近づいているか
+
+                    // 衝突判定
+                    if (futDist <= this.COLLISION_THRESH) {
+                        newCollisions.push({
+                            a: A.identityId, b: B.identityId,
+                            dist: futDist, currentDist: dist,
+                            timestamp: now,
+                            urgency: 1.0 - futDist / this.COLLISION_THRESH
+                        });
+                        newAvoidances.push({ id: A.identityId, threat: B.identityId, urgency: 0.9 });
+                        newAvoidances.push({ id: B.identityId, threat: A.identityId, urgency: 0.9 });
+                        this.alertIds.add(A.identityId);
+                        this.alertIds.add(B.identityId);
+                    }
+                    // 接近判定
+                    else if (dist <= this.APPROACH_THRESH && closing) {
+                        newApproaches.push({
+                            a: A.identityId, b: B.identityId,
+                            dist, closing, timestamp: now,
+                            urgency: 1.0 - dist / this.APPROACH_THRESH
+                        });
+                    }
+                }
+            }
+
+            // イベントログ更新（先頭除去で上限管理）
+            this._appendEvents(this.collisionEvents, newCollisions);
+            this._appendEvents(this.approachEvents,  newApproaches);
+            this._appendEvents(this.avoidanceNeeds,  newAvoidances);
+
+            // 緊張度更新（指数移動平均）
+            const newTension = newCollisions.length > 0
+                ? Math.min(1.0, newCollisions.reduce((s, e) => s + e.urgency, 0) / newCollisions.length)
+                : 0.0;
+            this.tensionLevel = 0.8 * this.tensionLevel + 0.2 * newTension;
+
+            // 解消したIDをalertから除去
+            if (newCollisions.length === 0 && newApproaches.length === 0) {
+                this.alertIds.clear();
+            }
+
+            return {
+                collisions:    newCollisions,
+                approaches:    newApproaches,
+                avoidances:    newAvoidances,
+                tensionLevel:  this.tensionLevel,
+                alertCount:    this.alertIds.size
+            };
+        }
+
+        // ──────────────────────────────────────────────────────
+        // 推論モジュール向けサマリ
+        // ──────────────────────────────────────────────────────
+        getInferenceContext() {
+            const recent = this.collisionEvents.slice(-5);
+            const danger = recent.filter(e => e.urgency > 0.7);
+            return {
+                tensionLevel:    this.tensionLevel,
+                dangerousEvents: danger.length,
+                alertIds:        [...this.alertIds],
+                recommendation:  this.tensionLevel > 0.6
+                    ? '空間的衝突リスク高：回避行動を推奨'
+                    : this.tensionLevel > 0.3
+                    ? '接近中：注意して観察'
+                    : '空間的に安定'
+            };
+        }
+
+        // ──────────────────────────────────────────────────────
+        // 内部ヘルパー
+        // ──────────────────────────────────────────────────────
+        _euclidean(A, B) {
+            return Math.sqrt((A.x-B.x)**2 + (A.y-B.y)**2 + ((A.z||0)-(B.z||0))**2);
+        }
+        _euclideanXYZ(A, B) {
+            return Math.sqrt((A.x-B.x)**2 + (A.y-B.y)**2 + (A.z-B.z)**2);
+        }
+        _futurePos(obj) {
+            const vel = obj.velocity || [0, 0, 0];
+            return {
+                x: (obj.x || 0) + vel[0] * this.PREDICT_DT,
+                y: (obj.y || 0) + vel[1] * this.PREDICT_DT,
+                z: (obj.z || 0) + vel[2] * this.PREDICT_DT,
+            };
+        }
+        _appendEvents(arr, newItems) {
+            arr.push(...newItems);
+            while (arr.length > this.MAX_EVENTS) arr.shift();
+        }
+
+        exportState() {
+            return {
+                tensionLevel:   this.tensionLevel,
+                collisionCount: this.collisionEvents.length,
+            };
+        }
+        importState(data) {
+            if (data && data.tensionLevel !== undefined) this.tensionLevel = data.tensionLevel;
+        }
+    }
+
+
+    // ═══════════════════════════════════════════════════════════
+    // ③ 因果推論強化モジュール（CausalInterventionReasoner）
+    //    CausalMemoryLayer を拡張した「疑似介入」推論
+    //    「もしAがなかったら？」を履歴検索から推定する
+    // ═══════════════════════════════════════════════════════════
+
+    class CausalInterventionReasoner {
+        constructor(causalMemoryLayer) {
+            this.cml         = causalMemoryLayer;  // 既存CausalMemoryLayer参照
+            this.history     = [];                 // 全介入履歴のローカルコピー
+            this.MAX_HISTORY = 200;
+
+            // 「もし〜なら」推論結果キャッシュ
+            this._cache      = new Map();
+            this._cacheSize  = 50;
+
+            console.log('[CIR] CausalInterventionReasoner v1.0 初期化');
+        }
+
+        // ──────────────────────────────────────────────────────
+        // 介入記録（CMLに渡しつつローカルにも保存）
+        // ──────────────────────────────────────────────────────
+        record(action, stateBefore, stateAfter) {
+            const entry = {
+                action,
+                stateBefore: this._snapshot(stateBefore),
+                stateAfter:  this._snapshot(stateAfter),
+                timestamp:   Date.now()
+            };
+            this.history.push(entry);
+            if (this.history.length > this.MAX_HISTORY) this.history.shift();
+
+            // 既存CMLにも記録
+            if (this.cml && typeof this.cml.recordIntervention === 'function') {
+                this.cml.recordIntervention(action, stateBefore, stateAfter);
+            }
+
+            return entry;
+        }
+
+        // ──────────────────────────────────────────────────────
+        // 疑似介入: 「もし action が無かったら outcome はどう変わっていたか」
+        // ──────────────────────────────────────────────────────
+        counterfactual(action, targetMetric) {
+            const cacheKey = `${action}::${targetMetric}`;
+            if (this._cache.has(cacheKey)) {
+                return this._cache.get(cacheKey);
+            }
+
+            // 1. action が実行された場面を収集
+            const withAction    = this.history.filter(e => e.action === action);
+            // 2. action が実行されなかった類似場面を収集
+            const withoutAction = this.history.filter(e => e.action !== action);
+
+            if (withAction.length === 0) {
+                return this._noData(action, '経験ゼロ');
+            }
+
+            // 3. 実際の結果（targetMetric の after 値）
+            const actualValues  = withAction
+                .map(e => this._extractMetric(e.stateAfter, targetMetric))
+                .filter(v => v !== null);
+
+            // 4. action なし場面の after 値（反事実の推定）
+            const cfValues      = withoutAction
+                .map(e => this._extractMetric(e.stateAfter, targetMetric))
+                .filter(v => v !== null);
+
+            const actualMean    = this._mean(actualValues);
+            const cfMean        = cfValues.length > 0 ? this._mean(cfValues) : null;
+
+            // 5. 差分から「Aがなければ」を推定
+            let statement;
+            let estimate;
+            if (cfMean !== null) {
+                const diff = actualMean - cfMean;
+                estimate   = cfMean;
+                statement  = diff > 0.05
+                    ? `もし「${action}」がなかったら、${targetMetric}は${(cfMean*100).toFixed(0)}%付近にとどまる可能性が高い（実際より${(diff*100).toFixed(0)}%低い）`
+                    : diff < -0.05
+                    ? `もし「${action}」がなかったら、${targetMetric}は${(cfMean*100).toFixed(0)}%付近にとどまる可能性が高い（実際より${(-diff*100).toFixed(0)}%高い）`
+                    : `「${action}」の有無による${targetMetric}への影響は小さいと推定される`;
+            } else {
+                estimate   = null;
+                statement  = `「${action}」が無かったケースのデータが不足しているため、推定は困難`;
+            }
+
+            const result = {
+                action,
+                targetMetric,
+                actualMean:   actualMean,
+                cfEstimate:   estimate,
+                sampleWith:   withAction.length,
+                sampleWithout: withoutAction.length,
+                confidence:   Math.min(1.0, (withAction.length + withoutAction.length) / 20),
+                statement,
+                timestamp:    Date.now()
+            };
+
+            // キャッシュ保存（上限管理）
+            this._cache.set(cacheKey, result);
+            if (this._cache.size > this._cacheSize) {
+                const first = this._cache.keys().next().value;
+                this._cache.delete(first);
+            }
+
+            return result;
+        }
+
+        // ──────────────────────────────────────────────────────
+        // 自然言語で「もし〜なら？」を問い合わせる
+        // ──────────────────────────────────────────────────────
+        ask(question) {
+            // 簡易パーサ: 「もし X がなかったら Y はどうなる？」
+            const m = question.match(/もし(.+?)(?:が|を)(?:なかったら|除いたら|変えたら)(.+?)(?:は|が)?(?:どうなる|変わる)?/);
+            if (m) {
+                const action = m[1].trim();
+                const metric = m[2].trim();
+                return this.counterfactual(action, metric);
+            }
+            // フォールバック: 直近の介入の反事実
+            if (this.history.length > 0) {
+                const last = this.history[this.history.length - 1];
+                return this.counterfactual(last.action, 'conceptCount');
+            }
+            return { statement: '因果データが不足しています' };
+        }
+
+        // ──────────────────────────────────────────────────────
+        // 内部ヘルパー
+        // ──────────────────────────────────────────────────────
+        _snapshot(state) {
+            if (!state) return {};
+            return {
+                conceptCount:   state.conceptCount  || (state.concepts && state.concepts.size) || 0,
+                emotionalState: state.emotionalState || state.joy || 0,
+                tension:        state.tension || 0,
+                timestamp:      Date.now()
+            };
+        }
+        _extractMetric(snap, metric) {
+            if (!snap) return null;
+            if (metric in snap) return typeof snap[metric] === 'number' ? snap[metric] : null;
+            return null;
+        }
+        _mean(arr) {
+            if (arr.length === 0) return 0;
+            return arr.reduce((a, b) => a + b, 0) / arr.length;
+        }
+        _noData(action, reason) {
+            return {
+                action, reason,
+                statement: `「${action}」の経験データなし（${reason}）`,
+                confidence: 0
+            };
+        }
+
+        exportState() {
+            return { historyLen: this.history.length, cacheLen: this._cache.size };
+        }
+        importState(data) { /* 履歴はセッション内のみ保持 */ }
+    }
+
+
+    // ═══════════════════════════════════════════════════════════
+    // ④ 決定論モード制御（DeterministicController）
+    //    デバッグ時に同一入力→同一出力を保証する
+    //    ランダム性をシード固定の疑似乱数で置換
+    // ═══════════════════════════════════════════════════════════
+
+    class DeterministicController {
+        constructor() {
+            this.enabled     = false;
+            this.seed        = 42;
+            this._state      = this.seed;
+
+            // 差し替え対象の元関数を保持
+            this._origRandom = Math.random;
+
+            console.log('[DET] DeterministicController v1.0 初期化');
+        }
+
+        // ──────────────────────────────────────────────────────
+        // 決定論モードON: Math.random をシード固定の LCG で置換
+        // ──────────────────────────────────────────────────────
+        enable(seed = 42) {
+            if (this.enabled) return;
+            this.seed    = seed;
+            this._state  = seed;
+            const self   = this;
+
+            Math.random = function() {
+                // LCG (Linear Congruential Generator)
+                self._state = (self._state * 1664525 + 1013904223) & 0xFFFFFFFF;
+                return (self._state >>> 0) / 0x100000000;
+            };
+
+            this.enabled = true;
+            console.log(`[DET] 決定論モードON (seed=${seed})`);
+            if (window.ao && typeof window.ao.addLog === 'function') {
+                window.ao.addLog(`[DET] 決定論モードON: seed=${seed} ランダム欠落無効化`);
+            }
+        }
+
+        // ──────────────────────────────────────────────────────
+        // 決定論モードOFF: Math.random を元に戻す
+        // ──────────────────────────────────────────────────────
+        disable() {
+            if (!this.enabled) return;
+            Math.random  = this._origRandom;
+            this.enabled = false;
+            console.log('[DET] 決定論モードOFF');
+            if (window.ao && typeof window.ao.addLog === 'function') {
+                window.ao.addLog('[DET] 決定論モードOFF: ランダム性回復');
+            }
+        }
+
+        toggle() {
+            this.enabled ? this.disable() : this.enable(this.seed);
+            return this.enabled;
+        }
+
+        // シードをリセット（同一実行を繰り返す場合）
+        reset() {
+            this._state = this.seed;
+        }
+
+        exportState() {
+            return { enabled: this.enabled, seed: this.seed };
+        }
+        importState(data) {
+            if (data && data.seed !== undefined) this.seed = data.seed;
+            if (data && data.enabled) this.enable(data.seed);
+        }
+    }
+
+
+    // ═══════════════════════════════════════════════════════════
+    // 初期化・接続ヘルパー
+    //   attachExtendedSystems(being) を _aoDoStartApp 後に呼び出す
+    // ═══════════════════════════════════════════════════════════
+
+    function attachExtendedSystems(being) {
+        if (!being) return;
+
+        // ① StatisticalTokenizer
+        if (!being.statisticalTokenizer) {
+            being.statisticalTokenizer = new StatisticalTokenizer();
+
+            // AdvancedLanguageInputDL の形態素解析にフックする
+            // morphologicalAnalysis のフォールバックをStatTokに差し替え
+            if (being.languageInputDL && typeof being.languageInputDL.simpleFallbackTokenize === 'function') {
+                const orig = being.languageInputDL.simpleFallbackTokenize.bind(being.languageInputDL);
+                being.languageInputDL.simpleFallbackTokenize = function(text) {
+                    try {
+                        const statTokens = being.statisticalTokenizer.tokenize(text);
+                        if (statTokens && statTokens.length > 0) {
+                            // StatTok形式 → kuromoji互換形式に変換
+                            return statTokens.map(t => ({
+                                surface_form:    t.surface,
+                                basic_form:      t.surface,
+                                pos:             '名詞',
+                                pos_detail_1:    t.method === 'stat' ? '統計' : '文字',
+                                conjugated_form: '*',
+                                _statScore:      t.score
+                            }));
+                        }
+                    } catch(e) {
+                        console.warn('[StatTok] フック失敗、フォールバック:', e);
+                    }
+                    return orig(text);
+                };
+                being.addLog && being.addLog('[StatTok] 形態素解析フックを設置');
+            }
+
+            // TokenClusterEngine に観測データをフィード
+            // （TokenClusterEngineのobserve後にStatTokにも学習させる）
+            if (being.languageOutputDL &&
+                being.languageOutputDL.languageAcquisition &&
+                being.languageOutputDL.languageAcquisition.tokenClusterEngine) {
+                const tce  = being.languageOutputDL.languageAcquisition.tokenClusterEngine;
+                const orig = tce.observe.bind(tce);
+                tce.observe = function(tokens) {
+                    orig(tokens);
+                    // StatTokも同じトークン列から学習
+                    const text = tokens
+                        .map(t => (typeof t === 'string' ? t : (t.surface || t.surface_form || '')))
+                        .join('');
+                    if (text.length > 0) being.statisticalTokenizer._feed(text);
+                };
+            }
+
+            being.addLog && being.addLog('[StatTok] StatisticalTokenizer v1.0 接続完了');
+        }
+
+        // ② SpatialInteractionModel
+        if (!being.spatialInteractionModel) {
+            // SpatialStateField は visSystem 内か being 直下にある
+            const ssf = (being.visSystem && being.visSystem.spatial) || being.spatialStateField || null;
+            being.spatialInteractionModel = new SpatialInteractionModel(ssf);
+
+            // 500msごとに自律更新
+            setInterval(() => {
+                try {
+                    const result = being.spatialInteractionModel.update();
+                    if (!result) return;
+
+                    // 衝突があれば推論レイヤーに通知
+                    if (result.collisions.length > 0 || result.tensionLevel > 0.4) {
+                        const ctx = being.spatialInteractionModel.getInferenceContext();
+                        // being.rawState に tension として反映
+                        if (being.rawState) {
+                            being.rawState.tension = Math.max(
+                                being.rawState.tension || 0,
+                                ctx.tensionLevel * 0.5
+                            );
+                        }
+                        being.addLog && being.addLog(
+                            `[SIM] ${ctx.recommendation} (緊張度:${(ctx.tensionLevel*100).toFixed(0)}%)`
+                        );
+                    }
+
+                    // UI更新
+                    const el = document.getElementById('simStatus');
+                    if (el) {
+                        el.textContent =
+                            `衝突:${result.collisions.length} 接近:${result.approaches.length} ` +
+                            `緊張:${(result.tensionLevel*100).toFixed(0)}%`;
+                    }
+                } catch(e) {
+                    // 静かに失敗
+                }
+            }, 500);
+
+            being.addLog && being.addLog('[SIM] SpatialInteractionModel v1.0 接続完了');
+        }
+
+        // ③ CausalInterventionReasoner
+        if (!being.causalInterventionReasoner) {
+            // 既存CausalMemoryLayerへの参照を探す
+            const cml = being.causalMemoryLayer || null;
+            being.causalInterventionReasoner = new CausalInterventionReasoner(cml);
+
+            // チャット入力での「もし〜なら？」クエリをインターセプト
+            // → process() より前のフック点として being.onUserInput を使う
+            const origProcess = being.process && being.process.bind(being);
+            if (origProcess) {
+                being.process = async function(text, ...args) {
+                    // 介入クエリ検出
+                    if (text && /もし.+(なかったら|除いたら|変えたら)/.test(text)) {
+                        const result = being.causalInterventionReasoner.ask(text);
+                        if (result && result.statement) {
+                            being.addLog && being.addLog(`[CIR] 介入推論: ${result.statement}`);
+                        }
+                    }
+                    // 通常処理継続
+                    return origProcess(text, ...args);
+                };
+            }
+
+            // Ao のターン終了時に介入を自動記録
+            // being.rawState の変化を記録するパッシブ観測
+            let _prevRawState = null;
+            setInterval(() => {
+                try {
+                    if (!being.rawState) return;
+                    if (_prevRawState) {
+                        const last = being.lastUserInput || 'auto_tick';
+                        being.causalInterventionReasoner.record(
+                            last,
+                            _prevRawState,
+                            { ...being.rawState }
+                        );
+                    }
+                    _prevRawState = { ...being.rawState };
+                } catch(e) {}
+            }, 5000);
+
+            being.addLog && being.addLog('[CIR] CausalInterventionReasoner v1.0 接続完了');
+        }
+
+        // ④ DeterministicController
+        if (!being.deterministicController) {
+            being.deterministicController = new DeterministicController();
+            window._aoDeterministicCtrl   = being.deterministicController;
+
+            // グローバルヘルパー（コンソールから操作可能）
+            window.aoEnableDeterministic  = (seed) => being.deterministicController.enable(seed);
+            window.aoDisableDeterministic = ()     => being.deterministicController.disable();
+            window.aoToggleDeterministic  = ()     => being.deterministicController.toggle();
+
+            being.addLog && being.addLog('[DET] DeterministicController v1.0 接続完了');
+            being.addLog && being.addLog('[DET] コンソール: aoEnableDeterministic(42) / aoDisableDeterministic()');
+        }
+
+        // ─── SaveManager に拡張状態をフック ───
+        if (being.saveManager) {
+            const origExport = being.saveManager.exportState?.bind(being.saveManager);
+            if (origExport) {
+                being.saveManager.exportState = function() {
+                    const state = origExport();
+                    try {
+                        if (being.statisticalTokenizer)
+                            state.statisticalTokenizer = being.statisticalTokenizer.exportState();
+                        if (being.spatialInteractionModel)
+                            state.spatialInteractionModel = being.spatialInteractionModel.exportState();
+                        if (being.causalInterventionReasoner)
+                            state.causalInterventionReasoner = being.causalInterventionReasoner.exportState();
+                        if (being.deterministicController)
+                            state.deterministicController = being.deterministicController.exportState();
+                    } catch(e) {}
+                    return state;
+                };
+            }
+
+            const origImport = being.saveManager.importState?.bind(being.saveManager);
+            if (origImport) {
+                being.saveManager.importState = function(data) {
+                    origImport(data);
+                    try {
+                        if (data.statisticalTokenizer && being.statisticalTokenizer)
+                            being.statisticalTokenizer.importState(data.statisticalTokenizer);
+                        if (data.spatialInteractionModel && being.spatialInteractionModel)
+                            being.spatialInteractionModel.importState(data.spatialInteractionModel);
+                        if (data.deterministicController && being.deterministicController)
+                            being.deterministicController.importState(data.deterministicController);
+                    } catch(e) {}
+                };
+            }
+        }
+
+        // ─── UIパネル注入（左パネルに追加）───
+        _injectExtendedUI();
+
+        console.log('[EXT] attachExtendedSystems 完了');
+    }
+
+    // ─── UIパネルを左パネルに動的追加 ───────────────────────────
+    function _injectExtendedUI() {
+        const leftPanel = document.querySelector('.left-panel');
+        if (!leftPanel) return;
+
+        const panelHtml = `
+        <div class="panel" id="extSystemsPanel">
+            <div class="panel-title" onclick="(function(){
+                const b=document.getElementById('extSystemsBody');
+                b.style.display=b.style.display==='none'?'block':'none';
+            })()" style="cursor:pointer;">
+                ⚙️ 拡張システム (v26.5)
+                <span style="float:right;font-size:0.65rem;color:#6b7280;">▼</span>
+            </div>
+            <div id="extSystemsBody" style="display:block;">
+
+                <!-- ① StatTok -->
+                <div style="margin-bottom:0.6rem;">
+                    <div style="font-size:0.65rem;color:#60a5fa;margin-bottom:0.2rem;">
+                        ① 統計トークナイザ
+                    </div>
+                    <div id="statTokStatus" style="font-size:0.6rem;color:#9ca3af;">
+                        初期化待ち
+                    </div>
+                </div>
+
+                <!-- ② SIM -->
+                <div style="margin-bottom:0.6rem;">
+                    <div style="font-size:0.65rem;color:#f97316;margin-bottom:0.2rem;">
+                        ② 空間相互作用
+                    </div>
+                    <div id="simStatus" style="font-size:0.6rem;color:#9ca3af;">
+                        待機中
+                    </div>
+                </div>
+
+                <!-- ③ CIR -->
+                <div style="margin-bottom:0.6rem;">
+                    <div style="font-size:0.65rem;color:#10b981;margin-bottom:0.2rem;">
+                        ③ 因果介入推論
+                    </div>
+                    <div id="cirStatus" style="font-size:0.6rem;color:#9ca3af;">
+                        待機中（「もし〜なら？」と入力）
+                    </div>
+                </div>
+
+                <!-- ④ DET -->
+                <div>
+                    <div style="font-size:0.65rem;color:#fbbf24;margin-bottom:0.3rem;">
+                        ④ 決定論モード
+                    </div>
+                    <button onclick="(function(){
+                        const ctrl = window._aoDeterministicCtrl;
+                        if(!ctrl){ return; }
+                        const on = ctrl.toggle();
+                        document.getElementById('detModeBtn').textContent = on ? '🔒 ON (seed=42)' : '🎲 OFF';
+                        document.getElementById('detModeBtn').style.background = on
+                            ? 'rgba(251,191,36,0.3)' : 'rgba(139,92,246,0.2)';
+                    })()"
+                    id="detModeBtn"
+                    style="width:100%;padding:0.4rem;background:rgba(139,92,246,0.2);
+                           border:1px solid rgba(139,92,246,0.3);color:#a78bfa;
+                           border-radius:0.25rem;cursor:pointer;font-size:0.75rem;">
+                        🎲 OFF
+                    </button>
+                </div>
+            </div>
+        </div>
+        `;
+
+        // 最初のパネルの前に挿入
+        const firstPanel = leftPanel.querySelector('.panel');
+        if (firstPanel) {
+            firstPanel.insertAdjacentHTML('beforebegin', panelHtml);
+        } else {
+            leftPanel.insertAdjacentHTML('afterbegin', panelHtml);
+        }
+    }
+
+    // ─── StatTokステータスを定期更新 ──────────────────────────────
+    setInterval(() => {
+        const being = window.ao;
+        if (!being) return;
+        try {
+            // StatTok状態
+            const st = being.statisticalTokenizer;
+            const el = document.getElementById('statTokStatus');
+            if (st && el) {
+                el.textContent =
+                    `語彙:${st.vocab.size}語 コーパス:${st._corpus.length}文 ユニグラム:${st.unigramFreq.size}文字`;
+            }
+
+            // CIR状態
+            const cir = being.causalInterventionReasoner;
+            const ce  = document.getElementById('cirStatus');
+            if (cir && ce) {
+                ce.textContent = `記録:${cir.history.length}件 キャッシュ:${cir._cache.size}件`;
+            }
+        } catch(e) {}
+    }, 3000);
+
+    // ─── グローバル登録 & being が起動後にフック ─────────────────
+    window.StatisticalTokenizer       = StatisticalTokenizer;
+    window.SpatialInteractionModel    = SpatialInteractionModel;
+    window.CausalInterventionReasoner = CausalInterventionReasoner;
+    window.DeterministicController    = DeterministicController;
+    window.attachExtendedSystems      = attachExtendedSystems;
+
+    // being が初期化された後にシステムを接続
+    // _aoDoStartApp は window.ao を設定してから終わるため、
+    // MutationObserver ではなくポーリングで待機
+    (function pollForBeing() {
+        if (window.ao) {
+            // 少し遅延して他の attach 系が完了するのを待つ
+            setTimeout(() => {
+                try {
+                    attachExtendedSystems(window.ao);
+                    console.log('[EXT] Ao 拡張システム アタッチ完了');
+                } catch(e) {
+                    console.error('[EXT] attachExtendedSystems error:', e);
+                }
+            }, 2000);
+        } else {
+            setTimeout(pollForBeing, 500);
+        }
+    })();
+
+    </script>
+
+    <!-- ======================================================
+         Ao v26.5.0 ミッシングピース実装
+         A: HierarchicalChunker（再帰的階層チャンキング）
+         B: PhysicalCausalBridge（空間×因果パイプライン）
+         C: UncertaintyEstimator（確信度メタ認知）
+    ====================================================== -->
+    <script>
+    'use strict';
+
+    // ═══════════════════════════════════════════════════════════
+    // A. 階層的チャンキング（HierarchicalChunker）
+    //    「文字 → 語 → 句 → 文脈単位」を同一アルゴリズムで再帰的に発見
+    //    StatisticalTokenizer の上位レイヤーとして動作
+    // ═══════════════════════════════════════════════════════════
+
+    class HierarchicalChunker {
+        /**
+         * @param {StatisticalTokenizer} statTok  L0（文字レベル）トークナイザ
+         */
+        constructor(statTok) {
+            this.statTok = statTok;
+
+            // ─── 階層ごとの統計表 ───
+            // layers[k] = { freq: Map<chunk→int>, bigramFreq: Map<"A|B"→int>, total: int }
+            this.layers  = [
+                null,                      // L0: statTok が管理
+                this._newLayer(),          // L1: 語レベル
+                this._newLayer(),          // L2: 句レベル
+                this._newLayer(),          // L3: 文脈（発話）レベル
+            ];
+
+            // ─── 各レイヤーの採用チャンク ───
+            this.vocabs  = [null, new Set(), new Set(), new Set()];
+            this.scores  = [null, new Map(), new Map(), new Map()];
+
+            // ─── パラメータ ───
+            this.MIN_FREQ_L  = [0, 2, 2, 1];   // 各レイヤーの最小頻度
+            this.MAX_VOCAB_L = [0, 300, 150, 60];
+            this.THRESH_L    = [0, 0.45, 0.40, 0.35];
+
+            // ─── 学習カウンタ ───
+            this._observeCount = 0;
+            this._rebuildEvery = 20;
+
+            console.log('[HCH] HierarchicalChunker v1.0 初期化（L1=語 L2=句 L3=文脈）');
+        }
+
+        // ──────────────────────────────────────────────────────
+        // 公開API: 入力テキストを階層的に分割し、各レイヤーを返す
+        // 戻り値: { L0: [{surface,score}], L1: [...], L2: [...], L3: [...] }
+        // ──────────────────────────────────────────────────────
+        chunk(text) {
+            // L0: 文字→語（StatTokに委譲）
+            const L0 = this.statTok ? this.statTok.tokenize(text) : [...text].map(c => ({ surface: c, score: 0 }));
+
+            // L0トークン列をL1に観測させて統計更新
+            this._observe(1, L0.map(t => t.surface));
+
+            // L1: 語→句（L0出力を素材にセグメント）
+            const L1 = this._segment(1, L0.map(t => t.surface));
+            this._observe(2, L1.map(t => t.surface));
+
+            // L2: 句→文脈単位
+            const L2 = this._segment(2, L1.map(t => t.surface));
+            this._observe(3, L2.map(t => t.surface));
+
+            // L3: 文脈→発話単位（最上位）
+            const L3 = this._segment(3, L2.map(t => t.surface));
+
+            this._observeCount++;
+            if (this._observeCount % this._rebuildEvery === 0) {
+                this._rebuildAll();
+            }
+
+            return { L0, L1, L2, L3 };
+        }
+
+        // 最も安定した単位（最高レイヤーの非分解トークン）を返す
+        getStableUnits(text) {
+            const h = this.chunk(text);
+            // L3が1トークンなら全体が1まとまり、複数なら意味的な境界がある
+            return h.L3.length > 0 ? h.L3 : h.L2;
+        }
+
+        // ──────────────────────────────────────────────────────
+        // 内部: 観測（隣接ペアの共起カウント）
+        // ──────────────────────────────────────────────────────
+        _observe(layerIdx, units) {
+            if (layerIdx < 1 || layerIdx > 3) return;
+            const layer = this.layers[layerIdx];
+
+            for (const u of units) {
+                layer.freq.set(u, (layer.freq.get(u) || 0) + 1);
+                layer.total++;
+            }
+            for (let i = 0; i < units.length - 1; i++) {
+                const key = `${units[i]}|||${units[i+1]}`;
+                layer.bigramFreq.set(key, (layer.bigramFreq.get(key) || 0) + 1);
+            }
+        }
+
+        // ──────────────────────────────────────────────────────
+        // 内部: 語彙再構築（全レイヤー）
+        // ──────────────────────────────────────────────────────
+        _rebuildAll() {
+            for (let li = 1; li <= 3; li++) {
+                this._rebuildLayer(li);
+            }
+        }
+
+        _rebuildLayer(li) {
+            const layer   = this.layers[li];
+            const minFreq = this.MIN_FREQ_L[li];
+            const maxV    = this.MAX_VOCAB_L[li];
+            const thresh  = this.THRESH_L[li];
+            const total   = Math.max(layer.total, 1);
+
+            const candidates = [];
+
+            for (const [key, cnt] of layer.bigramFreq) {
+                if (cnt < minFreq) continue;
+                const [a, b] = key.split('|||');
+                if (!a || !b) continue;
+
+                const pA  = (layer.freq.get(a) || 1) / total;
+                const pB  = (layer.freq.get(b) || 1) / total;
+                const pAB = cnt / total;
+                const pmi = pAB > 0 && pA > 0 && pB > 0
+                    ? Math.log2(pAB / (pA * pB))
+                    : -99;
+
+                // 文脈安定性（直接計算：同じキーが出るほど安定）
+                const stability = Math.min(1.0, cnt / 10);
+
+                const score = Math.max(0, Math.min(1,
+                    (pmi / 8) * 0.6 + stability * 0.4
+                ));
+
+                candidates.push({ chunk: `${a}${b}`, score, freq: cnt });
+            }
+
+            candidates.sort((a, b) => b.score - a.score);
+
+            this.vocabs[li].clear();
+            this.scores[li].clear();
+            for (const c of candidates.slice(0, maxV)) {
+                if (c.score >= thresh || c.freq >= 4) {
+                    this.vocabs[li].add(c.chunk);
+                    this.scores[li].set(c.chunk, c.score);
+                }
+            }
+        }
+
+        // ──────────────────────────────────────────────────────
+        // 内部: セグメンテーション（最長一致、対象レイヤー）
+        // ──────────────────────────────────────────────────────
+        _segment(li, units) {
+            if (units.length === 0) return [];
+            const vocab  = this.vocabs[li];
+            const scores = this.scores[li];
+            const result = [];
+            let   i      = 0;
+
+            while (i < units.length) {
+                let matched = null;
+                let mScore  = 0;
+
+                // 最大4ユニットまでの結合を試みる
+                for (let len = Math.min(4, units.length - i); len >= 2; len--) {
+                    const candidate = units.slice(i, i + len).join('');
+                    if (vocab.has(candidate)) {
+                        matched = candidate;
+                        mScore  = scores.get(candidate) || 0.5;
+                        i      += len;
+                        break;
+                    }
+                }
+
+                if (matched) {
+                    result.push({ surface: matched, score: mScore, layer: li, method: 'chunk' });
+                } else {
+                    result.push({ surface: units[i], score: 0, layer: li, method: 'unit' });
+                    i++;
+                }
+            }
+
+            return result;
+        }
+
+        _newLayer() {
+            return { freq: new Map(), bigramFreq: new Map(), total: 0 };
+        }
+
+        exportState() {
+            return {
+                observeCount: this._observeCount,
+                vocabSizes:   [0, this.vocabs[1].size, this.vocabs[2].size, this.vocabs[3].size],
+            };
+        }
+    }
+
+
+    // ═══════════════════════════════════════════════════════════
+    // B. 空間×因果パイプライン（PhysicalCausalBridge）
+    //    衝突イベント → CausalInterventionReasoner へ自動送出
+    //    「物理的実感を伴う推論」の基礎
+    // ═══════════════════════════════════════════════════════════
+
+    class PhysicalCausalBridge {
+        /**
+         * @param {SpatialInteractionModel}    sim  空間相互作用モデル
+         * @param {CausalInterventionReasoner} cir  因果介入推論器
+         */
+        constructor(sim, cir) {
+            this.sim         = sim;
+            this.cir         = cir;
+
+            // ─── 衝突→因果の記録履歴 ───
+            this.bridgeLog   = [];
+            this.MAX_LOG     = 100;
+
+            // ─── 衝突前後の空間スナップショット ───
+            this._snapBefore = null;
+
+            // ─── 因果ラベル生成カウンタ ───
+            this._eventCount = 0;
+
+            console.log('[PCB] PhysicalCausalBridge v1.0 初期化');
+        }
+
+        // ──────────────────────────────────────────────────────
+        // SpatialInteractionModel の update() 結果を受け取り、
+        // 衝突イベントがあれば CIR に自動記録する
+        // ──────────────────────────────────────────────────────
+        process(simResult, spatialField) {
+            if (!simResult || !this.cir) return;
+
+            const { collisions, approaches, tensionLevel } = simResult;
+
+            // 衝突前スナップショット（なければ現状を初期化）
+            if (!this._snapBefore) {
+                this._snapBefore = this._snapField(spatialField);
+                return;
+            }
+
+            // 衝突があった場合のみ因果記録
+            if (collisions && collisions.length > 0) {
+                const snapAfter = this._snapField(spatialField);
+
+                for (const col of collisions) {
+                    const actionLabel = `空間衝突[${col.a}↔${col.b}]`;
+                    const stateBefore = {
+                        ...this._snapBefore,
+                        conceptCount:   this._snapBefore.objectCount || 0,
+                        emotionalState: tensionLevel < 0.4 ? 'calm' : 'tense',
+                        tension:        tensionLevel,
+                        collisionDist:  col.currentDist,
+                    };
+                    const stateAfter = {
+                        ...snapAfter,
+                        conceptCount:   snapAfter.objectCount || 0,
+                        emotionalState: tensionLevel > 0.6 ? 'alarmed' : 'tense',
+                        tension:        tensionLevel,
+                        collisionDist:  col.dist,
+                        urgency:        col.urgency,
+                    };
+
+                    // CIR に物理因果として記録
+                    this.cir.record(actionLabel, stateBefore, stateAfter);
+
+                    // ブリッジログ
+                    this.bridgeLog.push({
+                        action:    actionLabel,
+                        urgency:   col.urgency,
+                        timestamp: col.timestamp,
+                        // 「衝突によって何が変わったか」の差分
+                        delta: {
+                            tension:  stateAfter.tension  - stateBefore.tension,
+                            objects:  stateAfter.objectCount - stateBefore.objectCount,
+                        }
+                    });
+
+                    if (this.bridgeLog.length > this.MAX_LOG) this.bridgeLog.shift();
+                    this._eventCount++;
+                }
+
+                // スナップショット更新
+                this._snapBefore = snapAfter;
+            }
+
+            // 接近中イベントも軽く記録（衝突の予兆として）
+            if (approaches && approaches.length > 0 && approaches[0].urgency > 0.7) {
+                const approachLabel = `空間接近[${approaches[0].a}↔${approaches[0].b}]`;
+                // CIR のキャッシュをクリアして次の counterfactual を新鮮に計算させる
+                if (this.cir._cache) this.cir._cache.delete(`${approachLabel}::tension`);
+            }
+        }
+
+        // 「もし衝突がなかったら？」を問い合わせるショートカット
+        askWhatIfNoCollision(a, b) {
+            const action = `空間衝突[${a}↔${b}]`;
+            return this.cir ? this.cir.counterfactual(action, 'tension') : null;
+        }
+
+        // ブリッジ統計サマリ
+        summary() {
+            return {
+                totalCollisionEvents: this._eventCount,
+                recentLog:            this.bridgeLog.slice(-5),
+                bridgeActive:         !!(this.sim && this.cir),
+            };
+        }
+
+        _snapField(field) {
+            if (!field) return { objectCount: 0 };
+            const all = field.getAll ? field.getAll() : [];
+            return {
+                objectCount: all.length,
+                movingCount: all.filter(o => o.isMoving).length,
+                stableCount: all.filter(o => o.isStable).length,
+                avgVelocity: all.length > 0
+                    ? all.reduce((s, o) => {
+                          const v = o.velocity || [0,0,0];
+                          return s + Math.sqrt(v[0]**2+v[1]**2+v[2]**2);
+                      }, 0) / all.length
+                    : 0,
+            };
+        }
+
+        exportState() {
+            return { eventCount: this._eventCount, logLen: this.bridgeLog.length };
+        }
+    }
+
+
+    // ═══════════════════════════════════════════════════════════
+    // C. 確信度推定器（UncertaintyEstimator）
+    //    全出力に「確信度スコア」と「エントロピー」を付与
+    //    「不明（高エントロピー）」を認識して学習必要性を自覚する
+    // ═══════════════════════════════════════════════════════════
+
+    class UncertaintyEstimator {
+        constructor() {
+            // ─── エントロピー履歴 ───
+            this.history     = [];        // { source, entropy, confidence, timestamp }
+            this.MAX_HIST    = 200;
+
+            // ─── 移動平均（全体エントロピー） ───
+            this._avgEntropy = 0.5;
+            this._alpha      = 0.05;     // EMA係数
+
+            // ─── 閾値 ───
+            this.HIGH_ENT_THRESH = 0.75; // これ以上→「不明」フラグ
+            this.LOW_ENT_THRESH  = 0.25; // これ以下→「確信」フラグ
+
+            // ─── 不明イベントカウンタ（学習需要の指標） ───
+            this.unknownCount = 0;
+            this.knownCount   = 0;
+
+            console.log('[UE] UncertaintyEstimator v1.0 初期化');
+        }
+
+        // ──────────────────────────────────────────────────────
+        // 主API: トークン列の不確実性を推定
+        // 戻り値: { confidence, entropy, isUnknown, isCertain, detail }
+        // ──────────────────────────────────────────────────────
+        estimateFromTokens(tokens) {
+            if (!tokens || tokens.length === 0) {
+                return this._result(1.0, 0.0, 'empty');
+            }
+
+            // スコアのエントロピー（スコアが均一 → 高エントロピー）
+            const scoreEnt = this._scoreEntropy(tokens.map(t => t.score || 0));
+
+            // 未知トークン率（method === 'char' はStatTokが分解できなかった文字）
+            const unknownRate = tokens.filter(t => t.method === 'char').length / tokens.length;
+
+            // 階層到達度（chunkがあれば安定）
+            const chunkRate   = tokens.filter(t => t.method === 'chunk').length / tokens.length;
+
+            // 複合エントロピー
+            const entropy = Math.min(1.0,
+                scoreEnt    * 0.45 +
+                unknownRate * 0.40 +
+                (1 - chunkRate) * 0.15
+            );
+
+            return this._record('tokens', entropy);
+        }
+
+        // 自然言語テキスト単体の不確実性推定（StatTok連携版）
+        estimateFromText(text, statTok) {
+            if (!text || text.length === 0) return this._result(1.0, 0.0, 'empty');
+
+            if (statTok && statTok.vocab.size > 0) {
+                const tokens = statTok.tokenize(text);
+                return this.estimateFromTokens(tokens);
+            }
+
+            // StatTok未学習時は文字多様性でエントロピー計算
+            const charFreq = new Map();
+            for (const c of text) charFreq.set(c, (charFreq.get(c) || 0) + 1);
+            const entropy = this._shannonEntropy([...charFreq.values()], text.length) / Math.log2(Math.max(charFreq.size, 2));
+            return this._record('text_raw', Math.min(1.0, entropy));
+        }
+
+        // 推論結果（概念スコア配列など）の不確実性推定
+        estimateFromScores(scoreArray) {
+            if (!scoreArray || scoreArray.length === 0) return this._result(0.5, 0.5, 'empty');
+            const entropy = this._scoreEntropy(scoreArray);
+            return this._record('scores', entropy);
+        }
+
+        // CIR の counterfactual 結果の確信度を補正
+        enrichCounterfactual(cfResult) {
+            if (!cfResult) return cfResult;
+            const baseConf = cfResult.confidence || 0;
+            // サンプル数が少ないほどエントロピーが高い
+            const sampleFactor = Math.min(1.0, (cfResult.sampleWith || 0) / 10);
+            const entropy      = 1.0 - sampleFactor * baseConf;
+            const ueResult     = this._record('causal', entropy);
+            return {
+                ...cfResult,
+                uncertainty:  ueResult,
+                enrichedConf: ueResult.confidence,
+            };
+        }
+
+        // ──────────────────────────────────────────────────────
+        // 内部ヘルパー
+        // ──────────────────────────────────────────────────────
+        _scoreEntropy(scores) {
+            if (scores.length === 0) return 1.0;
+            const total = scores.reduce((a, b) => a + Math.abs(b), 0);
+            if (total === 0) return 1.0;
+            let H = 0;
+            for (const s of scores) {
+                const p = Math.abs(s) / total;
+                if (p > 0) H -= p * Math.log2(p);
+            }
+            const maxH = Math.log2(Math.max(scores.length, 2));
+            return maxH > 0 ? Math.min(1.0, H / maxH) : 0;
+        }
+
+        _shannonEntropy(counts, total) {
+            let H = 0;
+            for (const c of counts) {
+                const p = c / total;
+                if (p > 0) H -= p * Math.log2(p);
+            }
+            return H;
+        }
+
+        _record(source, entropy) {
+            // EMA更新
+            this._avgEntropy = (1 - this._alpha) * this._avgEntropy + this._alpha * entropy;
+
+            const confidence  = 1.0 - entropy;
+            const isUnknown   = entropy >= this.HIGH_ENT_THRESH;
+            const isCertain   = entropy <= this.LOW_ENT_THRESH;
+
+            if (isUnknown) this.unknownCount++;
+            else           this.knownCount++;
+
+            const entry = { source, entropy, confidence, isUnknown, isCertain, timestamp: Date.now() };
+            this.history.push(entry);
+            if (this.history.length > this.MAX_HIST) this.history.shift();
+
+            return this._result(confidence, entropy, source, isUnknown, isCertain);
+        }
+
+        _result(confidence, entropy, source, isUnknown = false, isCertain = false) {
+            return {
+                confidence,    // 0〜1：高いほど確信
+                entropy,       // 0〜1：高いほど不明
+                isUnknown,     // true = 学習必要フラグ
+                isCertain,     // true = 確信フラグ
+                avgEntropy:    this._avgEntropy,
+                unknownCount:  this.unknownCount,
+                knownCount:    this.knownCount,
+                source,
+                label: isUnknown ? '不明（要学習）' : isCertain ? '確信' : '推定中',
+            };
+        }
+
+        // UI向け：直近N件の平均確信度
+        recentConfidence(n = 20) {
+            const recent = this.history.slice(-n);
+            if (recent.length === 0) return 0.5;
+            return recent.reduce((s, e) => s + e.confidence, 0) / recent.length;
+        }
+
+        exportState() {
+            return {
+                avgEntropy:   this._avgEntropy,
+                unknownCount: this.unknownCount,
+                knownCount:   this.knownCount,
+            };
+        }
+        importState(data) {
+            if (!data) return;
+            if (data.avgEntropy   !== undefined) this._avgEntropy  = data.avgEntropy;
+            if (data.unknownCount !== undefined) this.unknownCount = data.unknownCount;
+            if (data.knownCount   !== undefined) this.knownCount   = data.knownCount;
+        }
+    }
+
+
+    // ═══════════════════════════════════════════════════════════
+    // 統合接続：attachMissingPieces(being)
+    //   attachExtendedSystems() 完了後に呼び出す
+    // ═══════════════════════════════════════════════════════════
+
+    function attachMissingPieces(being) {
+        if (!being) return;
+
+        // ─── A. HierarchicalChunker ─────────────────────────────
+        if (!being.hierarchicalChunker) {
+            const st = being.statisticalTokenizer || null;
+            being.hierarchicalChunker = new HierarchicalChunker(st);
+
+            // StatTok の tokenize を拡張: 階層情報を付加して返す
+            if (being.statisticalTokenizer) {
+                const origTokenize = being.statisticalTokenizer.tokenize.bind(being.statisticalTokenizer);
+                being.statisticalTokenizer.tokenize = function(text) {
+                    const L0 = origTokenize(text);
+                    try {
+                        // 階層チャンキング実行（バックグラウンド学習）
+                        const hier = being.hierarchicalChunker.chunk(text);
+                        // L0 に階層情報を注釈
+                        for (const t of L0) {
+                            const inL1 = hier.L1.some(u => u.surface.includes(t.surface));
+                            const inL2 = hier.L2.some(u => u.surface.includes(t.surface));
+                            t.hierLevel = inL2 ? 2 : inL1 ? 1 : 0;
+                        }
+                    } catch(e) { /* silent */ }
+                    return L0;
+                };
+            }
+
+            // AdvancedLanguageInputDL のパース後に階層情報を追記
+            if (being.languageInputDL) {
+                const origParse = being.languageInputDL.parse.bind(being.languageInputDL);
+                being.languageInputDL.parse = async function(text) {
+                    const result = await origParse(text);
+                    try {
+                        const stableUnits = being.hierarchicalChunker.getStableUnits(text);
+                        result.hierarchicalChunks = stableUnits;
+                        result.meta = result.meta || {};
+                        result.meta.hierarchicalChunkCount = stableUnits.length;
+                        result.meta.chunkLevels = {
+                            L1: being.hierarchicalChunker.vocabs[1].size,
+                            L2: being.hierarchicalChunker.vocabs[2].size,
+                            L3: being.hierarchicalChunker.vocabs[3].size,
+                        };
+                    } catch(e) { /* silent */ }
+                    return result;
+                };
+            }
+
+            being.addLog && being.addLog('[HCH] HierarchicalChunker v1.0 接続完了（L1=語/L2=句/L3=文脈）');
+        }
+
+        // ─── B. PhysicalCausalBridge ────────────────────────────
+        if (!being.physicalCausalBridge) {
+            const sim = being.spatialInteractionModel || null;
+            const cir = being.causalInterventionReasoner || null;
+            being.physicalCausalBridge = new PhysicalCausalBridge(sim, cir);
+
+            // SpatialInteractionModel の update() をラップして自動ブリッジ
+            if (sim) {
+                const origUpdate = sim.update.bind(sim);
+                sim.update = function() {
+                    const result = origUpdate();
+                    try {
+                        const ssf = sim.ssf;
+                        being.physicalCausalBridge.process(result, ssf);
+
+                        // 衝突があればAoのログに「もし衝突がなかったら？」を追加
+                        if (result && result.collisions && result.collisions.length > 0) {
+                            const col = result.collisions[0];
+                            const cf  = being.physicalCausalBridge.askWhatIfNoCollision(col.a, col.b);
+                            if (cf && cf.statement) {
+                                being.addLog && being.addLog(`[PCB] ${cf.statement}`);
+                                // 確信度付きで内部ログに格納
+                                const ue = being.uncertaintyEstimator;
+                                if (ue) {
+                                    const enriched = ue.enrichCounterfactual(cf);
+                                    being.addLog && being.addLog(
+                                        `[PCB-UE] 推論確信度: ${(enriched.enrichedConf*100).toFixed(0)}% ` +
+                                        `(エントロピー: ${(enriched.uncertainty.entropy*100).toFixed(0)}%)`
+                                    );
+                                }
+                            }
+                        }
+                    } catch(e) { /* silent */ }
+                    return result;
+                };
+            }
+
+            window._aoPCB = being.physicalCausalBridge;
+            being.addLog && being.addLog('[PCB] PhysicalCausalBridge v1.0 接続完了（空間×因果パイプライン）');
+        }
+
+        // ─── C. UncertaintyEstimator ────────────────────────────
+        if (!being.uncertaintyEstimator) {
+            being.uncertaintyEstimator = new UncertaintyEstimator();
+            const ue = being.uncertaintyEstimator;
+
+            // StatTok の tokenize にUEフック（初めて見る文字列を検出）
+            if (being.statisticalTokenizer) {
+                const origTok = being.statisticalTokenizer.tokenize.bind(being.statisticalTokenizer);
+                being.statisticalTokenizer.tokenize = function(text) {
+                    const tokens = origTok(text);
+                    const ueResult = ue.estimateFromTokens(tokens);
+
+                    // 「不明」フラグが立ったら未解釈プールに送る
+                    if (ueResult.isUnknown && being.languageInputDL && being.languageInputDL.pendingTerms) {
+                        for (const t of tokens.filter(tk => tk.method === 'char')) {
+                            being.languageInputDL.pendingTerms.set(t.surface,
+                                (being.languageInputDL.pendingTerms.get(t.surface) || 0) + 1);
+                        }
+                        being.addLog && being.addLog(
+                            `[UE] 未知入力検出 entropy=${(ueResult.entropy*100).toFixed(0)}% → 未解釈プールへ`
+                        );
+                    }
+
+                    // tokens にUE情報を付加
+                    tokens._ue = ueResult;
+                    return tokens;
+                };
+            }
+
+            // CIRのcounterfactual をラップしてUEで確信度補正
+            if (being.causalInterventionReasoner) {
+                const cir    = being.causalInterventionReasoner;
+                const origCF = cir.counterfactual.bind(cir);
+                cir.counterfactual = function(action, metric) {
+                    const cf       = origCF(action, metric);
+                    const enriched = ue.enrichCounterfactual(cf);
+                    return enriched;
+                };
+            }
+
+            // LanguageInputDL のparse結果にUEを付加
+            if (being.languageInputDL) {
+                const origParse = being.languageInputDL.parse.bind(being.languageInputDL);
+                being.languageInputDL.parse = async function(text) {
+                    const result = await origParse(text);
+                    try {
+                        const ueResult = ue.estimateFromText(text, being.statisticalTokenizer);
+                        result.uncertainty = ueResult;
+                        result.confidence  = ueResult.confidence;
+                        result.meta = result.meta || {};
+                        result.meta.entropy    = ueResult.entropy;
+                        result.meta.isUnknown  = ueResult.isUnknown;
+                        result.meta.isCertain  = ueResult.isCertain;
+                        result.meta.ueLabel    = ueResult.label;
+                    } catch(e) { /* silent */ }
+                    return result;
+                };
+            }
+
+            window._aoUE = ue;
+            being.addLog && being.addLog('[UE] UncertaintyEstimator v1.0 接続完了（全出力に確信度付与）');
+        }
+
+        // ─── SaveManager フック（A/B/C分）──────────────────────
+        if (being.saveManager && being.saveManager.exportState) {
+            const prevExport = being.saveManager.exportState.bind(being.saveManager);
+            being.saveManager.exportState = function() {
+                const state = prevExport();
+                try {
+                    if (being.hierarchicalChunker)
+                        state.hierarchicalChunker  = being.hierarchicalChunker.exportState();
+                    if (being.physicalCausalBridge)
+                        state.physicalCausalBridge = being.physicalCausalBridge.exportState();
+                    if (being.uncertaintyEstimator)
+                        state.uncertaintyEstimator = being.uncertaintyEstimator.exportState();
+                } catch(e) {}
+                return state;
+            };
+
+            const prevImport = being.saveManager.importState?.bind(being.saveManager);
+            if (prevImport) {
+                being.saveManager.importState = function(data) {
+                    prevImport(data);
+                    try {
+                        if (data.uncertaintyEstimator && being.uncertaintyEstimator)
+                            being.uncertaintyEstimator.importState(data.uncertaintyEstimator);
+                    } catch(e) {}
+                };
+            }
+        }
+
+        // ─── UI パネル拡張（既存extSystemsPanelに追記）──────────
+        _injectMissingPiecesUI();
+
+        console.log('[MP] attachMissingPieces 完了');
+    }
+
+    // ─── UIパネル追加 ──────────────────────────────────────────
+    function _injectMissingPiecesUI() {
+        const base = document.getElementById('extSystemsBody');
+        if (!base) return;
+
+        const html = `
+        <hr style="border:none;border-top:1px solid rgba(168,85,247,0.2);margin:0.5rem 0;">
+
+        <!-- A: HierarchicalChunker -->
+        <div style="margin-bottom:0.6rem;">
+            <div style="font-size:0.65rem;color:#c084fc;margin-bottom:0.2rem;">
+                A 階層チャンキング
+            </div>
+            <div id="hchStatus" style="font-size:0.6rem;color:#9ca3af;">
+                初期化待ち
+            </div>
+        </div>
+
+        <!-- B: PhysicalCausalBridge -->
+        <div style="margin-bottom:0.6rem;">
+            <div style="font-size:0.65rem;color:#f9a8d4;margin-bottom:0.2rem;">
+                B 空間×因果ブリッジ
+            </div>
+            <div id="pcbStatus" style="font-size:0.6rem;color:#9ca3af;">
+                待機中
+            </div>
+        </div>
+
+        <!-- C: UncertaintyEstimator -->
+        <div>
+            <div style="font-size:0.65rem;color:#86efac;margin-bottom:0.2rem;">
+                C 確信度推定（エントロピー）
+            </div>
+            <div id="ueStatus" style="font-size:0.6rem;color:#9ca3af;">
+                待機中
+            </div>
+            <div id="ueBar" style="height:3px;background:#374151;border-radius:2px;margin-top:0.2rem;overflow:hidden;">
+                <div id="ueBarFill" style="height:100%;width:50%;background:linear-gradient(to right,#10b981,#3b82f6);transition:width 0.5s;"></div>
+            </div>
+        </div>
+        `;
+
+        base.insertAdjacentHTML('beforeend', html);
+    }
+
+    // ─── 定期UI更新（A/B/C） ──────────────────────────────────
+    setInterval(() => {
+        const being = window.ao;
+        if (!being) return;
+        try {
+            // A: HierarchicalChunker
+            const hch  = being.hierarchicalChunker;
+            const hEl  = document.getElementById('hchStatus');
+            if (hch && hEl) {
+                hEl.textContent =
+                    `L1:${hch.vocabs[1].size}語 L2:${hch.vocabs[2].size}句 L3:${hch.vocabs[3].size}単位`;
+            }
+
+            // B: PhysicalCausalBridge
+            const pcb  = being.physicalCausalBridge;
+            const pEl  = document.getElementById('pcbStatus');
+            if (pcb && pEl) {
+                const s = pcb.summary();
+                pEl.textContent = `衝突記録:${s.totalCollisionEvents}件 ブリッジ:${s.bridgeActive?'接続':'未接続'}`;
+            }
+
+            // C: UncertaintyEstimator
+            const ue   = being.uncertaintyEstimator;
+            const uEl  = document.getElementById('ueStatus');
+            const uBar = document.getElementById('ueBarFill');
+            if (ue && uEl) {
+                const rc   = ue.recentConfidence(10);
+                const ent  = ue._avgEntropy;
+                uEl.textContent =
+                    `確信度:${(rc*100).toFixed(0)}% エントロピー:${(ent*100).toFixed(0)}% ` +
+                    `不明:${ue.unknownCount}件 確信:${ue.knownCount}件`;
+                if (uBar) uBar.style.width = `${rc * 100}%`;
+            }
+        } catch(e) {}
+    }, 2500);
+
+    // ─── グローバル登録 ──────────────────────────────────────
+    window.HierarchicalChunker    = HierarchicalChunker;
+    window.PhysicalCausalBridge   = PhysicalCausalBridge;
+    window.UncertaintyEstimator   = UncertaintyEstimator;
+    window.attachMissingPieces    = attachMissingPieces;
+
+    // attachExtendedSystems が完了してから呼ぶ（being と①〜④が揃ってから）
+    (function pollForExtended() {
+        const being = window.ao;
+        if (being && being.statisticalTokenizer && being.spatialInteractionModel) {
+            setTimeout(() => {
+                try {
+                    attachMissingPieces(being);
+                    console.log('[MP] Ao ミッシングピース アタッチ完了');
+                } catch(e) {
+                    console.error('[MP] attachMissingPieces error:', e);
+                }
+            }, 1000);
+        } else {
+            setTimeout(pollForExtended, 800);
+        }
+    })();
+
+    </script>
+
 </body>
 </html>
