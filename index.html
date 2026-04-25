@@ -5582,6 +5582,7 @@ MemoryLimitsConfig._instance = null;
             _detectFromFrames(percept, startTime) {
                 const frames     = percept._frames;
                 const candidates = [];
+                if (!frames || frames.length === 0) return candidates;
                 let segStart     = 0;
                 let prevPitch    = frames[0].pitchHz;
                 let prevRms      = frames[0].rms;
@@ -17411,7 +17412,7 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
         class ProtoConcept {
             constructor(fragments) {
                 this.fragments = fragments;
-                this.label = `『${fragments[0].substring(0, 10)}的な何か』`;
+                this.label = `『${(fragments && fragments[0] ? fragments[0].substring(0, 10) : '未知')  }的な何か』`;
                 this.stability = 0.1;
                 this.useCount = 0;
                 this.created = Date.now();
@@ -24735,7 +24736,7 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                 return { 
                     text: finalText, 
                     decisions,
-                    selectedPhrase: decisions[0].candidate,
+                    selectedPhrase: selectedDecision.candidate,
                     preTensionState
                 };
             }
@@ -35805,8 +35806,20 @@ window.VideoRenderer   = VideoRenderer;
                     // 「不明」フラグが立ったら未解釈プールに送る
                     if (ueResult.isUnknown && being.languageInputDL && being.languageInputDL.pendingTerms) {
                         for (const t of tokens.filter(tk => tk.method === 'char')) {
-                            being.languageInputDL.pendingTerms.set(t.surface,
-                                (being.languageInputDL.pendingTerms.get(t.surface) || 0) + 1);
+                            const existing = being.languageInputDL.pendingTerms.get(t.surface);
+                            if (existing && typeof existing === 'object') {
+                                // 既存オブジェクトのfrequencyだけ更新（contexts等を破壊しない）
+                                existing.frequency = (existing.frequency || 0) + 1;
+                            } else {
+                                // 新規 or 数値で上書きされていた場合はオブジェクトで登録
+                                being.languageInputDL.pendingTerms.set(t.surface, {
+                                    category: 'unknown',
+                                    polarity: 0,
+                                    frequency: 1,
+                                    contexts: [],
+                                    registeredAt: Date.now()
+                                });
+                            }
                         }
                         being.addLog && being.addLog(
                             `[UE] 未知入力検出 entropy=${(ueResult.entropy*100).toFixed(0)}% → 未解釈プールへ`
