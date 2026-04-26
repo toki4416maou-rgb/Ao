@@ -17,10 +17,6 @@
     
     <!-- lz-string: 記憶データ圧縮用ライブラリ -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/lz-string/1.5.0/lz-string.min.js"></script>
-    <!-- Google Identity Services (OAuth2 + Drive) -->
-    <script src="https://accounts.google.com/gsi/client" async defer></script>
-    <!-- Drive認証・保存システム -->
-    <script src="ao-drive-auth.js" defer></script>
 
     <!-- ================================================================
          認証 & 課金ゲート設定
@@ -29,8 +25,6 @@
     ================================================================ -->
     <script>
       const GAS_URL    = 'https://script.google.com/macros/s/AKfycbxMfNlzT_KvSLBJ5VFTQyRovfeyPnP5lIPrrmVuro8Op-aL_SplE3qU3gpi4e6nUaum/exec'; // ← GASデプロイURLに変更
-      // ↓ Google Cloud Console で作成した OAuth2 クライアントID を設定
-      const GOOGLE_CLIENT_ID = 'YOUR_CLIENT_ID.apps.googleusercontent.com';
       // PayPal購読完了後にこのページに戻ってくる（subscription_idが付いてくる）
       const _aoPageUrl  = location.origin + location.pathname;
       const PAYPAL_LINK =
@@ -169,24 +163,6 @@
             color: #c084fc;
             margin-left: 0.5rem;
         }
-        /* Google ログインボタン */
-        .ao-auth-btn-google {
-          background: #fff;
-          color: #3c4043;
-          border: 1px solid #dadce0 !important;
-          display: flex;
-          align-items: center;
-          gap: 10px;
-          justify-content: center;
-          font-size: 0.9rem;
-          font-weight: 500;
-        }
-        .ao-auth-btn-google:hover {
-          background: #f8f9fa;
-          box-shadow: 0 1px 3px rgba(0,0,0,0.2);
-        }
-        .ao-auth-btn-google svg { flex-shrink: 0; }
-
         .save-indicator.saving {
             background: rgba(245, 158, 11, 0.3);
             color: #fbbf24;
@@ -1000,23 +976,15 @@
     <div id="ao-auth-subtitle">v26.5.0 · Acoustic Perception Layer</div>
 
     <div id="ao-auth-spinner"></div>
-    <div id="ao-auth-status">PayPalに登録したGoogleアカウントでログインしてください</div>
+    <div id="ao-auth-status">メールアドレスを入力してください</div>
 
-    <!-- STEP 1: Google ログイン -->
-    <div id="ao-step-google">
-      <button class="ao-auth-btn ao-auth-btn-google" onclick="aoGoogleLogin()">
-        <svg width="20" height="20" viewBox="0 0 48 48">
-          <path fill="#FFC107" d="M43.6 20.1H42V20H24v8h11.3C33.7 32.7 29.2 36 24 36c-6.6 0-12-5.4-12-12s5.4-12 12-12c3.1 0 5.8 1.1 7.9 3L37.1 9.7C34 6.9 29.2 5 24 5 12.9 5 4 13.9 4 25s8.9 20 20 20 20-8.9 20-20c0-1.3-.1-2.6-.4-4z"/>
-          <path fill="#FF3D00" d="M6.3 15.2l6.6 4.9C14.7 16.2 19 13 24 13c3.1 0 5.8 1.1 7.9 3L37.1 9.7C34 6.9 29.2 5 24 5 16.5 5 10 9.2 6.3 15.2z"/>
-          <path fill="#4CAF50" d="M24 45c5.1 0 9.8-1.9 13.3-5L31.8 35c-2 1.5-4.5 2-7.8 2-5.2 0-9.6-3.3-11.3-8l-6.5 5C9.9 40.7 16.4 45 24 45z"/>
-          <path fill="#1976D2" d="M43.6 20.1H42V20H24v8h11.3c-.8 2.3-2.4 4.2-4.4 5.5l5.5 5.3C42.5 36 44 31.5 44 25c0-1.3-.1-2.6-.4-4z"/>
-        </svg>
-        Googleでログイン
+    <!-- STEP 1: メールアドレス入力 -->
+    <div id="ao-step-email">
+      <input id="ao-email-input" class="ao-auth-input" type="email"
+             placeholder="PayPalに登録したメールアドレス" autocomplete="email">
+      <button class="ao-auth-btn ao-auth-btn-primary" onclick="aoLogin()">
+        ログイン
       </button>
-      <p style="font-size:0.72rem;color:#9ca3af;margin-top:0.75rem;line-height:1.6;">
-        PayPalに登録したGoogleアカウントでログインしてください。<br>
-        <span style="color:#7c3aed;">Googleドライブへの保存許可</span>を同時に承認します。
-      </p>
     </div>
 
     <!-- 未購読の場合に表示するPayPalボタン -->
@@ -1034,7 +1002,7 @@
         ※ 加入後、自動でこのページに戻ります
       </div>
       <div class="ao-auth-divider" style="margin-top:0.75rem;">
-        <span onclick="aoBackToGoogle()" style="cursor:pointer;color:#7c3aed;">← 別のアカウントで試す</span>
+        <span onclick="aoBackToEmail()" style="cursor:pointer;color:#7c3aed;">← 別のメールで試す</span>
       </div>
     </div>
 
@@ -1057,20 +1025,66 @@
 
 <script>
 // ================================================================
-//  Google認証ログインロジック
+//  PayPalメール照合ログインロジック（メール送信なし）
 // ================================================================
-// aoGoogleLogin() / aoBackToGoogle() は ao-drive-auth.js で定義
+
+// ── ログイン: PayPalメアドをそのまま照合 ──
+async function aoLogin() {
+  const email = document.getElementById('ao-email-input').value.trim().toLowerCase();
+  if (!email || !email.includes('@')) {
+    setAuthStatus('正しいメールアドレスを入力してください', false);
+    return;
+  }
+  setAuthStatus('確認中...', true);
+
+  try {
+    const res  = await fetch(GAS_URL + '?action=login&email=' + encodeURIComponent(email));
+    const data = await res.json();
+
+    if (data.ok) {
+      window._aoUser = { email: data.email, sessionToken: data.sessionToken };
+      localStorage.setItem('ao_user', JSON.stringify(window._aoUser));
+      setAuthStatus('ログイン完了: ' + data.email, false);
+      document.getElementById('ao-auth-logout').style.display = 'block';
+      await loadCloudData();
+      showApp();
+
+    } else if (data.error === 'not_found' || data.error === 'cancelled' ||
+               data.error === 'expired'   || data.error === 'inactive') {
+      setAuthStatus('', false);
+      document.getElementById('ao-step-email').classList.add('ao-auth-hidden');
+      document.getElementById('ao-auth-paypal-wrap').classList.remove('ao-auth-hidden');
+
+    } else {
+      setAuthStatus('エラー: ' + data.error, false);
+    }
+  } catch(err) {
+    setAuthStatus('通信エラー。GAS URLを確認してください。', false);
+    console.error('[Auth login]', err);
+  }
+}
+
+// ── Enterキー対応 ──
+document.getElementById('ao-email-input').addEventListener('keydown', e => {
+  if (e.key === 'Enter') aoLogin();
+});
+
+// ── メール入力に戻る ──
+function aoBackToEmail() {
+  document.getElementById('ao-step-email').classList.remove('ao-auth-hidden');
+  document.getElementById('ao-auth-paypal-wrap').classList.add('ao-auth-hidden');
+  setAuthStatus('メールアドレスを入力してください', false);
+}
 
 // ── セッション復元（ページリロード時）──
 (function restoreSession() {
   // Blob起動時: セッションがHTMLに埋め込まれている場合
   if (window._aoUser && window._aoUser.email) {
     setAuthStatus('セッション復元中...', true);
-    document.getElementById('ao-step-google').classList.add('ao-auth-hidden');
+    document.getElementById('ao-step-email').classList.add('ao-auth-hidden');
     document.getElementById('ao-auth-logout').style.display = 'block';
     try { localStorage.setItem('ao_user', JSON.stringify(window._aoUser)); } catch(_) {}
-    // Drive からデータ読み込み（トークンがないので IndexedDB フォールバック）
-    showApp();
+    loadCloudData().then(() => showApp());
     return;
   }
   const saved = localStorage.getItem('ao_user');
@@ -1078,9 +1092,9 @@
   try {
     window._aoUser = JSON.parse(saved);
     setAuthStatus('セッション復元中...', true);
-    document.getElementById('ao-step-google').classList.add('ao-auth-hidden');
+    document.getElementById('ao-step-email').classList.add('ao-auth-hidden');
     document.getElementById('ao-auth-logout').style.display = 'block';
-    showApp();
+    loadCloudData().then(() => showApp());
   } catch(_) {
     localStorage.removeItem('ao_user');
   }
@@ -1131,7 +1145,7 @@ async function loadCloudData() {
       localStorage.removeItem('ao_user');
       window._aoUser = null;
       document.getElementById('ao-auth-overlay').style.display = 'flex';
-      document.getElementById('ao-step-google').classList.add('ao-auth-hidden');
+      document.getElementById('ao-step-email').classList.add('ao-auth-hidden');
       document.getElementById('ao-auth-paypal-wrap').classList.remove('ao-auth-hidden');
     }
   } catch(err) {
@@ -1164,7 +1178,7 @@ async function aoActivateAfterPaypal() {
   const email = document.getElementById('ao-pp-email-input').value.trim().toLowerCase();
   const subId = new URLSearchParams(location.search).get('subscription_id') || '';
   if (!email || !email.includes('@')) {
-    setAuthStatus('PayPalに登録したGoogleアカウントでログインしてください', false);
+    setAuthStatus('メールアドレスを入力してください', false);
     return;
   }
   setAuthStatus('登録中...', true);
@@ -1215,7 +1229,7 @@ async function aoActivateAfterPaypal() {
   const savedEmail = sessionStorage.getItem('ao_pending_email') || '';
 
   // UIを購読完了パネルに切り替え
-  document.getElementById('ao-step-google').classList.add('ao-auth-hidden');
+  document.getElementById('ao-step-email').classList.add('ao-auth-hidden');
   document.getElementById('ao-step-code').classList.add('ao-auth-hidden');
   document.getElementById('ao-auth-paypal-wrap').classList.add('ao-auth-hidden');
   document.getElementById('ao-auth-pp-return').classList.remove('ao-auth-hidden');
@@ -16798,7 +16812,7 @@ CompletLanguageCognitionEngine.prototype.initializePersistence = async function(
             console.warn('[Persistence] Load failed:', loadResult.error || loadResult.reason);
         }
         
-        // 自動保存を開始（※ Drive保存に一本化のため無効化）
+        // 自動保存を開始（PersonaSaveManagerに一本化のため無効化）
         // this.persistenceManager.startAutoSave(this);
     }
 };
@@ -23376,7 +23390,7 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                     this.subjectiveFocus = new SubjectiveFocus(this);
                     console.log('[PERSISTENCE] Persistence, AutoSave & SubjectiveFocus initialized');
                     
-                    // 自動保存開始（※ Drive保存に一本化のため無効化）
+                    // 自動保存開始（PersonaSaveManagerに一本化のため無効化）
                     // this.autoSaveManager.start();
                     
                     // 起動時の自動ロード
@@ -29213,7 +29227,7 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
             constructor(being) {
                 console.log('[TRACE] PersonaSaveManager constructor called');
                 this.being = being;
-                this.autoSaveInterval = 5000; // 5秒ごとに自動保存
+                this.autoSaveInterval = 30000; // 30秒ごとに自動保存
                 this.lastSaveTime = 0;
                 this.isSaving = false;
                 this.isDirty = false; // 未保存フラグ
@@ -29574,7 +29588,10 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                                     // ★ 確認: 実際に書き込まれたか検証
                                     const verifyData = localStorage.getItem(this.saveKeys.current);
                                     if (verifyData) {
-                                        const verifyParsed = JSON.parse(verifyData);
+                                        const verifyJson = (typeof LZString !== 'undefined' && _lzAvailable)
+                                            ? LZString.decompressFromUTF16(verifyData)
+                                            : verifyData;
+                                        const verifyParsed = JSON.parse(verifyJson);
                                         console.log('[VERIFY] Data written to localStorage:', {
                                             key: this.saveKeys.current,
                                             size: verifyData.length,
@@ -29628,7 +29645,10 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                             finalCheck = localStorage.getItem(this.saveKeys.current);
                         }
                         if (finalCheck) {
-                            const finalParsed = JSON.parse(finalCheck);
+                            const finalJson = (typeof LZString !== 'undefined' && _lzAvailable)
+                                ? LZString.decompressFromUTF16(finalCheck)
+                                : finalCheck;
+                            const finalParsed = JSON.parse(finalJson);
                             console.log('[SAVE] ✅ 保存成功確認:');
                             console.log('[SAVE]    - turns:', finalParsed.coreState?.identity?.turns);
                             console.log('[SAVE]    - size:', finalCheck.length, 'bytes');
@@ -30882,7 +30902,7 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
             }
         }, 10000);
         
-                                window._aoAttachDriveSave(ao); // Drive保存に一本化
+                                saveManager.startAutoSave();
                 
         // ============ Editor Integration Functions (v18.0) ============
         
