@@ -15,6 +15,9 @@
     <!-- blob redirect removed: localStorage works on github.io origin -->
 
     
+    <!-- lz-string: 記憶データ圧縮用ライブラリ -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/lz-string/1.5.0/lz-string.min.js"></script>
+
     <!-- ================================================================
          認証 & 課金ゲート設定
          GAS_URLはデプロイ後に取得したWebアプリURLに変更してください
@@ -21676,8 +21679,11 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                             timestamp: Date.now(),
                             data: data
                         };
-                        localStorage.setItem('ao_state', JSON.stringify(saveData));
-                        globalLogManager.log('Saved to localStorage', 'info');
+                        // 圧縮して保存（lz-string使用）
+                        const compressed = LZString.compressToUTF16(JSON.stringify(saveData));
+                        localStorage.setItem('ao_state', compressed);
+                        localStorage.setItem('ao_state_compressed', '1'); // 圧縮フラグ
+                        globalLogManager.log('Saved to localStorage (compressed)', 'info');
                         return { success: true, timestamp: saveData.timestamp };
                     }
                     
@@ -21693,13 +21699,14 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                         const saveData = {
                             id: 'current_state',
                             timestamp: Date.now(),
-                            data: data
+                            compressed: true,
+                            data: LZString.compressToUTF16(JSON.stringify(data))
                         };
                         
                         const request = store.put(saveData);
                         
                         request.onsuccess = () => {
-                            globalLogManager.log('Saved to IndexedDB', 'info');
+                            globalLogManager.log('Saved to IndexedDB (compressed)', 'info');
                             resolve({ success: true, timestamp: saveData.timestamp });
                         };
                         
@@ -21721,7 +21728,15 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                     if (this.useLocalStorage) {
                         const saved = localStorage.getItem('ao_state');
                         if (saved) {
-                            const parsed = JSON.parse(saved);
+                            // 圧縮フラグで判定（後方互換：古いデータはそのままJSON.parse）
+                            const isCompressed = localStorage.getItem('ao_state_compressed') === '1';
+                            let parsed;
+                            if (isCompressed) {
+                                const decompressed = LZString.decompressFromUTF16(saved);
+                                parsed = JSON.parse(decompressed);
+                            } else {
+                                parsed = JSON.parse(saved);
+                            }
                             globalLogManager.log('Loaded from localStorage', 'info');
                             return {
                                 success: true,
@@ -21746,10 +21761,17 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                         
                         request.onsuccess = () => {
                             if (request.result) {
-                                globalLogManager.log('Loaded from IndexedDB', 'info');
+                                // 後方互換：compressed フラグがあれば解凍、なければそのまま使う
+                                let loadedData;
+                                if (request.result.compressed) {
+                                    loadedData = JSON.parse(LZString.decompressFromUTF16(request.result.data));
+                                } else {
+                                    loadedData = request.result.data;
+                                }
+                                globalLogManager.log('Loaded from IndexedDB (decompressed)', 'info');
                                 resolve({
                                     success: true,
-                                    data: request.result.data,
+                                    data: loadedData,
                                     timestamp: request.result.timestamp
                                 });
                             } else {
@@ -36884,6 +36906,12 @@ window.VideoRenderer   = VideoRenderer;
     })();
 
     </script>
+
+    <!-- ================================================================
+         Ao Optimizer MOD - ランタイム最適化
+         リポジトリに ao-optimizer.js を置くだけで有効になる
+    ================================================================ -->
+    <script src="ao-optimizer.js"></script>
 
 </body>
 </html>
