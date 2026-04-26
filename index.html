@@ -29364,7 +29364,14 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                     }
                     
                     const dataSizeMB = (jsonString.length / (1024 * 1024)).toFixed(2);
-                    console.log(`Persona data size: ${dataSizeMB}MB`);
+                    // 圧縮版を作成（以降の保存は全てこちらを使う）
+                    const saveString = (typeof LZString !== 'undefined')
+                        ? LZString.compressToUTF16(jsonString)
+                        : jsonString;
+                    const _isCompressed = saveString !== jsonString;
+                    const compressedSizeMB = _isCompressed ? (saveString.length / (1024 * 1024)).toFixed(2) : null;
+                    const compressionRatio = _isCompressed ? ((1 - saveString.length / jsonString.length) * 100).toFixed(0) : null;
+                    console.log(`Persona data size: ${dataSizeMB}MB → ${compressedSizeMB || dataSizeMB}MB`);
                     
                     // 50MB以上の場合は警告
                     if (jsonString.length > 50 * 1024 * 1024) {
@@ -29407,7 +29414,7 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                                 }
                                 
                                 // 新しいデータを保存
-                                await this.indexedDB.set(this.saveKeys.current, jsonString);
+                                await this.indexedDB.set(this.saveKeys.current, saveString);
                                 this.being.addLog('保存: IndexedDB使用');
                             } else {
                                 console.log('[DEBUG] Using localStorage for save');
@@ -29418,7 +29425,7 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                                     this.being.addLog('データサイズ超過: IndexedDBに移行');
                                     await this._migrateToIndexedDB();
                                     this.useIndexedDB = true;
-                                    await this.indexedDB.set(this.saveKeys.current, jsonString);
+                                    await this.indexedDB.set(this.saveKeys.current, saveString);
                                 } else {
                                     console.log('[DEBUG] Saving to localStorage...');
                                     // 世代シフト（正しい順序）
@@ -29439,7 +29446,7 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                                     
                                     // 新しいデータを保存
                                     console.log('[DEBUG] Writing new data to localStorage');
-                                    localStorage.setItem(this.saveKeys.current, jsonString);
+                                    localStorage.setItem(this.saveKeys.current, saveString);
                                     console.log('[DEBUG] localStorage write complete');
                                     
                                     // ★ 確認: 実際に書き込まれたか検証
@@ -29466,7 +29473,7 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                                     this.being.addLog('容量超過: IndexedDBに移行');
                                     await this._migrateToIndexedDB();
                                     this.useIndexedDB = true;
-                                    await this.indexedDB.set(this.saveKeys.current, jsonString);
+                                    await this.indexedDB.set(this.saveKeys.current, saveString);
                                 } else {
                                     throw new Error('ストレージ容量超過: データが大きすぎます');
                                 }
@@ -29481,7 +29488,10 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                     this.markSaved(); // 保存済みフラグを立てる + UI更新
                     const conceptCount = this.being.concepts?.concepts?.size || 0;
                     const episodeCount = this.being.episodicMemory?.episodes?.length || 0;
-                    this.being.addLog(`人格保存完了 [${dataSizeMB}MB] 概念:${conceptCount} EP:${episodeCount}`);
+                    const sizeLabel = compressedSizeMB
+                        ? `${compressedSizeMB}MB (圧縮率 ${compressionRatio}%)`
+                        : `${dataSizeMB}MB`;
+                    this.being.addLog(`人格保存完了 [${sizeLabel}] 概念:${conceptCount} EP:${episodeCount}`);
                     console.log('[DEBUG] Save complete - Concepts:', conceptCount, 'Episodes:', episodeCount);
                     
                     // ★ 最終確認: 本当に保存されたか
@@ -29705,7 +29715,17 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                         if (savedData) {
                             console.log('[ROLLBACK] savedData found for', label);
                             try {
-                                const personaData = JSON.parse(savedData);
+                                // 圧縮データの場合は解凍してからパース（後方互換）
+                                let parseTarget = savedData;
+                                try {
+                                    JSON.parse(savedData); // JSON直接パースできればそのまま
+                                } catch (_) {
+                                    // JSON.parseできない = 圧縮データ → 解凍
+                                    if (typeof LZString !== 'undefined') {
+                                        parseTarget = LZString.decompressFromUTF16(savedData) || savedData;
+                                    }
+                                }
+                                const personaData = JSON.parse(parseTarget);
                                 console.log('[ROLLBACK] Parsed data:', {
                                     version: personaData.version,
                                     timestamp: personaData.timestamp,
