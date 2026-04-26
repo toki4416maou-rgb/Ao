@@ -29365,12 +29365,12 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                     
                     const dataSizeMB = (jsonString.length / (1024 * 1024)).toFixed(2);
                     // 圧縮版を作成（以降の保存は全てこちらを使う）
-                    const saveString = (typeof LZString !== 'undefined')
+                    const _lzAvailable = (typeof LZString !== 'undefined');
+                    const saveString = _lzAvailable
                         ? LZString.compressToUTF16(jsonString)
                         : jsonString;
-                    const _isCompressed = saveString !== jsonString;
-                    const compressedSizeMB = _isCompressed ? (saveString.length / (1024 * 1024)).toFixed(2) : null;
-                    const compressionRatio = _isCompressed ? ((1 - saveString.length / jsonString.length) * 100).toFixed(0) : null;
+                    const compressedSizeMB = _lzAvailable ? (saveString.length / (1024 * 1024)).toFixed(2) : null;
+                    const compressionRatio = _lzAvailable ? ((1 - saveString.length / jsonString.length) * 100).toFixed(0) : null;
                     console.log(`Persona data size: ${dataSizeMB}MB → ${compressedSizeMB || dataSizeMB}MB`);
                     
                     // 50MB以上の場合は警告
