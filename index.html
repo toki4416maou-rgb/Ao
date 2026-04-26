@@ -30574,9 +30574,12 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
             updateUI();
         }
         
-        document.getElementById('send').addEventListener('click', handleInput);
+        // optimizerからパッチできるようにグローバル公開
+        window.handleInput = handleInput;
+
+        document.getElementById('send').addEventListener('click', () => window.handleInput());
         document.getElementById('input').addEventListener('keypress', (e) => {
-            if (e.key === 'Enter' && !isProcessing) handleInput();
+            if (e.key === 'Enter' && !isProcessing) window.handleInput();
         });
         
         document.getElementById('fileInput').addEventListener('change', (e) => {
