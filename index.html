@@ -5271,12 +5271,231 @@ MemoryLimitsConfig._instance = null;
             }
         }
         
+        // ============================================================
+        // VideoPerceptualParser v1.0
+        // テキストのPerceptualParserと同じ設計思想で動画をトークナイズ
+        //
+        // テキスト:  文字列 → PMI + 分岐エントロピー → Token[]
+        // 動画:      フレーム列 → HOG類似度(PMI相当) + identity変化(エントロピー相当) → VideoToken[]
+        //
+        // ハードコードなし・統計のみ・ゼロから学習
+        // ============================================================
+        class VideoPerceptualParser {
+            constructor() {
+                // フレームペア間のHOG類似度の統計（PMI相当）
+                this.pairFreq   = new Map(); // "clusterA:clusterB" → count
+                this.totalPairs = 0;
+
+                // クラスタ単体の出現頻度（unigram相当）
+                this.clusterFreq  = new Map();
+                this.totalClusters = 0;
+
+                // 境界判定閾値
+                this.BOUNDARY_THRESHOLD = 0.3;
+                this.MIN_PAIRS_FOR_STATS = 30;
+
+                // HOGクラスタリング（量子化）: HOGベクトルを16クラスタに圧縮
+                this.N_CLUSTERS  = 16;
+                this.clusterCentroids = []; // 学習で更新される重心
+            }
+
+            // ── HOGベクトルを最近傍クラスタIDに量子化 ──────────────
+            _quantize(hogVec) {
+                if (this.clusterCentroids.length === 0) {
+                    // 初期化前: HOGの合計値を16分割してクラスタIDとする
+                    const sum = hogVec.reduce((s, v) => s + Math.abs(v), 0);
+                    return Math.min(this.N_CLUSTERS - 1, Math.floor(sum * this.N_CLUSTERS));
+                }
+                let best = 0, bestDist = Infinity;
+                for (let i = 0; i < this.clusterCentroids.length; i++) {
+                    const c = this.clusterCentroids[i];
+                    let dist = 0;
+                    const len = Math.min(hogVec.length, c.length);
+                    for (let j = 0; j < len; j++) dist += (hogVec[j] - c[j]) ** 2;
+                    if (dist < bestDist) { bestDist = dist; best = i; }
+                }
+                return best;
+            }
+
+            // ── 重心をオンライン更新（移動平均） ─────────────────────
+            _updateCentroid(clusterId, hogVec) {
+                if (!this.clusterCentroids[clusterId]) {
+                    this.clusterCentroids[clusterId] = new Array(hogVec.length).fill(0);
+                }
+                const c = this.clusterCentroids[clusterId];
+                const lr = 0.05; // 学習率
+                for (let i = 0; i < Math.min(hogVec.length, c.length); i++) {
+                    c[i] = (1 - lr) * c[i] + lr * hogVec[i];
+                }
+            }
+
+            // ── PMI相当: クラスタペアの結合強度 ─────────────────────
+            _calcPMI(clA, clB) {
+                if (this.totalPairs === 0) return 0;
+                const key = `${clA}:${clB}`;
+                const pAB = (this.pairFreq.get(key) || 0) / this.totalPairs;
+                const pA  = (this.clusterFreq.get(clA) || 0) / this.totalClusters;
+                const pB  = (this.clusterFreq.get(clB) || 0) / this.totalClusters;
+                if (pAB === 0 || pA === 0 || pB === 0) return 0;
+                const pmi = Math.log2(pAB / (pA * pB));
+                const maxPMI = -Math.log2(pAB);
+                return maxPMI > 0 ? Math.max(-1, Math.min(1, pmi / maxPMI)) : 0;
+            }
+
+            // ── 分岐エントロピー相当: クラスタの後に来るクラスタの多様性 ──
+            _calcBranchEntropy(clA) {
+                const freq = this.clusterFreq.get(clA) || 0;
+                if (freq === 0) return 0;
+                let entropy = 0;
+                for (const [key, count] of this.pairFreq) {
+                    const [a] = key.split(':');
+                    if (parseInt(a) !== clA) continue;
+                    const p = count / freq;
+                    if (p > 0) entropy -= p * Math.log2(p);
+                }
+                const maxH = Math.log2(Math.max(1, this.N_CLUSTERS));
+                return maxH > 0 ? Math.min(1, entropy / maxH) : 0;
+            }
+
+            // ── 統計更新 ─────────────────────────────────────────────
+            _updateStats(clusterIds) {
+                for (let i = 0; i < clusterIds.length; i++) {
+                    const cl = clusterIds[i];
+                    this.clusterFreq.set(cl, (this.clusterFreq.get(cl) || 0) + 1);
+                    this.totalClusters++;
+                    if (i < clusterIds.length - 1) {
+                        const key = `${cl}:${clusterIds[i + 1]}`;
+                        this.pairFreq.set(key, (this.pairFreq.get(key) || 0) + 1);
+                        this.totalPairs++;
+                    }
+                }
+            }
+
+            // ── メインエントリ: scenes[] → VideoToken[] ──────────────
+            // scenes: VideoAdapter._scenes から取得
+            // visIdentities: VisIdentityManager から取得（optional）
+            parse(scenes, visIdentities = null) {
+                if (!scenes || scenes.length < 2) return [];
+
+                // Step1: 各フレームのHOGをクラスタIDに量子化
+                const clusterIds = scenes.map(sc => {
+                    const hog = sc.features ? sc.features.hog_blocks || [] : [];
+                    const cl  = this._quantize(hog);
+                    this._updateCentroid(cl, hog);
+                    return cl;
+                });
+
+                // Step2: 統計更新
+                this._updateStats(clusterIds);
+
+                // Step3: 境界検出（PMI + 分岐エントロピー）
+                const boundaries = new Set();
+                boundaries.add(0);
+
+                for (let i = 1; i < clusterIds.length; i++) {
+                    if (this.totalPairs < this.MIN_PAIRS_FOR_STATS) {
+                        // コールドスタート: HOG類似度が低い＝境界
+                        const hogA = scenes[i-1].features ? scenes[i-1].features.hog_blocks || [] : [];
+                        const hogB = scenes[i].features   ? scenes[i].features.hog_blocks   || [] : [];
+                        const sim  = this._hogCosSim(hogA, hogB);
+                        if (sim < 0.6) boundaries.add(i);
+                    } else {
+                        // 統計蓄積後: PMI + 分岐エントロピー
+                        const bond   = this._calcPMI(clusterIds[i-1], clusterIds[i]);
+                        const branch = this._calcBranchEntropy(clusterIds[i-1]);
+                        const score  = branch - bond;
+                        if (score > this.BOUNDARY_THRESHOLD) boundaries.add(i);
+                    }
+
+                    // identity変化も境界（分岐エントロピー相当の補強）
+                    if (visIdentities) {
+                        const idA = visIdentities[i-1];
+                        const idB = visIdentities[i];
+                        if (idA && idB && idA !== idB) boundaries.add(i);
+                    }
+                }
+                boundaries.add(scenes.length);
+
+                // Step4: 境界でセグメント化 → VideoToken[]
+                const sortedBounds = Array.from(boundaries).sort((a, b) => a - b);
+                const tokens = [];
+                for (let b = 0; b < sortedBounds.length - 1; b++) {
+                    const start = sortedBounds[b];
+                    const end   = sortedBounds[b + 1];
+                    const seg   = scenes.slice(start, end);
+                    if (seg.length === 0) continue;
+
+                    // セグメント内の代表概念（meaningsの多数決）
+                    const conceptCount = new Map();
+                    seg.forEach(sc => {
+                        (sc.meanings || []).forEach(m => {
+                            conceptCount.set(m.concept, (conceptCount.get(m.concept) || 0) + m.weight);
+                        });
+                    });
+                    const concepts = Array.from(conceptCount.entries())
+                        .sort((a, b) => b[1] - a[1])
+                        .slice(0, 3)
+                        .map(([c]) => c);
+
+                    // セグメントの代表クラスタ（最頻）
+                    const segClusters = clusterIds.slice(start, end);
+                    const clFreq = new Map();
+                    segClusters.forEach(cl => clFreq.set(cl, (clFreq.get(cl) || 0) + 1));
+                    const dominantCluster = [...clFreq.entries()].sort((a,b)=>b[1]-a[1])[0]?.[0] ?? 0;
+
+                    tokens.push({
+                        surface:         concepts.join('・') || `cluster_${dominantCluster}`,
+                        concepts,
+                        cluster:         dominantCluster,
+                        timeStart:       seg[0].time,
+                        timeEnd:         seg[seg.length - 1].time,
+                        frameCount:      seg.length,
+                        avgBrightness:   seg.reduce((s,sc)=>s+sc.brightness,0)/seg.length,
+                        avgComplexity:   seg.reduce((s,sc)=>s+sc.complexity,0)/seg.length,
+                        identityId:      visIdentities ? visIdentities[start] : null,
+                        position:        b
+                    });
+                }
+
+                return tokens;
+            }
+
+            // ── HOGコサイン類似度（内部用）────────────────────────────
+            _hogCosSim(a, b) {
+                if (!a.length || !b.length) return 0;
+                let dot=0, mA=0, mB=0;
+                const len = Math.min(a.length, b.length);
+                for (let i=0;i<len;i++){dot+=a[i]*b[i];mA+=a[i]*a[i];mB+=b[i]*b[i];}
+                return (mA>0&&mB>0)?dot/(Math.sqrt(mA)*Math.sqrt(mB)):0;
+            }
+
+            exportState() {
+                return {
+                    pairFreq:    Array.from(this.pairFreq.entries()),
+                    clusterFreq: Array.from(this.clusterFreq.entries()),
+                    totalPairs:  this.totalPairs,
+                    totalClusters: this.totalClusters,
+                    clusterCentroids: this.clusterCentroids
+                };
+            }
+            importState(data) {
+                if (!data) return;
+                this.pairFreq      = new Map(data.pairFreq || []);
+                this.clusterFreq   = new Map(data.clusterFreq || []);
+                this.totalPairs    = data.totalPairs || 0;
+                this.totalClusters = data.totalClusters || 0;
+                this.clusterCentroids = data.clusterCentroids || [];
+            }
+        }
+
         // ============ VideoAdapter (既存) ============
         class VideoAdapter {
             constructor() {
                 this.processing = false;
                 // v27.0: ImageAdapterを内包（画像と同じ色・明度・形の解析をフレームに適用）
                 this.imageAdapter = null; // ao初期化後に ao.imageAdapter を注入する
+                // v29.0: VideoPerceptualParser（動画トークナイザ）
+                this.videoParser  = new VideoPerceptualParser();
             }
 
             async extractMeaning(videoFile, mode = 'normal') {
@@ -5438,7 +5657,9 @@ MemoryLimitsConfig._instance = null;
                     avg_features,
                     continuousSegments, // [v28] フレームごとの連続性スコア付きfeatures
                     raw_descriptor: `${duration.toFixed(1)}秒 ${scenes.length}シーン ${mode}モード`,
-                    _scenes: scenes
+                    _scenes: scenes,
+                    // v29.0: 動画トークン列（VideoPerceptualParserが生成）
+                    videoTokens: this.videoParser.parse(scenes)
                 };
             }
 
@@ -17050,6 +17271,16 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                 // ハードコードテンプレート完全廃止
                 // ==========================================
 
+                // ============================================================
+                // 修正③: conceptKnowledge を参照して習得知識を生成に活かす
+                // ============================================================
+                const ck = intentVector.conceptKnowledge || {};
+                const relatedConcepts  = ck.relatedConcepts  || [];
+                const clusterNeighbors = ck.clusterNeighbors || [];
+                const suggestedSuffixes = ck.suggestedSuffixes || [];
+                const conceptEmotions  = ck.emotions || {};
+                const primaryDepth     = ck.primaryDepth || 0;
+
                 // Step 1: SyntaxHypothesisの学習パターンから生成（最優先）
                 if (this.languageAcquisition.syntaxPatterns.length > 0) {
                     const learnedSentence = this.languageAcquisition.generateSentence(
@@ -17058,18 +17289,62 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                     if (learnedSentence) candidates.push(learnedSentence);
                 }
 
-                // Step 2: TokenClusterEngineのクラスタから
-                // 「概念と同じクラスタに属するトークン」を組み合わせて生成
+                // Step 2: TokenClusterEngineのクラスタから生成
                 if (this.languageAcquisition.tokenClusterEngine) {
                     const tce = this.languageAcquisition.tokenClusterEngine;
                     for (const concept of concepts.slice(0, 2)) {
                         const neighbors = tce.getClusterMembers(concept);
                         for (const neighbor of neighbors.slice(0, 2)) {
-                            // クラスタ内の共起トークンと概念を組み合わせる
-                            // 意味は付与しない、形式のみ
                             candidates.push(`${concept}${neighbor}`);
                             candidates.push(`${neighbor}${concept}`);
                         }
+                    }
+                }
+
+                // Step 2b: 修正③ 関係概念・クラスタ隣接語を使った自然な組み合わせ生成
+                // 接尾語の学習結果（suggestedSuffixes）を使って活用を付加する
+                const allNeighbors = [...new Set([...relatedConcepts, ...clusterNeighbors])];
+                for (const neighbor of allNeighbors.slice(0, 3)) {
+                    if (!concepts.includes(neighbor) && neighbor && neighbor.length > 0) {
+                        // 接尾語が学習済みなら付加、そうでなければそのまま連結
+                        if (suggestedSuffixes.length > 0) {
+                            const sfx = suggestedSuffixes[0];
+                            candidates.push(`${concepts[0]}と${neighbor}${sfx}`);
+                        } else {
+                            candidates.push(`${concepts[0]}と${neighbor}`);
+                        }
+                    }
+                }
+
+                // Step 2c: 修正③ 感情的重みが高い概念には感情トーンを付加
+                for (const [cid, emo] of Object.entries(conceptEmotions)) {
+                    if (emo.depth > 0.5 && emo.encounters >= 3) {
+                        // 深く理解している概念 → より断定的な表現を試みる
+                        const sfx = suggestedSuffixes.length > 0 ? suggestedSuffixes[0] : '';
+                        if (sfx) candidates.push(`${cid}${sfx}`);
+
+                        // 感情痕跡から joy/tension を読んで表現を変える
+                        const recentTrace = emo.emotionalTrace.slice(-1)[0];
+                        if (recentTrace) {
+                            if (recentTrace.joy > 0.6) {
+                                candidates.push(`${cid}、分かってきた`);
+                            } else if (recentTrace.tension > 0.6) {
+                                candidates.push(`${cid}、まだ掴めていない`);
+                            } else if (recentTrace.curiosity > 0.6) {
+                                candidates.push(`${cid}、もっと知りたい`);
+                            }
+                        }
+                    }
+                }
+
+                // Step 2d: 修正③ 概念深度に応じた表現の選択
+                // 深度が高い概念 → 「分かった」系、低い → 「まだ分からない」系
+                if (concepts.length > 0) {
+                    const sfxList = suggestedSuffixes.length > 0
+                        ? suggestedSuffixes
+                        : (primaryDepth > 0.5 ? ['、分かってきた', '、見えてきた'] : ['、まだ分からない', '、掴めない']);
+                    for (const sfx of sfxList.slice(0, 2)) {
+                        candidates.push(`${concepts[0]}${sfx}`);
                     }
                 }
 
@@ -17292,6 +17567,47 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                 
                 bias = Math.max(-0.3, Math.min(0.5, bias));
                 this.expressionBias.set(phrase, bias);
+
+                // ============================================================
+                // 修正①: 習得済みSyntaxHypothesisに成功フィードバックを届ける
+                // 返信が来た = 通じた → recordUsage(tokens, true) を呼ぶ
+                // これによりmaturityLevelが正しく上昇できるようになる
+                // ============================================================
+                try {
+                    if (phrase && this.languageAcquisition) {
+                        const la = this.languageAcquisition;
+                        // フレーズをトークンに分解してhypothesisに成功を記録
+                        const tokens = la.perceptualParser
+                            ? la.perceptualParser.parse(phrase)
+                            : phrase.split('').map((s, i) => ({ surface: s, position: i }));
+
+                        if (tokens && tokens.length > 0) {
+                            // SyntaxHypothesisGeneratorに成功を伝える
+                            const hyp = la.hypothesisGenerator
+                                ? la.hypothesisGenerator.getBestHypothesis(tokens)
+                                : null;
+                            if (hyp) {
+                                hyp.recordUsage(tokens, success);
+                            }
+
+                            // RichSyntaxHypothesisGeneratorにも伝える
+                            if (la.richHypothesisGenerator && tokens.length >= 2) {
+                                const richHyp = la.richHypothesisGenerator.learnFromTokens(tokens);
+                                // learnFromTokens内で recordUsage(slotValues, true) 済み
+                            }
+
+                            // MorphVariantLearnerにも通知（活用形の信頼度蓄積）
+                            if (la.morphVariantLearner) {
+                                la.morphVariantLearner.learnFromTokens(tokens, ['language']);
+                            }
+
+                            // averageConfidenceを更新
+                            la.updateAverageConfidence && la.updateAverageConfidence();
+                        }
+                    }
+                } catch (fbErr) {
+                    // フィードバック失敗は無視（生成を止めない）
+                }
             }
             
             exportState() {
@@ -23042,7 +23358,11 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                             // [v27.0] 視覚概念仮説テーブル
                             visualHypothesisTable: this.imageAdapter ? this.imageAdapter.hypothesisTable.exportState() : null,
                             labelCoOccurrence: this.imageAdapter ? Array.from(this.imageAdapter.labelCoOccurrence.entries()) : [],
-                            audioLabelCoOccurrence: this.audioAdapter ? this.audioAdapter.exportCoOccurrence() : []
+                            audioLabelCoOccurrence: this.audioAdapter ? this.audioAdapter.exportCoOccurrence() : [],
+                            // [v29.0] VideoPerceptualParserの統計
+                            videoParserState: this.videoAdapter && this.videoAdapter.videoParser
+                                ? this.videoAdapter.videoParser.exportState()
+                                : null
                         }
                     };
                     
@@ -23487,6 +23807,16 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                             this.addLog(`音声共起テーブル復元: ${this.audioAdapter.labelCoOccurrence.size}ペア`);
                         } catch (e) {
                             globalLogManager.log(`audioLabelCoOccurrence import failed: ${e.message}`, 'error');
+                        }
+                    }
+
+                    // [v29.0] VideoPerceptualParser統計の復元
+                    if (core.videoParserState && this.videoAdapter && this.videoAdapter.videoParser) {
+                        try {
+                            this.videoAdapter.videoParser.importState(core.videoParserState);
+                            this.addLog(`動画トークナイザ復元: ${this.videoAdapter.videoParser.totalPairs}ペア`);
+                        } catch (e) {
+                            globalLogManager.log(`videoParserState import failed: ${e.message}`, 'error');
                         }
                     }
                     
@@ -23996,7 +24326,6 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                                 this.imageAdapter.learnHypothesis(label, videoResult.avg_features);
 
                                 // [v28] 連続性スコアが高いフレームだけlearnSpatialPrototypeに渡す
-                                // 前フレームと似ている＝同じ対象が映っている→学習に値する
                                 if (videoResult.continuousSegments) {
                                     for (const seg of videoResult.continuousSegments) {
                                         if (seg.continuityScore >= 0.7) {
@@ -24015,6 +24344,28 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                                 this.addLog(`映像野: 共起学習 [${videoLabels.join('∧')}]`);
                             }
 
+                            // [v29.0] フレームごとの複数概念を個別にlearnCoOccurrence
+                            // 平均ではなくフレーム単位で「このシーンにはこれとこれが同時にある」を記録
+                            if (videoResult._scenes) {
+                                for (const sc of videoResult._scenes) {
+                                    if (!sc.features || !sc.meanings || sc.meanings.length < 2) continue;
+                                    const frameLabels = sc.meanings
+                                        .filter(m => m.weight > 0.4)
+                                        .map(m => m.concept)
+                                        .slice(0, 3);
+                                    if (frameLabels.length >= 2) {
+                                        this.imageAdapter.learnCoOccurrence(frameLabels, sc.features);
+                                    }
+                                    // hypothesisTableにもフレーム単位で学習
+                                    for (const m of sc.meanings) {
+                                        if (m.weight > 0.5 && m.concept) {
+                                            this.imageAdapter.learnHypothesis(m.concept, sc.features);
+                                        }
+                                    }
+                                }
+                                this.addLog(`映像野: フレーム単位学習 ${videoResult._scenes.length}フレーム`);
+                            }
+
                             // [v27.1] 複合概念マッチング
                             const videoCoMatches = this.imageAdapter.matchCoOccurrence(videoResult.avg_features);
                             if (videoCoMatches.length > 0) {
@@ -24024,6 +24375,168 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                                     });
                                 });
                                 this.addLog(`映像野: 複合概念検出 [${videoCoMatches.map(m => m.concept).join(', ')}]`);
+                            }
+                        }
+
+                        // [v29.0] VIS接続: フレームをvisSystemに流してidentity追跡を有効化
+                        if (this.visSystem && videoResult._scenes) {
+                            for (const sc of videoResult._scenes) {
+                                if (!sc.features) continue;
+                                try {
+                                    await this.visSystem.process({
+                                        imageFeature: {
+                                            features: sc.features,
+                                            visual_vector: sc.visual_vector || [],
+                                            semantic_candidates: sc.meanings || []
+                                        }
+                                    });
+                                } catch (_) {}
+                            }
+                            this.addLog(`[VIS] 動画フレーム追跡 ${videoResult._scenes.length}フレーム`);
+                        }
+
+                        // [v29.0] videoTokens → 言語習得パイプに流す
+                        // VideoPerceptualParserが生成したトークン列をlearnFromUtteranceと同等に処理
+                        if (videoResult.videoTokens && videoResult.videoTokens.length > 0) {
+                            const la = this.languageOutputDL &&
+                                this.languageOutputDL.languageAcquisition;
+                            if (la) {
+                                for (const vt of videoResult.videoTokens) {
+                                    // トークンの表面形（概念ラベル）を言語として学習
+                                    if (vt.surface && vt.surface.length > 0) {
+                                        try {
+                                            la.learnFromUtterance(vt.surface);
+                                        } catch (_) {}
+                                    }
+                                    // 概念空間に登録
+                                    for (const concept of vt.concepts) {
+                                        if (!concept || concept.startsWith('cluster_')) continue;
+                                        const c = this.concepts.getOrCreate(concept);
+                                        c.encounter(this.state, 'video');
+                                        c.ground(`video:${vt.timeStart.toFixed(1)}s`, this.state, 'video');
+                                    }
+                                    // 隣接トークン同士を関係付け
+                                    if (vt.position > 0 && videoResult.videoTokens[vt.position - 1]) {
+                                        const prev = videoResult.videoTokens[vt.position - 1];
+                                        for (const cA of prev.concepts) {
+                                            for (const cB of vt.concepts) {
+                                                if (!cA || !cB || cA === cB) continue;
+                                                const conA = this.concepts.getOrCreate(cA);
+                                                const conB = this.concepts.getOrCreate(cB);
+                                                conA.relate(cB, 0.15);
+                                                conB.relate(cA, 0.15);
+                                            }
+                                        }
+                                    }
+                                }
+                                this.addLog(`[VideoParser] ${videoResult.videoTokens.length}トークン → 言語パイプ学習`);
+                            }
+                        }
+
+                        // ============================================================
+                        // [v29.1] VideoToken[] → HierarchicalChunker で階層的意味化
+                        //
+                        // L0: HOGクラスタ（VideoPerceptualParser出力）
+                        // L1: identity+概念の一塊（誰が何をした）
+                        // L2: 出来事（L1の連続が一塊）
+                        // L3: エピソード（L2の連続が一塊）
+                        // → 動画全体が一塊になるまでPMIでループ
+                        // ============================================================
+                        if (videoResult.videoTokens && videoResult.videoTokens.length > 0 &&
+                            this.hierarchicalChunker) {
+                            try {
+                                // Step1: identity+conceptを結合してL0トークン列を作る
+                                // 「A:泣く」「A:走る」= 誰が何をしたを一表面形に
+                                const vtUnits = videoResult.videoTokens.map(vt => {
+                                    const identityPart = vt.identityId
+                                        ? vt.identityId.slice(-6)
+                                        : 'X';
+                                    const conceptPart = vt.concepts
+                                        .filter(c => c && !c.startsWith('cluster_'))
+                                        .slice(0, 2)
+                                        .join('＋') || `f${vt.cluster}`;
+                                    return `${identityPart}:${conceptPart}`;
+                                });
+
+                                // Step2: HierarchicalChunkerに流す
+                                // L1→L2→L3とPMIで階層的に一塊化していく
+                                const vtText = vtUnits.join('');
+                                const hier   = this.hierarchicalChunker.chunk(vtText);
+
+                                // Step3: 各レイヤーをConceptSpace・CIRに登録
+                                for (const token of hier.L1) {
+                                    if (token.surface && token.surface.length > 2) {
+                                        this.concepts.getOrCreate(token.surface)
+                                            .encounter(this.state, 'video_L1');
+                                    }
+                                }
+                                for (let i = 0; i < hier.L2.length; i++) {
+                                    const token = hier.L2[i];
+                                    if (token.surface && token.surface.length > 4) {
+                                        const c = this.concepts.getOrCreate(token.surface);
+                                        c.encounter(this.state, 'video_L2');
+                                        if (i > 0) {
+                                            const prev = hier.L2[i - 1];
+                                            const cPrev = this.concepts.getOrCreate(prev.surface);
+                                            cPrev.relate(token.surface, 0.2);
+                                            c.relate(prev.surface, 0.2);
+                                        }
+                                    }
+                                }
+                                for (const token of hier.L3) {
+                                    if (token.surface && token.surface.length > 6) {
+                                        this.concepts.getOrCreate(token.surface)
+                                            .encounter(this.state, 'video_L3');
+                                    }
+                                }
+
+                                // Step4: 動画全体が一塊か確認
+                                const isWholeUnit = hier.L3.length === 1;
+                                const topUnit = hier.L3[0] || hier.L2[0] || hier.L1[0];
+
+                                if (topUnit) {
+                                    // CIRに記録
+                                    try {
+                                        if (this.causalInterventionReasoner) {
+                                            const sb = { ...this.state };
+                                            const sa = { ...this.state, videoMeaning: topUnit.surface };
+                                            this.causalInterventionReasoner.record(
+                                                topUnit.surface, sb, sa
+                                            );
+                                        }
+                                    } catch (_) {}
+
+                                    // episodicMemoryに動画エピソードとして保存
+                                    try {
+                                        if (this.episodicMemory) {
+                                            this.episodicMemory.store({
+                                                type:       'video_episode',
+                                                content:    topUnit.surface,
+                                                L1count:    hier.L1.length,
+                                                L2count:    hier.L2.length,
+                                                L3count:    hier.L3.length,
+                                                isWholeUnit,
+                                                state:      { ...this.state }
+                                            });
+                                        }
+                                    } catch (_) {}
+
+                                    // トップユニットをsemantic_candidatesの先頭に追加
+                                    videoResult.semantic_candidates.unshift({
+                                        concept: topUnit.surface,
+                                        weight:  topUnit.score || 0.6,
+                                        fromHierarchicalChunking: true,
+                                        layer: isWholeUnit ? 'L3_whole' : `L${topUnit.layer}`
+                                    });
+                                }
+
+                                this.addLog(
+                                    `[HCH動画] L1:${hier.L1.length} L2:${hier.L2.length}` +
+                                    ` L3:${hier.L3.length} 全体一塊:${isWholeUnit ? 'YES✅' : 'まだ'}`
+                                );
+
+                            } catch (hchErr) {
+                                this.addLog(`[HCH動画] エラー: ${hchErr.message}`);
                             }
                         }
 
@@ -24285,6 +24798,128 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                 return 'chat';
             }
             
+            // ============================================================
+            // inferUserIntent: 「こいつ何が言いたいんだ？」をゼロから推論
+            //
+            // ラベルなし。概念空間・感情状態・不確実性・因果履歴から
+            // 「この入力はどういう状態から来たか」を確率的に推測する。
+            // maturityLevel >= 2 で自動発動。
+            // 戻り値: { intentScore, dominant, signals }
+            //   dominant: 最も確からしい意図の方向（数値0〜1）
+            //   signals:  推論に使ったシグナルの詳細
+            // ============================================================
+            inferUserIntent(text, conceptIds, integrated) {
+                const signals = {};
+
+                // ── シグナル1: 不確実性（UncertaintyEstimator）──────────
+                // エントロピーが高い → 相手も「よくわからない」状態で来ている
+                // → 共に考えたい / 問いかけたい 方向
+                let ueEntropy = 0.5;
+                try {
+                    const ue = window._aoUE;
+                    if (ue && this.statisticalTokenizer) {
+                        const ueResult = ue.estimateFromText(text, this.statisticalTokenizer);
+                        ueEntropy = ueResult.entropy || 0.5;
+                        signals.uncertainty = {
+                            entropy: ueEntropy,
+                            isUnknown: ueResult.isUnknown,
+                            isCertain: ueResult.isCertain
+                        };
+                    }
+                } catch (_) {}
+
+                // ── シグナル2: 概念深度と感情痕跡 ──────────────────────
+                // 自分が深く知っている概念が来た → 説明できる / 答えられる方向
+                // 自分が知らない概念が来た → 共に考える / 問い返す方向
+                let avgDepth = 0;
+                let avgAffect = 0;
+                let knownCount = 0;
+                for (const cid of conceptIds.slice(0, 3)) {
+                    const c = this.concepts.getOrCreate(cid);
+                    if (c) {
+                        avgDepth += c.depth || 0;
+                        const lastTrace = c.emotionalTrace && c.emotionalTrace.slice(-1)[0];
+                        if (lastTrace) avgAffect += (lastTrace.joy || 0) - (lastTrace.tension || 0);
+                        if (c.encounters > 2) knownCount++;
+                    }
+                }
+                const n = Math.max(1, conceptIds.slice(0, 3).length);
+                avgDepth  /= n;
+                avgAffect /= n;
+                signals.conceptKnowledge = { avgDepth, avgAffect, knownCount };
+
+                // ── シグナル3: 入力のトーン（emotion_hints）────────────
+                // valence が正 → 共感的・肯定的な応答が有効
+                // arousal が高い → 注意・驚きを伴う状態
+                const valence = integrated.emotion_hints ? integrated.emotion_hints.valence : 0;
+                const arousal = integrated.emotion_hints ? integrated.emotion_hints.arousal : 0.3;
+                signals.inputTone = { valence, arousal };
+
+                // ── シグナル4: 自分の内部状態 ───────────────────────────
+                // curiosity が高い → 問い返したい
+                // tension が高い → 慎重に・迷いを共有したい
+                // calm が高い → 落ち着いて説明できる
+                signals.selfState = {
+                    curiosity: this.state.curiosity,
+                    tension:   this.state.tension,
+                    calm:      this.state.calm || 0,
+                    joy:       this.state.joy
+                };
+
+                // ── シグナル5: 因果履歴（CIR）───────────────────────────
+                // 過去に同じ概念で何が起きたかを参照
+                // 「この概念を話した後に相手の反応がどうだったか」
+                let causalConfidence = 0;
+                try {
+                    const cir = this.causalInterventionReasoner;
+                    if (cir && conceptIds.length > 0) {
+                        const cf = cir.counterfactual(conceptIds[0], 'emotionalState');
+                        causalConfidence = cf.confidence || 0;
+                        signals.causal = {
+                            confidence: causalConfidence,
+                            statement: cf.statement
+                        };
+                    }
+                } catch (_) {}
+
+                // ── 総合スコア計算（ラベルなし・連続値）─────────────────
+                //
+                // intentScore: 0 = 「一緒に考えてほしい/問いかけてほしい」
+                //              1 = 「答えてほしい/説明してほしい/共感してほしい」
+                //
+                // 概念を深く知っている & 落ち着いている → 1寄り（答えられる）
+                // 概念を知らない & 相手のエントロピー高 → 0寄り（共に考える）
+
+                const intentScore =
+                    avgDepth          * 0.30 +   // 知識の深さ
+                    (1 - ueEntropy)   * 0.25 +   // 相手の確信度（逆エントロピー）
+                    (valence * 0.5 + 0.5) * 0.15 + // 入力トーンの肯定性
+                    (1 - this.state.tension) * 0.15 + // 自分の落ち着き
+                    (this.state.calm || 0) * 0.10 +   // 自分の平静
+                    causalConfidence  * 0.05;          // 因果的確信
+
+                // どの方向の応答が有効かの判定
+                let responseDirection;
+                if (intentScore >= 0.65) {
+                    responseDirection = 'can_answer';      // 答えられる/説明できる
+                } else if (intentScore >= 0.40) {
+                    responseDirection = 'share_feeling';   // 感情・状態を共有する
+                } else {
+                    responseDirection = 'explore_together'; // 共に考える/問い返す
+                }
+
+                return {
+                    intentScore: Math.max(0, Math.min(1, intentScore)),
+                    responseDirection,
+                    signals,
+                    // 概念空間から「これを言えば通じそう」な素材を引く
+                    relevantConcepts: conceptIds.filter(cid => {
+                        const c = this.concepts.getOrCreate(cid);
+                        return c && c.depth > 0.3 && c.encounters > 1;
+                    }).slice(0, 3)
+                };
+            }
+
             tryAbstraction() {
                 this.abstractionAttempts++;
                 
@@ -24446,7 +25081,7 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                     .sort((a, b) => a.lastEncounter - b.lastEncounter);
             }
             
-            buildIntentVector(conceptIds) {
+            buildIntentVector(conceptIds, integrated) {
                 if (conceptIds.length === 0) {
                     conceptIds = ['対話'];
                 }
@@ -24481,20 +25116,107 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                         avoidConcepts.push(failure.concept);
                     }
                 }
-                
+
+                // ============================================================
+                // 修正②: 概念の深度・感情痕跡・関係・クラスタを intentVector に乗せる
+                // これにより languageOutputDL.generate() が習得知識を参照できる
+                // ============================================================
+
+                // 各概念の感情的重みを取得（DistributedAffectiveMemory経由）
+                const conceptEmotions = {};
+                for (const cid of conceptIds.slice(0, 3)) {
+                    const c = this.concepts.getOrCreate(cid);
+                    const affWeight = this.distributedAffective
+                        ? this.distributedAffective.retrieve(cid)
+                        : 0;
+                    conceptEmotions[cid] = {
+                        depth: c ? c.depth : 0,
+                        encounters: c ? c.encounters : 0,
+                        affectiveWeight: affWeight,
+                        emotionalTrace: c && c.emotionalTrace
+                            ? c.emotionalTrace.slice(-3)
+                            : []
+                    };
+                }
+
+                // 関係概念をintentVectorに含める（生成時に助詞パターンに使う）
+                const relatedConcepts = relations.map(([id]) => id);
+
+                // TokenClusterEngineから共起クラスタ仲間を取得
+                const clusterNeighbors = [];
+                try {
+                    const tce = this.languageOutputDL &&
+                        this.languageOutputDL.languageAcquisition &&
+                        this.languageOutputDL.languageAcquisition.tokenClusterEngine;
+                    if (tce) {
+                        for (const cid of conceptIds.slice(0, 2)) {
+                            const members = tce.getClusterMembers(cid);
+                            for (const m of members.slice(0, 2)) {
+                                if (!clusterNeighbors.includes(m)) clusterNeighbors.push(m);
+                            }
+                        }
+                    }
+                } catch (_) {}
+
+                // MorphVariantLearnerから現在toneに合った接尾語を取得
+                const toneHintsForMorph = {
+                    certainty: Math.max(0.1, depth - this.state.tension * 0.3),
+                    hesitation: this.state.tension * 0.7 + this.uninterpreted.getDensity() * 0.3
+                };
+                const suggestedSuffixes = [];
+                try {
+                    const mvl = this.languageOutputDL &&
+                        this.languageOutputDL.languageAcquisition &&
+                        this.languageOutputDL.languageAcquisition.morphVariantLearner;
+                    if (mvl && mvl.getSuffixesForTone) {
+                        const sfx = mvl.getSuffixesForTone(toneHintsForMorph);
+                        suggestedSuffixes.push(...sfx.slice(0, 3));
+                    }
+                } catch (_) {}
+
+                // ============================================================
+                // 意図推論: maturityLevel >= 2 で inferUserIntent を発動
+                // 「こいつ何が言いたいんだ？」をゼロから推論して intentVector に乗せる
+                // ============================================================
+                let userIntentInference = null;
+                const currentMaturity = this.languageOutputDL
+                    ? this.languageOutputDL.languageAcquisition.maturityLevel
+                    : 0;
+                if (currentMaturity >= 2 && integrated) {
+                    try {
+                        userIntentInference = this.inferUserIntent(
+                            (integrated.semantic_candidates || []).map(c => c.concept).join(''),
+                            conceptIds,
+                            integrated
+                        );
+                        this.addLog(`[意図推論] score=${userIntentInference.intentScore.toFixed(2)} dir=${userIntentInference.responseDirection}`);
+                    } catch (_) {}
+                }
+
                 return {
                     intent,
                     concepts: conceptIds.slice(0, 2),
                     tone: {
-                        certainty: Math.max(0.1, depth - this.state.tension * 0.3),
-                        hesitation: this.state.tension * 0.7 + this.uninterpreted.getDensity() * 0.3,
+                        certainty: toneHintsForMorph.certainty,
+                        hesitation: toneHintsForMorph.hesitation,
                         emotional_weight: this.state.joy * 0.4 + this.state.tension * 0.4 + this.state.curiosity * 0.2
                     },
                     constraints: {
                         avoid_concepts: avoidConcepts,
                         length: this.state.calm > 0.7 ? 'medium' : 'short',
                         clarity: depth > 0.6 ? 'high' : (depth > 0.3 ? 'medium' : 'low')
-                    }
+                    },
+                    // 修正②で追加: 習得知識
+                    conceptKnowledge: {
+                        emotions: conceptEmotions,
+                        relatedConcepts,
+                        clusterNeighbors,
+                        suggestedSuffixes,
+                        primaryDepth: depth,
+                        maturityLevel: currentMaturity
+                    },
+                    // 意図推論結果（maturity >= 2 のみ）
+                    userIntentInference
                 };
             }
             
@@ -24653,6 +25375,52 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                         if (text.includes('かなり') || text.includes('はっきり')) {
                             score *= 0.4;
                             reasons.push('確信度と不一致');
+                        }
+                    }
+
+                    // ============================================================
+                    // 意図推論スコアを候補選択に反映
+                    // inferUserIntent の responseDirection に合った候補を優遇する
+                    // ============================================================
+                    const uii = intentVector.userIntentInference;
+                    if (uii) {
+                        const dir = uii.responseDirection;
+                        const score0 = uii.intentScore;
+
+                        if (dir === 'can_answer') {
+                            // 答えられる状態 → 断定的・長い表現を優遇
+                            if (text.length > 10 && !text.includes('...') && !text.includes('まだ')) {
+                                score *= 1.0 + score0 * 0.4;
+                                reasons.push(`意図推論:回答可能 +${(score0*40).toFixed(0)}%`);
+                            }
+                            // 「分からない」系は減点
+                            if (text.includes('分からない') || text.includes('掴めない')) {
+                                score *= 0.6;
+                                reasons.push('意図推論:回答可能時の曖昧表現を減点');
+                            }
+                        } else if (dir === 'share_feeling') {
+                            // 感情・状態を共有 → 感情的な語を含む表現を優遇
+                            if (text.includes('感じ') || text.includes('気がする') ||
+                                text.includes('見えてきた') || text.includes('分かってきた')) {
+                                score *= 1.0 + score0 * 0.3;
+                                reasons.push(`意図推論:感情共有 +${(score0*30).toFixed(0)}%`);
+                            }
+                        } else if (dir === 'explore_together') {
+                            // 共に考える → 問いかけ・迷い表現を優遇
+                            if (text.includes('?') || text.includes('？') ||
+                                text.includes('まだ') || text.includes('もっと') ||
+                                text.includes('知りたい')) {
+                                score *= 1.0 + (1 - score0) * 0.4;
+                                reasons.push(`意図推論:共探索 +${((1-score0)*40).toFixed(0)}%`);
+                            }
+                            // 関連概念が候補に含まれていれば加点
+                            for (const rc of (uii.relevantConcepts || [])) {
+                                if (text.includes(rc)) {
+                                    score *= 1.15;
+                                    reasons.push(`関連概念含有: ${rc}`);
+                                    break;
+                                }
+                            }
                         }
                     }
                     
@@ -29563,18 +30331,31 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                         console.log('[EVOLVE] evolve() completed');
                         
                     } else {
-                        const intentVector = ao.buildIntentVector(conceptIds);
+                        const stateBefore2 = { ...ao.state, conceptCount: ao.concepts.concepts.size };
+                        const intentVector = ao.buildIntentVector(conceptIds, integrated);
                         const dlResult = await ao.languageOutputDL.generate(intentVector, ao);
                         const selected = await ao.selectUtterance(dlResult.candidates, intentVector);
                         
                         ao.feedbackToLanguageDL(selected.selectedPhrase, integrated, selected.preTensionState, true);
+
+                        // CIR記録
+                        try {
+                            if (ao.causalInterventionReasoner) {
+                                const stateAfter2 = { ...ao.state, conceptCount: ao.concepts.concepts.size };
+                                ao.causalInterventionReasoner.record(selected.selectedPhrase, stateBefore2, stateAfter2);
+                            }
+                        } catch (_) {}
                         
                         thinking.remove();
                         
                         const primaryConcept = ao.concepts.getOrCreate(conceptIds[0]);
                         const modalities = primaryConcept ? Array.from(primaryConcept.modalityOrigins).join('+') : '';
+                        const uii2 = intentVector.userIntentInference;
+                        const intentInfo2 = uii2
+                            ? ` 意図:${uii2.responseDirection}(${(uii2.intentScore*100).toFixed(0)}%)`
+                            : '';
                         const internal = primaryConcept
-                            ? `深度:${(primaryConcept.depth * 100).toFixed(0)}% モダリティ:${modalities}`
+                            ? `深度:${(primaryConcept.depth * 100).toFixed(0)}% モダリティ:${modalities}${intentInfo2}`
                             : '';
                         
                         addMessage('ao', selected.text, internal);
@@ -29624,19 +30405,36 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                     const { conceptIds, integrated } = await ao.perceiveMultimodal(inputs);
                     ao.feel(integrated, conceptIds);
                     ao.formHypothesis(integrated);
-                    
-                    const intentVector = ao.buildIntentVector(conceptIds);
+
+                    // 修正: integratedを渡してinferUserIntentが動くようにする
+                    const stateBefore = { ...ao.state, conceptCount: ao.concepts.concepts.size };
+                    const intentVector = ao.buildIntentVector(conceptIds, integrated);
                     const dlResult = await ao.languageOutputDL.generate(intentVector, ao);
                     const selected = await ao.selectUtterance(dlResult.candidates, intentVector);
                     
                     ao.feedbackToLanguageDL(selected.selectedPhrase, integrated, selected.preTensionState, true);
+
+                    // CIRに「この入力→この応答」を記録してフィードバックループを閉じる
+                    try {
+                        const cir = ao.causalInterventionReasoner;
+                        if (cir) {
+                            const stateAfter = { ...ao.state, conceptCount: ao.concepts.concepts.size };
+                            cir.record(selected.selectedPhrase, stateBefore, stateAfter);
+                        }
+                    } catch (_) {}
                     
                     thinking.remove();
                     
                     const primaryConcept = ao.concepts.getOrCreate(conceptIds[0]);
                     const modalities = primaryConcept ? Array.from(primaryConcept.modalityOrigins).join('+') : '';
+
+                    // 意図推論ログを内部表示に追加
+                    const uii = intentVector.userIntentInference;
+                    const intentInfo = uii
+                        ? ` 意図:${uii.responseDirection}(${(uii.intentScore*100).toFixed(0)}%)`
+                        : '';
                     const internal = primaryConcept
-                        ? `深度:${(primaryConcept.depth * 100).toFixed(0)}% モダリティ:${modalities}`
+                        ? `深度:${(primaryConcept.depth * 100).toFixed(0)}% モダリティ:${modalities}${intentInfo}`
                         : '';
                     
                     addMessage('ao', selected.text, internal);
