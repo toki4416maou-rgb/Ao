@@ -21680,10 +21680,14 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                             data: data
                         };
                         // 圧縮して保存（lz-string使用）
-                        const compressed = LZString.compressToUTF16(JSON.stringify(saveData));
+                        const rawJson = JSON.stringify(saveData);
+                        const compressed = LZString.compressToUTF16(rawJson);
+                        const beforeKB = (rawJson.length / 1024).toFixed(1);
+                        const afterKB  = (compressed.length / 1024).toFixed(1);
+                        const ratio    = ((1 - compressed.length / rawJson.length) * 100).toFixed(0);
                         localStorage.setItem('ao_state', compressed);
                         localStorage.setItem('ao_state_compressed', '1'); // 圧縮フラグ
-                        globalLogManager.log('Saved to localStorage (compressed)', 'info');
+                        globalLogManager.log(`localStorage保存完了: ${afterKB}KB (圧縮率 ${ratio}%)`, 'info');
                         return { success: true, timestamp: saveData.timestamp };
                     }
                     
@@ -21696,17 +21700,21 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                         const transaction = this.db.transaction([this.storeName], 'readwrite');
                         const store = transaction.objectStore(this.storeName);
                         
+                        const rawJson  = JSON.stringify(data);
                         const saveData = {
                             id: 'current_state',
                             timestamp: Date.now(),
                             compressed: true,
-                            data: LZString.compressToUTF16(JSON.stringify(data))
+                            data: LZString.compressToUTF16(rawJson)
                         };
+                        const beforeKB = (rawJson.length / 1024).toFixed(1);
+                        const afterKB  = (saveData.data.length / 1024).toFixed(1);
+                        const ratio    = ((1 - saveData.data.length / rawJson.length) * 100).toFixed(0);
                         
                         const request = store.put(saveData);
                         
                         request.onsuccess = () => {
-                            globalLogManager.log('Saved to IndexedDB (compressed)', 'info');
+                            globalLogManager.log(`IndexedDB保存完了: ${afterKB}KB (圧縮率 ${ratio}%)`, 'info');
                             resolve({ success: true, timestamp: saveData.timestamp });
                         };
                         
