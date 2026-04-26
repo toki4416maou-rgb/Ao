@@ -298,6 +298,21 @@
     function attachOptimizer(being) {
         OPT.log(`v${OPT.version} アタッチ開始`);
 
+        // --- 元のsetIntervalを殺す（二重実行防止）---
+        const toKill = [
+            '_aoIntervalUpdateUI',
+            '_aoIntervalIdentityUI',
+            '_aoIntervalDrift',
+            '_aoIntervalAutonomousThought',
+        ];
+        toKill.forEach(key => {
+            if (window[key]) {
+                clearInterval(window[key]);
+                window[key] = null;
+                OPT.log(`元のsetInterval[${key}]を停止`);
+            }
+        });
+
         // --- Scheduler に既存の500ms処理を登録 ---
         // updateUI（window スコープに存在する）
         if (typeof updateUI === 'function') {
@@ -309,6 +324,26 @@
         if (typeof _updateIdentityUI === 'function') {
             Scheduler.register('updateIdentityUI', _updateIdentityUI);
             OPT.log('_updateIdentityUI → Schedulerに統合');
+        }
+
+        // drift（5秒ごと → Schedulerで10tickに1回実行）
+        if (typeof drift === 'function') {
+            let _driftTick = 0;
+            Scheduler.register('drift', () => {
+                _driftTick++;
+                if (_driftTick % 10 === 0) drift(); // 500ms×10 = 5秒相当
+            });
+            OPT.log('drift → Schedulerに統合');
+        }
+
+        // checkAutonomousThought（20秒ごと → 40tickに1回）
+        if (typeof checkAutonomousThought === 'function') {
+            let _autonomousTick = 0;
+            Scheduler.register('autonomousThought', () => {
+                _autonomousTick++;
+                if (_autonomousTick % 40 === 0) checkAutonomousThought(); // 500ms×40 = 20秒相当
+            });
+            OPT.log('checkAutonomousThought → Schedulerに統合');
         }
 
         // SpatialInteractionModel の update

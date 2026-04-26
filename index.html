@@ -30876,9 +30876,9 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
         
         updateUI();
         initNeural();
-        setInterval(updateUI, 500); // [PERF FIX]
-        setInterval(drift, 5000);
-        setInterval(checkAutonomousThought, 20000);
+        window._aoIntervalUpdateUI          = setInterval(updateUI, 500); // [PERF FIX]
+        window._aoIntervalDrift             = setInterval(drift, 5000);
+        window._aoIntervalAutonomousThought = setInterval(checkAutonomousThought, 20000);
         
         // 代謝ティック（10秒ごと）
         setInterval(async () => {
@@ -32073,7 +32073,7 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
         }
 
         // 500msごとにUI更新
-        setInterval(_updateIdentityUI, 500);
+        window._aoIntervalIdentityUI = setInterval(_updateIdentityUI, 500);
 
         // ── codec.onEncode: UI更新 + Identity/State/Prediction/Intent パイプライン ──
         // rawFeaturesBuf: 画像encode時に視点推定用のHOGブロックをここに格納しておく
