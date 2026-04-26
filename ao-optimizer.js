@@ -276,21 +276,98 @@
     window.AoIdleGC = IdleGC;
 
     // ─── 6. チャット競合防止パッチ ─────────────────────────────
-    // Aoのprocess()（チャット処理）の前後でSchedulerを一時停止
+    // handleInput の前後で Scheduler を一時停止し
+    // updateUI などとの競合を防ぐ
     function patchChatProcess(being) {
-        if (!being || !being.process || being._optimizerPatched) return;
+        // window.handleInput は index.html 側でグローバル公開済み
+        if (typeof window.handleInput !== 'function') {
+            OPT.log('handleInput が未公開のためパッチをスキップ');
+            return;
+        }
+        if (window.handleInput._optimizerPatched) return;
 
-        const origProcess = being.process.bind(being);
-        being.process = async function(...args) {
+        const origHandleInput = window.handleInput;
+        window.handleInput = async function(...args) {
             Scheduler.pause();
             try {
-                return await origProcess(...args);
+                return await origHandleInput(...args);
             } finally {
                 Scheduler.resume();
             }
         };
-        being._optimizerPatched = true;
-        OPT.log('チャット競合防止パッチ適用完了');
+        window.handleInput._optimizerPatched = true;
+        OPT.log('handleInput 競合防止パッチ適用完了');
+    }
+
+    // ─── 7. TokenClusterEngine._clusterCentroid キャッシュパッチ ──
+    // 毎回全メンバーの共起ベクトルを再計算しているのをキャッシュで回避
+    // メンバーセットが変わったときだけ再計算する
+    function patchClusterCentroid(being) {
+        const tce = being &&
+            being.languageOutputDL &&
+            being.languageOutputDL.languageAcquisition &&
+            being.languageOutputDL.languageAcquisition.tokenClusterEngine;
+        if (!tce) {
+            OPT.log('TokenClusterEngine が未初期化のためcentroidパッチをスキップ');
+            return;
+        }
+        if (tce._centroidCachePatched) return;
+
+        // clusterID → { memberSnapshot: string, centroid: Map }
+        tce._centroidCache = new Map();
+
+        const origClusterCentroid = tce._clusterCentroid.bind(tce);
+        tce._clusterCentroid = function(members) {
+            // メンバーの文字列スナップショットをキーにする
+            // Setの中身が変わっていれば再計算、変わってなければキャッシュを返す
+            const snapshot = Array.from(members).sort().join('\x00');
+            const cached = this._centroidCache.get(snapshot);
+            if (cached) {
+                OPT.stats.memoHits++;
+                return cached;
+            }
+            const centroid = origClusterCentroid(members);
+            // キャッシュサイズ上限（クラスタ数上限100に合わせて200）
+            if (this._centroidCache.size >= 200) {
+                const firstKey = this._centroidCache.keys().next().value;
+                this._centroidCache.delete(firstKey);
+            }
+            this._centroidCache.set(snapshot, centroid);
+            return centroid;
+        };
+
+        // observe() でクラスタが変化したとき該当キャッシュを無効化する
+        // _addCooccur でメンバーが増えうるので、_assignCluster/_reassignCluster をフック
+        const invalidate = (cid) => {
+            if (!cid) return;
+            const members = tce.clusters.get(cid);
+            if (!members) return;
+            const snapshot = Array.from(members).sort().join('\x00');
+            tce._centroidCache.delete(snapshot);
+        };
+
+        const origAssign = tce._assignCluster.bind(tce);
+        tce._assignCluster = function(token) {
+            // 割り当て前の旧クラスタを無効化
+            const oldCid = this.tokenToCluster.get(token);
+            invalidate(oldCid);
+            origAssign(token);
+            // 割り当て後の新クラスタも無効化
+            const newCid = this.tokenToCluster.get(token);
+            invalidate(newCid);
+        };
+
+        const origReassign = tce._reassignCluster.bind(tce);
+        tce._reassignCluster = function(token) {
+            const oldCid = this.tokenToCluster.get(token);
+            invalidate(oldCid);
+            origReassign(token);
+            const newCid = this.tokenToCluster.get(token);
+            invalidate(newCid);
+        };
+
+        tce._centroidCachePatched = true;
+        OPT.log('TokenClusterEngine._clusterCentroid キャッシュパッチ適用完了');
     }
 
     // ─── 7. Aoへのアタッチ ─────────────────────────────────────
@@ -399,6 +476,9 @@
 
         // --- チャット競合防止 ---
         patchChatProcess(being);
+
+        // --- _clusterCentroid キャッシュ ---
+        patchClusterCentroid(being);
 
         // --- IdleGC にAoの大きなMapを登録 ---
         if (being.concepts)       IdleGC.register(being.concepts,       ['_map', 'cache']);
