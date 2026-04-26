@@ -29359,18 +29359,7 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
             }
             
             markDirty() {
-                console.log('[TRACE] markDirty() called');
                 this.isDirty = true;
-                console.log('[TRACE] isDirty set to true');
-                const saveIndicator = document.getElementById('saveStatus');
-                if (saveIndicator && !this.isSaving) {
-                    // 「未保存」ではなく「保存済み」と表示（少し薄く）
-                    const timeStr = this.lastSaveTime > 0 ? new Date(this.lastSaveTime).toLocaleTimeString() : '--:--:--';
-                    saveIndicator.textContent = `人格: 保存済み (${timeStr})`;
-                    saveIndicator.classList.remove('saving');
-                    saveIndicator.style.opacity = '0.7'; // 少し薄く表示
-                    console.log('[TRACE] UI updated to 保存済み (待機中)');
-                }
             }
             
             markSaved() {
@@ -29394,303 +29383,85 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
             startAutoSave() {
                 console.log('[TRACE] startAutoSave() called - interval:', this.autoSaveInterval);
                 const intervalId = setInterval(() => {
-                    console.log('[TRACE] AutoSave tick - isDirty:', this.isDirty, 'isSaving:', this.isSaving);
                     if (!this.isSaving && this.isDirty) {
-                        console.log('[TRACE] Conditions met, calling save()');
                         this.save();
-                    } else {
-                        console.log('[TRACE] Conditions not met, skipping');
                     }
                 }, this.autoSaveInterval);
-                console.log('[TRACE] setInterval created with ID:', intervalId);
             }
             
             async save() {
-                console.log('[TRACE] save() called - isSaving:', this.isSaving);
-                
-                // ★ save()の直前にidentityを確認
-                console.log('[SAVE] ========================================');
-                console.log('[SAVE] save()呼び出し時のidentity確認');
-                console.log('[SAVE] this.being:', !!this.being);
-                console.log('[SAVE] this.being.identity:', this.being?.identity);
-                console.log('[SAVE] this.being.identity.turns:', this.being?.identity?.turns);
-                console.log('[SAVE] ========================================');
-                
-                if (this.isSaving) {
-                    console.log('[TRACE] Already saving, returning');
-                    return;
-                }
-                
-                console.log('[TRACE] Starting save process');
+                if (this.isSaving || !this.isDirty) return;
                 this.isSaving = true;
+
                 const saveIndicator = document.getElementById('saveStatus');
                 if (saveIndicator) {
                     saveIndicator.textContent = '人格: 保存中...';
                     saveIndicator.classList.add('saving');
                 }
-                
+
                 try {
+                    // ① データ取得
                     const personaData = this.being.exportAll();
-                    
                     if (!personaData || !personaData.coreState) {
-                        throw new Error('Export data is invalid');
+                        throw new Error('exportAll の戻り値が不正');
                     }
-                    
-                    // ============ 保存内容の詳細ログ ============
-                    console.log('[SAVE] ========================================');
-                    console.log('[SAVE] 保存するデータの詳細：');
-                    console.log('[SAVE] ========================================');
-                    console.log('[SAVE] バージョン:', personaData.version);
-                    console.log('[SAVE] タイムスタンプ:', new Date(personaData.timestamp).toLocaleString());
-                    
-                    // コア状態
-                    console.log('[SAVE] --- コア状態 ---');
-                    console.log('[SAVE] identity:', personaData.coreState.identity);
-                    console.log('[SAVE] identity.turns:', personaData.coreState.identity?.turns);
-                    console.log('[SAVE] targetAbstraction:', personaData.coreState.targetAbstraction);
-                    console.log('[SAVE] operationalAbstraction:', personaData.coreState.operationalAbstraction);
-                    
-                    // 概念
-                    console.log('[SAVE] --- 概念 ---');
-                    const savedConceptCount = personaData.coreState.concepts?.concepts?.length || 0;
-                    console.log('[SAVE] 概念数:', savedConceptCount);
-                    if (savedConceptCount > 0) {
-                        console.log('[SAVE] 概念例:', personaData.coreState.concepts.concepts.slice(0, 3).map(c => c.name));
-                    }
-                    
-                    // エピソード記憶
-                    console.log('[SAVE] --- エピソード記憶 ---');
-                    const savedEpisodeCount = personaData.coreState.episodicMemory?.episodes?.length || 0;
-                    console.log('[SAVE] エピソード数:', savedEpisodeCount);
-                    
-                    // UninterpretedStatePool
-                    console.log('[SAVE] --- UninterpretedStatePool ---');
-                    const poolCount = personaData.coreState.uninterpretedStatePool?.states?.length || 0;
-                    console.log('[SAVE] 未解釈状態数:', poolCount);
-                    if (poolCount > 0) {
-                        console.log('[SAVE] ✅ UninterpretedStatePool が保存されています！');
+
+                    // ② JSON化 → LZString圧縮
+                    const jsonString = JSON.stringify(personaData);
+                    const lzOk       = typeof LZString !== 'undefined';
+                    const saveString = lzOk ? LZString.compressToUTF16(jsonString) : jsonString;
+                    const rawKB      = (jsonString.length / 1024).toFixed(1);
+                    const compKB     = (saveString.length / 1024).toFixed(1);
+
+                    // ③ 保存（IndexedDB 優先 → localStorage フォールバック）
+                    if (this.useIndexedDB && this.indexedDB) {
+                        const prev = await this.indexedDB.get(this.saveKeys.current);
+                        if (prev) await this.indexedDB.set(this.saveKeys.prev, prev);
+                        await this.indexedDB.set(this.saveKeys.current, saveString);
                     } else {
-                        console.log('[SAVE] ⚠️ UninterpretedStatePool は空です');
-                    }
-                    
-                    // 因果記憶
-                    console.log('[SAVE] --- 因果記憶 ---');
-                    const causalCount = personaData.intelligenceState?.causalMemory?.links?.length || 0;
-                    console.log('[SAVE] 因果リンク数:', causalCount);
-                    
-                    // 知識境界
-                    console.log('[SAVE] --- 知識境界 ---');
-                    const boundaryCount = personaData.intelligenceState?.knowledgeBoundaries?.boundaries?.length || 0;
-                    console.log('[SAVE] 境界数:', boundaryCount);
-                    
-                    // 抽象度制御
-                    console.log('[SAVE] --- 抽象度制御 ---');
-                    const resolutionCount = personaData.intelligenceState?.abstractionResolution?.resolutions?.length || 0;
-                    console.log('[SAVE] 解像度数:', resolutionCount);
-                    
-                    console.log('[SAVE] ========================================');
-                    
-                    // JSON文字列化を試行
-                    let jsonString;
-                    try {
-                        jsonString = JSON.stringify(personaData);
-                    } catch (stringifyError) {
-                        console.error('JSON stringify failed:', stringifyError);
-                        throw new Error(`JSON変換失敗: ${stringifyError.message}`);
-                    }
-                    
-                    const dataSizeMB = (jsonString.length / (1024 * 1024)).toFixed(2);
-                    // 圧縮版を作成（以降の保存は全てこちらを使う）
-                    const _lzAvailable = (typeof LZString !== 'undefined');
-                    const saveString = _lzAvailable
-                        ? LZString.compressToUTF16(jsonString)
-                        : jsonString;
-                    const compressedSizeMB = _lzAvailable ? (saveString.length / (1024 * 1024)).toFixed(2) : null;
-                    const compressionRatio = _lzAvailable ? ((1 - saveString.length / jsonString.length) * 100).toFixed(0) : null;
-                    console.log(`Persona data size: ${dataSizeMB}MB → ${compressedSizeMB || dataSizeMB}MB`);
-                    
-                    // 50MB以上の場合は警告
-                    if (jsonString.length > 50 * 1024 * 1024) {
-                        console.warn(`Data size is large: ${dataSizeMB}MB`);
-                    }
-                    
-                    if (this.isElectron) {
-                        // Electron環境
-                        try {
-                            if (!window.electronAPI || !window.electronAPI.savePersona) {
-                                throw new Error('electronAPI not available');
-                            }
-                            console.log('[ELECTRON] Saving persona to file...');
-                            const result = await window.electronAPI.savePersona(personaData);
-                            if (!result || !result.success) {
-                                throw new Error(result?.error || 'Save failed');
-                            }
-                            console.log('[ELECTRON] Persona saved successfully to:', result.path);
-                            this.being.addLog(`ファイル保存: ${result.path}`);
-                        } catch (electronError) {
-                            console.error('[ELECTRON] Save failed:', electronError);
-                            throw new Error(`Electron保存失敗: ${electronError.message}`);
+                        const cur = localStorage.getItem(this.saveKeys.current);
+                        if (cur) {
+                            const prv = localStorage.getItem(this.saveKeys.prev);
+                            if (prv) localStorage.setItem(this.saveKeys.backup, prv);
+                            localStorage.setItem(this.saveKeys.prev, cur);
                         }
-                    } else {
-                        // ブラウザ環境：世代管理 + IndexedDB対応
-                        try {
-                            // 世代シフト: current → prev, prev → backup
-                            if (this.useIndexedDB && this.indexedDB) {
-                                // IndexedDB使用
-                                const currentData = await this.indexedDB.get(this.saveKeys.current);
-                                if (currentData) {
-                                    // current → prev
-                                    await this.indexedDB.set(this.saveKeys.prev, currentData);
-                                    
-                                    const prevData = await this.indexedDB.get(this.saveKeys.prev);
-                                    if (prevData) {
-                                        // prev → backup
-                                        await this.indexedDB.set(this.saveKeys.backup, prevData);
-                                    }
-                                }
-                                
-                                // 新しいデータを保存
-                                await this.indexedDB.set(this.saveKeys.current, saveString);
-                                this.being.addLog('保存: IndexedDB使用');
-                            } else {
-                                console.log('[DEBUG] Using localStorage for save');
-                                // localStorage使用
-                                // データサイズチェック：5MB以上ならIndexedDBに切り替え
-                                if (jsonString.length > 5 * 1024 * 1024 && this.indexedDB) {
-                                    console.log('[DEBUG] Data too large, migrating to IndexedDB');
-                                    this.being.addLog('データサイズ超過: IndexedDBに移行');
-                                    await this._migrateToIndexedDB();
-                                    this.useIndexedDB = true;
-                                    await this.indexedDB.set(this.saveKeys.current, saveString);
-                                } else {
-                                    console.log('[DEBUG] Saving to localStorage...');
-                                    // 世代シフト（正しい順序）
-                                    const currentData = localStorage.getItem(this.saveKeys.current);
-                                    const prevData = localStorage.getItem(this.saveKeys.prev);  // ← 先に取得
-                                    
-                                    if (currentData) {
-                                        console.log('[DEBUG] Backing up current data');
-                                        // current → prev
-                                        localStorage.setItem(this.saveKeys.prev, currentData);
-                                    }
-                                    
-                                    if (prevData) {
-                                        console.log('[DEBUG] Backing up prev data');
-                                        // 古い prev → backup
-                                        localStorage.setItem(this.saveKeys.backup, prevData);
-                                    }
-                                    
-                                    // 新しいデータを保存
-                                    console.log('[DEBUG] Writing new data to localStorage');
-                                    localStorage.setItem(this.saveKeys.current, saveString);
-                                    console.log('[DEBUG] localStorage write complete');
-                                    
-                                    // ★ 確認: 実際に書き込まれたか検証
-                                    const verifyData = localStorage.getItem(this.saveKeys.current);
-                                    if (verifyData) {
-                                        const verifyJson = (typeof LZString !== 'undefined' && _lzAvailable)
-                                            ? LZString.decompressFromUTF16(verifyData)
-                                            : verifyData;
-                                        const verifyParsed = JSON.parse(verifyJson);
-                                        console.log('[VERIFY] Data written to localStorage:', {
-                                            key: this.saveKeys.current,
-                                            size: verifyData.length,
-                                            turns: verifyParsed.coreState?.identity?.turns,
-                                            timestamp: new Date(verifyParsed.timestamp).toLocaleString()
-                                        });
-                                    } else {
-                                        console.error('[VERIFY] Failed to verify localStorage write!');
-                                    }
-                                }
-                            }
-                        } catch (storageError) {
-                            console.error('Storage save failed:', storageError);
-                            // QuotaExceededErrorの可能性
-                            if (storageError.name === 'QuotaExceededError') {
-                                // IndexedDBへの自動移行を試みる
-                                if (!this.useIndexedDB && this.indexedDB) {
-                                    this.being.addLog('容量超過: IndexedDBに移行');
-                                    await this._migrateToIndexedDB();
-                                    this.useIndexedDB = true;
-                                    await this.indexedDB.set(this.saveKeys.current, saveString);
-                                } else {
-                                    throw new Error('ストレージ容量超過: データが大きすぎます');
-                                }
-                            } else {
-                                throw new Error(`保存失敗: ${storageError.message}`);
-                            }
-                        }
+                        localStorage.setItem(this.saveKeys.current, saveString);
                     }
-                    
+
+                    // ④ 成功処理
+                    this.isDirty      = false;
                     this.lastSaveTime = Date.now();
-                    console.log('[DEBUG] Save successful! Calling markSaved()...');
-                    this.markSaved(); // 保存済みフラグを立てる + UI更新
-                    const conceptCount = this.being.concepts?.concepts?.size || 0;
-                    const episodeCount = this.being.episodicMemory?.episodes?.length || 0;
-                    const sizeLabel = compressedSizeMB
-                        ? `${compressedSizeMB}MB (圧縮率 ${compressionRatio}%)`
-                        : `${dataSizeMB}MB`;
-                    this.being.addLog(`人格保存完了 [${sizeLabel}] 概念:${conceptCount} EP:${episodeCount}`);
-                    console.log('[DEBUG] Save complete - Concepts:', conceptCount, 'Episodes:', episodeCount);
-                    
-                    // ★ 最終確認: 本当に保存されたか
-                    console.log('[SAVE] ========================================');
-                    console.log('[SAVE] 保存処理完了 - 最終確認');
-                    console.log('[SAVE] Key:', this.saveKeys.current);
-                    try {
-                        let finalCheck = null;
-                        if (this.useIndexedDB && this.indexedDB) {
-                            finalCheck = await this.indexedDB.get(this.saveKeys.current);
-                        } else {
-                            finalCheck = localStorage.getItem(this.saveKeys.current);
-                        }
-                        if (finalCheck) {
-                            const finalJson = (typeof LZString !== 'undefined' && _lzAvailable)
-                                ? LZString.decompressFromUTF16(finalCheck)
-                                : finalCheck;
-                            const finalParsed = JSON.parse(finalJson);
-                            console.log('[SAVE] ✅ 保存成功確認:');
-                            console.log('[SAVE]    - turns:', finalParsed.coreState?.identity?.turns);
-                            console.log('[SAVE]    - size:', finalCheck.length, 'bytes');
-                        } else {
-                            console.error('[SAVE] ❌ 保存確認失敗: データが見つかりません');
-                        }
-                    } catch (verifyErr) {
-                        console.error('[SAVE] 確認エラー:', verifyErr);
-                    }
-                    console.log('[SAVE] ========================================');
-                    
-                    // isSavingフラグを少し遅延させて解除
-                    setTimeout(() => {
-                        this.isSaving = false;
-                        console.log('[DEBUG] isSaving flag cleared');
-                    }, 500);
-                    
-                } catch (error) {
-                    console.error('[ERROR] ========================================');
-                    console.error('[ERROR] 保存失敗！');
-                    console.error('[ERROR] Error:', error.message);
-                    console.error('[ERROR] Stack:', error.stack);
-                    console.error('[ERROR] ========================================');
-                    
-                    // エラー時のUI更新
-                    const saveIndicator = document.getElementById('saveStatus');
+                    const timeStr   = new Date().toLocaleTimeString();
+                    const concepts  = this.being.concepts?.concepts?.size  || 0;
+                    const episodes  = this.being.episodicMemory?.episodes?.length || 0;
+                    const sizeLabel = lzOk ? `${compKB}KB (raw ${rawKB}KB)` : `${rawKB}KB`;
+
+                    console.log(`[SAVE] ✅ 完了 ${sizeLabel} turns:${personaData.coreState.identity?.turns}`);
+
                     if (saveIndicator) {
-                        saveIndicator.textContent = '人格: 保存失敗！';
+                        saveIndicator.textContent = `✅ 保存済み ${timeStr} [${sizeLabel}] 概念:${concepts} EP:${episodes}`;
                         saveIndicator.classList.remove('saving');
-                        saveIndicator.style.color = '#ff4444';
+                        saveIndicator.style.color   = '#4ade80';
                         saveIndicator.style.opacity = '1';
+                        // 3秒後に通常表示に戻す
+                        setTimeout(() => {
+                            if (saveIndicator) {
+                                saveIndicator.textContent = `人格: 保存済み (${timeStr})`;
+                                saveIndicator.style.color = '';
+                            }
+                        }, 3000);
                     }
-                    
-                    if (this.being && this.being.addLog) {
-                        this.being.addLog(`❌ 保存エラー: ${error.message}`);
-                    }
-                    this.isSaving = false;
-                    
+
+                } catch (err) {
+                    console.error('[SAVE] ❌ 失敗:', err);
+                    this.being.addLog(`❌ 保存エラー: ${err.message}`);
                     if (saveIndicator) {
                         saveIndicator.textContent = '人格: 保存失敗';
                         saveIndicator.classList.remove('saving');
+                        saveIndicator.style.color = '#ff4444';
                     }
+                } finally {
+                    this.isSaving = false;
                 }
             }
             
