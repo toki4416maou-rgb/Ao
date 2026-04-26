@@ -5056,11 +5056,23 @@ MemoryLimitsConfig._instance = null;
             
             _assessExternalStimulus() {
                 try {
-                    // 最近のチャット履歴から刺激を評価
+                    // EpisodicMemoryの直近エピソードから実際の感情状態を読む
+                    const em = this.being && this.being.episodicMemory;
+                    if (!em || em.episodes.length === 0) {
+                        return { arousal: 0.5, valence: 0.5, tension: 0.3 };
+                    }
+                    const recent = em.getRecent(5);
+                    let arousal = 0, valence = 0, tension = 0;
+                    recent.forEach(ep => {
+                        arousal += ep.emotion.joy      !== undefined ? ep.emotion.joy      : 0.5;
+                        valence += ep.emotion.sadness  !== undefined ? 1 - ep.emotion.sadness : 0.5;
+                        tension += ep.emotion.tension  !== undefined ? ep.emotion.tension  : 0.3;
+                    });
+                    const n = recent.length;
                     return {
-                        arousal: Math.random() * 0.2 + 0.4,  // TODO: 実際の評価
-                        valence: Math.random() * 0.2 + 0.4,
-                        tension: Math.random() * 0.2 + 0.3
+                        arousal: Math.min(1, arousal / n),
+                        valence: Math.min(1, valence / n),
+                        tension: Math.min(1, tension / n)
                     };
                 } catch (error) {
                     console.error('_assessExternalStimulus failed:', error);
@@ -5070,8 +5082,27 @@ MemoryLimitsConfig._instance = null;
             
             _calculateNovelty() {
                 try {
-                    // TODO: 実際の新奇性計算
-                    return Math.random() * 0.3 + 0.4;
+                    // 新奇性 = 直近エピソードのimportanceと「過去に見たか」の差分
+                    const em = this.being && this.being.episodicMemory;
+                    if (!em || em.episodes.length < 2) return 0.5;
+
+                    const recent  = em.getRecent(3);
+                    const older   = em.episodes.slice(-20, -3);
+
+                    if (recent.length === 0) return 0.5;
+
+                    // 直近エピソードの概念IDが過去に出現したか
+                    const olderConcepts = new Set();
+                    older.forEach(ep => ep.conceptIds.forEach(id => olderConcepts.add(id)));
+
+                    let novelSum = 0;
+                    recent.forEach(ep => {
+                        const newConcepts = ep.conceptIds.filter(id => !olderConcepts.has(id)).length;
+                        const total = Math.max(1, ep.conceptIds.length);
+                        novelSum += newConcepts / total;
+                    });
+
+                    return Math.min(1, novelSum / recent.length);
                 } catch (error) {
                     return 0.5;
                 }
@@ -5079,8 +5110,25 @@ MemoryLimitsConfig._instance = null;
             
             _calculateComplexity() {
                 try {
-                    // TODO: 実際の複雑性計算
-                    return Math.random() * 0.3 + 0.4;
+                    // 複雑性 = 直近エピソードの概念数 + 因果チェーンの深さ
+                    const em  = this.being && this.being.episodicMemory;
+                    const cml = this.being && this.being.causalMemoryLayer;
+
+                    let conceptComplexity = 0.4;
+                    if (em && em.episodes.length > 0) {
+                        const recent = em.getRecent(5);
+                        const avgConcepts = recent.reduce((s, ep) => s + ep.conceptIds.length, 0) / recent.length;
+                        // 5概念以上で複雑度MAX方向
+                        conceptComplexity = Math.min(1, avgConcepts / 10);
+                    }
+
+                    let causalComplexity = 0.3;
+                    if (cml && cml.causalChains) {
+                        const chainCount = cml.causalChains.size;
+                        causalComplexity = Math.min(1, chainCount / 20);
+                    }
+
+                    return conceptComplexity * 0.6 + causalComplexity * 0.4;
                 } catch (error) {
                     return 0.5;
                 }
@@ -8149,7 +8197,22 @@ MemoryLimitsConfig._instance = null;
             async extractMeaning(imageData) {
                 this.processing = true;
 
-                const SIZE = 256; // [v4] 32→256: 空間解像度64倍 (65536px) 指の本数・細部まで対応
+                // ── フェーズ3: confidence高ければ軽量スキップ ──
+                // 仮説テーブルに高信頼度の定義済み概念が十分あれば重い特徴抽出をスキップ
+                if (this.hypothesisTable) {
+                    const defined = this.hypothesisTable.getDefinedHypotheses
+                        ? this.hypothesisTable.getDefinedHypotheses()
+                        : [];
+                    const highConf = defined.filter(h => (h.confidence || 0) >= 0.75);
+                    if (highConf.length >= 3) {
+                        // 高信頼度が3件以上 → 軽量モード（小サイズで処理）
+                        this._fastMode = true;
+                    } else {
+                        this._fastMode = false;
+                    }
+                }
+
+                const SIZE = this._fastMode ? 64 : 256; // 高信頼時は64px（軽量）、低信頼時は256px（精密）
                 const canvas = document.createElement('canvas');
                 const ctx = canvas.getContext('2d');
                 const img = new Image();
@@ -9377,14 +9440,26 @@ MemoryLimitsConfig._instance = null;
             async extractMeaning(audioBlob) {
                 this.processing = true;
 
+                // ── フェーズ3: confidence高ければL3/L4をスキップ ──
+                // 仮説テーブルに高信頼度マッピングが十分あれば韻律解析をスキップ
+                let skipProsody = false;
+                if (this.hypothesisTable) {
+                    const defined = this.hypothesisTable.getDefinedHypotheses
+                        ? this.hypothesisTable.getDefinedHypotheses()
+                        : [];
+                    skipProsody = defined.filter(h => (h.confidence || 0) >= 0.75).length >= 3;
+                }
+
                 // Layer2: 物理信号から低次特徴を抽出（v27.0: 実解析・フレーム分割）
                 let percept = await this.featureExtractor.fromAudioBlob(audioBlob);
 
                 // Layer3: 時間構造を統合
                 percept = this.temporalIntegrator.fromPercept(percept);
 
-                // Layer4: 韻律として感情・意図を読む（ここで初めて意味的）
-                percept = this.prosodyInterpreter.fromPercept(percept);
+                // Layer4: 韻律として感情・意図を読む（高信頼時スキップ）
+                if (!skipProsody) {
+                    percept = this.prosodyInterpreter.fromPercept(percept);
+                }
 
                 // Layer5: 意味候補に変換（最終層）
                 // v27.0: 仮説テーブルを渡して定義済み概念で照合
@@ -10713,13 +10788,26 @@ class TokenClusterEngine {
             }
         }
 
-        // 新規トークンをクラスタに割り当て（オンライン更新）
+        // ── フェーズ3: 誤差トリガー更新 ──
+        // クラスタへの再割り当てはコスト高なので「外れた」トークンだけ更新
         for (const s of surfaces) {
             if (!this.tokenToCluster.has(s)) {
+                // 未知トークン → 必ず割り当て
                 this._assignCluster(s);
             } else {
-                // 既存トークンの再割り当て（共起が増えたので）
-                this._reassignCluster(s);
+                // 既知トークン → 現クラスタとの類似度を計算
+                // 類似度が低い（≒外れた）場合のみ再割り当て（計算コスト削減）
+                const cid = this.tokenToCluster.get(s);
+                if (cid && this.clusters.has(cid)) {
+                    const vec      = this._getCooccurVector(s);
+                    const centroid = this._clusterCentroid(this.clusters.get(cid));
+                    const sim      = this._cosineSim(vec, centroid);
+                    // 類似度が閾値を下回った（予測外れ）場合のみ再割り当て
+                    if (sim < this.SIMILARITY_THRESHOLD * 0.8) {
+                        this._reassignCluster(s);
+                    }
+                    // sim が高い（予測当たり）場合はスキップ → 軽い
+                }
             }
         }
 
@@ -13872,6 +13960,8 @@ class LazySemanticizer {
             constructor() {
                 this.recentSensory = [];
                 this.maxHistory = 10;
+                // モダリティごとの直近予測を保持（誤差計算用）
+                this._lastPrediction = new Map();
             }
             
             integrate(sensoryResults) {
@@ -13879,16 +13969,44 @@ class LazySemanticizer {
                 let totalEmotionValence = 0;
                 let totalEmotionArousal = 0;
                 let emotionCount = 0;
-                
+
+                // ── 誤差計算（前回予測との比較）──
+                const modalityErrors = new Map();
                 sensoryResults.forEach(result => {
+                    const prev = this._lastPrediction.get(result.modality);
+                    if (prev && prev.candidates.length > 0) {
+                        const prevConcepts = new Set(prev.candidates.map(c => c.concept));
+                        const currConcepts = result.semantic_candidates.map(c => c.concept);
+                        const hits = currConcepts.filter(c => prevConcepts.has(c)).length;
+                        const total = Math.max(1, currConcepts.length);
+                        modalityErrors.set(result.modality, 1 - (hits / total));
+                    } else {
+                        modalityErrors.set(result.modality, 0.5);
+                    }
+                    this._lastPrediction.set(result.modality, {
+                        candidates: result.semantic_candidates.slice(0, 3)
+                    });
+                });
+
+                // ── 誤差の全体伝播 ──
+                let globalErrorSignal = 0;
+                modalityErrors.forEach(err => { globalErrorSignal += err; });
+                globalErrorSignal = modalityErrors.size > 0
+                    ? globalErrorSignal / modalityErrors.size : 0;
+
+                sensoryResults.forEach(result => {
+                    const localError  = modalityErrors.get(result.modality) || 0.5;
+                    const propagation = localError * 0.3 + globalErrorSignal * 0.7;
+
                     result.semantic_candidates.forEach(c => {
                         allCandidates.push({
                             ...c,
                             modality: result.modality,
-                            features: result.features
+                            features: result.features,
+                            weight: c.weight * (1 - propagation * 0.4)
                         });
                     });
-                    
+
                     if (result.emotion_hints) {
                         totalEmotionValence += result.emotion_hints.valence;
                         totalEmotionArousal += result.emotion_hints.arousal;
@@ -13899,12 +14017,12 @@ class LazySemanticizer {
                 const conceptMap = new Map();
                 allCandidates.forEach(c => {
                     const key = c.concept;
-                    // null/undefined/空文字/文字列"null""undefined"は概念として登録しない
                     if (key == null || key === 'undefined' || key === 'null' || String(key).trim() === '') return;
                     if (conceptMap.has(key)) {
                         const existing = conceptMap.get(key);
                         existing.weight += c.weight * 0.5;
                         existing.modalities.push(c.modality);
+                        if (existing.modalities.length >= 2) existing.weight *= 1.1;
                     } else {
                         conceptMap.set(key, {
                             concept: key,
@@ -13926,12 +14044,30 @@ class LazySemanticizer {
                         arousal: totalEmotionArousal / emotionCount
                     } : { valence: 0, arousal: 0.3 },
                     modalitiesUsed: sensoryResults.map(r => r.modality),
+                    modalityErrors: Object.fromEntries(modalityErrors),
+                    globalError: globalErrorSignal,
                     timestamp: Date.now()
                 };
                 
                 this.recentSensory.push(integrated);
                 if (this.recentSensory.length > this.maxHistory) {
                     this.recentSensory.shift();
+                }
+
+                // ── CausalMemoryLayerとWorldViewModelに誤差を伝播 ──
+                if (globalErrorSignal > 0.5 && window.ao) {
+                    try {
+                        if (window.ao.causalMemoryLayer) {
+                            window.ao.causalMemoryLayer.updateCausalStrength(
+                                'sensory_integration',
+                                { avgEffect: 1 - globalErrorSignal },
+                                { conceptCount: integratedCandidates.length }
+                            );
+                        }
+                        if (window.ao.worldView) {
+                            window.ao.worldView.growAxis('feedback', globalErrorSignal * 0.02);
+                        }
+                    } catch(e) { /* silent */ }
                 }
                 
                 return integrated;
