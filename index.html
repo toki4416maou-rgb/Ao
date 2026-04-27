@@ -14245,253 +14245,6 @@ class SyntaxHypothesis {
     }
 }
 
-// ============ Layer 1: 知覚層（Perceptual Parsing）============
-// 設計思想:
-//   意味・品詞・言語知識を一切使わない
-//   文字bigramの統計（PMI・エントロピー）のみで境界を発見する
-//
-//   score(i) = α × branch(i) - β × bond(i)
-//   bond(i)   = PMI(ci, ci+1) : 結合強度（高いほど境界になりにくい）
-//   branch(i) = H(ci+1 | ci)  : 分岐エントロピー（高いほど境界になりやすい）
-class PerceptualParser {
-    constructor() {
-        // 文字bigram頻度: 'AB' → count
-        this.bigramFreq = new Map();
-        // 文字unigram頻度: 'A' → count
-        this.unigramFreq = new Map();
-        // 総bigram数
-        this.totalBigrams = 0;
-        // 総unigram数
-        this.totalUnigrams = 0;
-
-        // PMI/エントロピーの重みパラメータ
-        this.ALPHA = 1.0; // branch重み
-        this.BETA  = 1.0; // bond重み
-        // 境界判定閾値（学習初期は低めに設定）
-        this.BOUNDARY_THRESHOLD = 0.3;
-        // 最小学習量（これ以下では統計が不安定なのでコールドスタートを使う）
-        this.MIN_BIGRAMS_FOR_STATS = 50;
-
-        // コールドスタート用：文字種変化フラグ（廃止せず学習量が増えるまで併用）
-        this._useCharTypeFallback = true;
-    }
-
-    // ─── メインエントリ ──────────────────────────────────────────
-    parse(utterance) {
-        if (!utterance || utterance.trim().length === 0) return [];
-
-        // 統計を先に更新（オンライン学習）
-        this._updateStats(utterance);
-
-        const boundaries = this.detectBoundaries(utterance);
-        const tokens = this.segmentByBoundaries(utterance, boundaries);
-        return tokens.map((surface, position) => new Token(surface, position));
-    }
-
-    // ─── 統計のオンライン更新 ────────────────────────────────────
-    _updateStats(utterance) {
-        const chars = utterance.split('');
-        for (let i = 0; i < chars.length; i++) {
-            const c = chars[i];
-            this.unigramFreq.set(c, (this.unigramFreq.get(c) || 0) + 1);
-            this.totalUnigrams++;
-            if (i < chars.length - 1) {
-                const bg = c + chars[i + 1];
-                this.bigramFreq.set(bg, (this.bigramFreq.get(bg) || 0) + 1);
-                this.totalBigrams++;
-            }
-        }
-        // 学習量が増えたらコールドスタートフォールバックを無効化
-        if (this.totalBigrams >= this.MIN_BIGRAMS_FOR_STATS) {
-            this._useCharTypeFallback = false;
-        }
-    }
-
-    // ─── 境界検出 ────────────────────────────────────────────────
-    detectBoundaries(utterance) {
-        const boundaries = new Set();
-        const chars = utterance.split('');
-
-        if (this.totalBigrams < this.MIN_BIGRAMS_FOR_STATS) {
-            // コールドスタート：文字種変化を境界とする（インフラ扱い）
-            for (let i = 1; i < chars.length; i++) {
-                if (this._isCharTypeBoundary(
-                    utterance.charCodeAt(i - 1),
-                    utterance.charCodeAt(i)
-                )) boundaries.add(i);
-            }
-            return Array.from(boundaries).sort((a, b) => a - b);
-        }
-
-        // 統計が十分に蓄積された後：PMI + エントロピーで判定
-        for (let i = 1; i < chars.length; i++) {
-            const bond   = this._calcPMI(chars[i - 1], chars[i]);
-            const branch = this._calcBranchEntropy(chars[i - 1]);
-            const score  = this.ALPHA * branch - this.BETA * bond;
-
-            if (score > this.BOUNDARY_THRESHOLD) {
-                boundaries.add(i);
-            }
-        }
-
-        // 句読点・スペースは設計書の「インフラ扱い」として常に境界
-        for (let i = 1; i < chars.length; i++) {
-            const code = utterance.charCodeAt(i);
-            if (this._isInfraChar(code)) boundaries.add(i);
-        }
-
-        return Array.from(boundaries).sort((a, b) => a - b);
-    }
-
-    // ─── PMI（結合強度）────────────────────────────────────────
-    // PMI(a,b) = log2( P(ab) / (P(a) × P(b)) )
-    // 高い = a,b が強く結合 = 境界になりにくい
-    // 低い・負 = 結合弱い = 境界候補
-    _calcPMI(a, b) {
-        if (this.totalBigrams === 0 || this.totalUnigrams === 0) return 0;
-        const pAB = (this.bigramFreq.get(a + b) || 0) / this.totalBigrams;
-        const pA  = (this.unigramFreq.get(a) || 0) / this.totalUnigrams;
-        const pB  = (this.unigramFreq.get(b) || 0) / this.totalUnigrams;
-        if (pAB === 0 || pA === 0 || pB === 0) return 0;
-        // 正規化PMI: [-1, 1]に収める
-        const pmi = Math.log2(pAB / (pA * pB));
-        const maxPMI = -Math.log2(pAB); // 理論上限
-        return maxPMI > 0 ? Math.max(-1, Math.min(1, pmi / maxPMI)) : 0;
-    }
-
-    // ─── 分岐エントロピー ───────────────────────────────────────
-    // H(next | c) = -Σ P(x|c) log2 P(x|c)
-    // 高い = cの後に来る文字が多様 = 境界になりやすい
-    _calcBranchEntropy(c) {
-        if (this.totalUnigrams === 0) return 0;
-        const pC = (this.unigramFreq.get(c) || 0);
-        if (pC === 0) return 0;
-
-        // cで始まるbigramを列挙
-        let entropy = 0;
-        for (const [bg, count] of this.bigramFreq) {
-            if (bg[0] !== c) continue;
-            const pNextGivenC = count / pC;
-            if (pNextGivenC > 0) {
-                entropy -= pNextGivenC * Math.log2(pNextGivenC);
-            }
-        }
-        // 最大エントロピーで正規化（文字種数の対数）
-        const maxEntropy = Math.log2(Math.max(1, this.unigramFreq.size));
-        return maxEntropy > 0 ? Math.min(1, entropy / maxEntropy) : 0;
-    }
-
-    // ─── インフラ文字（句読点・スペース）───────────────────────
-    // 設計書の「インフラ扱い（境界候補として使用可）」に対応
-    _isInfraChar(code) {
-        return code === 0x0020 || code === 0x3000 || code === 0x000A || // スペース
-               code === 0x3002 || code === 0xFF01 || code === 0xFF1F ||  // 。！？
-               code === 0x002E || code === 0x002C;                        // . ,
-    }
-
-    // ─── コールドスタート用文字種境界 ──────────────────────────
-    _isCharTypeBoundary(prev, curr) {
-        const isKanji = c => c >= 0x4E00 && c <= 0x9FFF;
-        const isHira  = c => c >= 0x3040 && c <= 0x309F;
-        const isKata  = c => c >= 0x30A0 && c <= 0x30FF;
-        const isLatin = c => (c >= 0x0041 && c <= 0x005A) || (c >= 0x0061 && c <= 0x007A);
-        const isSpace = c => c === 0x0020 || c === 0x3000 || c === 0x000A;
-        const isPunct = c => c === 0x3002 || c === 0xFF01 || c === 0xFF1F ||
-                             c === 0x002E || c === 0x002C;
-
-        if (isSpace(curr) || isSpace(prev)) return true;
-        if (isPunct(prev)) return true;
-        if (isKanji(prev) && isHira(curr)) return true;
-        if (isHira(prev) && isKanji(curr)) return true;
-        if (isKanji(prev) && isKata(curr)) return true;
-        if (isKata(prev) && isKanji(curr)) return true;
-        if (isLatin(prev) && !isLatin(curr) && !isSpace(curr)) return true;
-        if (!isLatin(prev) && isLatin(curr) && !isSpace(prev)) return true;
-        return false;
-    }
-
-    // ─── 境界でセグメント化 ──────────────────────────────────────
-    segmentByBoundaries(utterance, boundaries) {
-        const tokens = [];
-        let start = 0;
-        for (const boundary of boundaries) {
-            if (boundary > start) {
-                const segment = utterance.substring(start, boundary).trim();
-                if (segment.length > 0) tokens.push(segment);
-                start = boundary;
-            }
-        }
-        if (start < utterance.length) {
-            const segment = utterance.substring(start).trim();
-            if (segment.length > 0) tokens.push(segment);
-        }
-        return tokens;
-    }
-
-    // ─── 後方互換（learnFromUtteranceから呼ばれる）──────────────
-    // parse()内でオンライン更新するので実質不要だが互換のため残す
-    updateBoundaryStatistics(utterance, confirmedBoundaries) {
-        // parse()のオンライン更新で代替。何もしない。
-    }
-
-    // ─── 知覚的特徴ベクトルを抽出（未解釈プールへの入力用）────
-    // parse()後に呼ぶことで、その発話の分布的特徴を取得できる
-    // 戻り値: { entropy, avgPMI, tokenCount, bigramDiversity }
-    extractPerceptualFeatures(utterance, tokens) {
-        if (!utterance || utterance.length === 0) {
-            return { entropy: 0, avgPMI: 0, tokenCount: 0, bigramDiversity: 0 };
-        }
-
-        const chars = utterance.split('');
-        let totalEntropy = 0;
-        let totalPMI = 0;
-        let count = 0;
-
-        for (let i = 1; i < chars.length; i++) {
-            totalEntropy += this._calcBranchEntropy(chars[i - 1]);
-            totalPMI     += this._calcPMI(chars[i - 1], chars[i]);
-            count++;
-        }
-
-        const avgEntropy = count > 0 ? totalEntropy / count : 0;
-        const avgPMI     = count > 0 ? totalPMI     / count : 0;
-
-        // bigramの多様性：ユニークbigram数 / 総bigram数
-        const uniqueBigrams = new Set();
-        for (let i = 0; i < chars.length - 1; i++) {
-            uniqueBigrams.add(chars[i] + chars[i + 1]);
-        }
-        const bigramDiversity = count > 0 ? uniqueBigrams.size / count : 0;
-
-        return {
-            entropy:         avgEntropy,
-            avgPMI:          avgPMI,
-            tokenCount:      tokens ? tokens.length : 0,
-            bigramDiversity: bigramDiversity
-        };
-    }
-
-    // ─── 永続化 ─────────────────────────────────────────────────
-    exportState() {
-        return {
-            bigramFreq:    Array.from(this.bigramFreq.entries()),
-            unigramFreq:   Array.from(this.unigramFreq.entries()),
-            totalBigrams:  this.totalBigrams,
-            totalUnigrams: this.totalUnigrams
-        };
-    }
-
-    importState(data) {
-        if (data.bigramFreq)  this.bigramFreq  = new Map(data.bigramFreq);
-        if (data.unigramFreq) this.unigramFreq = new Map(data.unigramFreq);
-        this.totalBigrams  = data.totalBigrams  || 0;
-        this.totalUnigrams = data.totalUnigrams || 0;
-        if (this.totalBigrams >= this.MIN_BIGRAMS_FOR_STATS) {
-            this._useCharTypeFallback = false;
-        }
-    }
-}
-
 // ============ Layer 2: 構文仮説生成層 ============
 class SyntaxHypothesisGenerator {
     constructor() {
@@ -15285,8 +15038,8 @@ class RichSurfaceRealizer {
 // ============ 統合層: HumanLikeLanguageAcquisitionEngine ============
 class HumanLikeLanguageAcquisitionEngine {
     constructor() {
-        // 4層アーキテクチャ
-        this.perceptualParser = new PerceptualParser();
+        // 4層アーキテクチャ（PerceptualParser → StatisticalTokenizerに統合）
+        this.perceptualParser = new StatisticalTokenizer();
         this.hypothesisGenerator = new SyntaxHypothesisGenerator();
         this.errorLearner = new PredictionErrorLearner(this.hypothesisGenerator);
         this.surfaceRealizer = new SurfaceRealizer(this.hypothesisGenerator);
@@ -24921,7 +24674,14 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                     this.languageOutputDL.languageAcquisition.tokenClusterEngine) {
                     try {
                         const tce = this.languageOutputDL.languageAcquisition.tokenClusterEngine;
-                        const textTokens = (inputs.text || '').split(/\s+/).filter(t => t.length > 1);
+                        // 生splitではなくStatisticalTokenizerで正しくトークン分割して渡す
+                        const statTok = this.statisticalTokenizer ||
+                            (this.languageOutputDL.languageAcquisition.perceptualParser instanceof StatisticalTokenizer
+                                ? this.languageOutputDL.languageAcquisition.perceptualParser
+                                : null);
+                        const textTokens = statTok
+                            ? statTok.tokenize(inputs.text || '').map(t => t.surface).filter(s => s.length > 0)
+                            : (inputs.text || '').split(/\s+/).filter(t => t.length > 1);
                         if (textTokens.length > 0) tce.observe(textTokens);
                     } catch (_) {}
                 }
@@ -30574,12 +30334,9 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
             updateUI();
         }
         
-        // optimizerからパッチできるようにグローバル公開
-        window.handleInput = handleInput;
-
-        document.getElementById('send').addEventListener('click', () => window.handleInput());
+        document.getElementById('send').addEventListener('click', handleInput);
         document.getElementById('input').addEventListener('keypress', (e) => {
-            if (e.key === 'Enter' && !isProcessing) window.handleInput();
+            if (e.key === 'Enter' && !isProcessing) handleInput();
         });
         
         document.getElementById('fileInput').addEventListener('change', (e) => {
@@ -35116,7 +34873,7 @@ window.VideoRenderer   = VideoRenderer;
         }
 
         // ──────────────────────────────────────────────────────
-        // 公開API: テキストをトークンに分割する
+        // 公開API: テキストをトークンに分割する（PerceptualParser互換）
         // ──────────────────────────────────────────────────────
         tokenize(text) {
             if (!text || text.length === 0) return [];
@@ -35130,6 +34887,141 @@ window.VideoRenderer   = VideoRenderer;
             }
 
             return this._segment(text);
+        }
+
+        // ──────────────────────────────────────────────────────
+        // PerceptualParser互換API: parse()
+        // learnFromInput / UnifiedLanguagePathway から呼ばれる
+        // 戻り値: Token互換オブジェクト配列 { surface, position }
+        // ──────────────────────────────────────────────────────
+        parse(text) {
+            if (!text || text.trim().length === 0) return [];
+            const tokens = this.tokenize(text);
+            return tokens.map((t, i) => ({
+                surface:  t.surface,
+                position: i,
+                score:    t.score,
+                method:   t.method,
+                // Token互換フィールド
+                basic_form:      t.surface,
+                pos:             '名詞',
+                pos_detail_1:    t.method === 'stat' ? '統計' : '文字',
+                conjugated_form: '*',
+            }));
+        }
+
+        // ──────────────────────────────────────────────────────
+        // PerceptualParser互換API: extractPerceptualFeatures()
+        // HCH・UE・learnFromUserInput から呼ばれる
+        // ──────────────────────────────────────────────────────
+        extractPerceptualFeatures(utterance, tokens) {
+            if (!utterance || utterance.length === 0) {
+                return { entropy: 0, avgPMI: 0, tokenCount: 0, bigramDiversity: 0, novelty: 0, complexity: 0 };
+            }
+
+            const chars = [...utterance];
+            let totalEntropy = 0;
+            let totalPMI     = 0;
+            let count        = 0;
+
+            for (let i = 1; i < chars.length; i++) {
+                // 分岐エントロピー（左右文脈の多様性）
+                const c = chars[i - 1];
+                const pC = this.unigramFreq.get(c) || 0;
+                let entropy = 0;
+                if (pC > 0) {
+                    for (const [bg, cnt] of this.bigramFreq) {
+                        if (bg[0] !== c) continue;
+                        const p = cnt / pC;
+                        if (p > 0) entropy -= p * Math.log2(p);
+                    }
+                    const maxE = Math.log2(Math.max(1, this.unigramFreq.size));
+                    entropy = maxE > 0 ? Math.min(1, entropy / maxE) : 0;
+                }
+                totalEntropy += entropy;
+
+                // PMI（結合強度）
+                const a = chars[i - 1], b = chars[i];
+                const pAB = (this.bigramFreq.get(a + b) || 0) / Math.max(this.totalChars, 1);
+                const pA  = (this.unigramFreq.get(a) || 0) / Math.max(this.totalChars, 1);
+                const pB  = (this.unigramFreq.get(b) || 0) / Math.max(this.totalChars, 1);
+                let pmi = 0;
+                if (pAB > 0 && pA > 0 && pB > 0) {
+                    const raw    = Math.log2(pAB / (pA * pB));
+                    const maxPMI = -Math.log2(pAB);
+                    pmi = maxPMI > 0 ? Math.max(-1, Math.min(1, raw / maxPMI)) : 0;
+                }
+                totalPMI += pmi;
+                count++;
+            }
+
+            const avgEntropy = count > 0 ? totalEntropy / count : 0;
+            const avgPMI     = count > 0 ? totalPMI     / count : 0;
+
+            // bigramの多様性
+            const uniqueBigrams = new Set();
+            for (let i = 0; i < chars.length - 1; i++) {
+                uniqueBigrams.add(chars[i] + chars[i + 1]);
+            }
+            const bigramDiversity = count > 0 ? uniqueBigrams.size / count : 0;
+
+            // novelty: vocab未登録トークンの割合
+            const tokenArr = tokens || this.tokenize(utterance);
+            const unknownCount = tokenArr.filter(t => t.method === 'char').length;
+            const novelty = tokenArr.length > 0 ? unknownCount / tokenArr.length : 0;
+
+            // complexity: 平均トークン長
+            const avgLen = tokenArr.length > 0
+                ? tokenArr.reduce((s, t) => s + (t.surface || '').length, 0) / tokenArr.length
+                : 1;
+            const complexity = Math.min(1, avgLen / this.MAX_LEN);
+
+            return {
+                entropy:         avgEntropy,
+                avgPMI:          avgPMI,
+                tokenCount:      tokenArr.length,
+                bigramDiversity: bigramDiversity,
+                novelty:         novelty,
+                complexity:      complexity,
+                // tokenVector: vocab上位トークンのスコアベクトル（AxisCodec用）
+                tokenVector: [...this.tokenScores.entries()]
+                    .sort((a, b) => b[1].score - a[1].score)
+                    .slice(0, 59)
+                    .map(([, info]) => info.score),
+            };
+        }
+
+        // ──────────────────────────────────────────────────────
+        // PerceptualParser互換: 後方互換スタブ
+        // ──────────────────────────────────────────────────────
+        updateBoundaryStatistics() { /* parse()内のオンライン更新で代替 */ }
+
+        // ──────────────────────────────────────────────────────
+        // コールドスタート用文字種境界（PerceptualParserから移植）
+        // ──────────────────────────────────────────────────────
+        _isCharTypeBoundary(prev, curr) {
+            const isKanji = c => c >= 0x4E00 && c <= 0x9FFF;
+            const isHira  = c => c >= 0x3040 && c <= 0x309F;
+            const isKata  = c => c >= 0x30A0 && c <= 0x30FF;
+            const isLatin = c => (c >= 0x0041 && c <= 0x005A) || (c >= 0x0061 && c <= 0x007A);
+            const isSpace = c => c === 0x0020 || c === 0x3000 || c === 0x000A;
+            const isPunct = c => c === 0x3002 || c === 0xFF01 || c === 0xFF1F ||
+                                 c === 0x002E || c === 0x002C;
+            if (isSpace(curr) || isSpace(prev)) return true;
+            if (isPunct(prev)) return true;
+            if (isKanji(prev) && isHira(curr))  return true;
+            if (isHira(prev)  && isKanji(curr)) return true;
+            if (isKanji(prev) && isKata(curr))  return true;
+            if (isKata(prev)  && isKanji(curr)) return true;
+            if (isLatin(prev) && !isLatin(curr) && !isSpace(curr)) return true;
+            if (!isLatin(prev) && isLatin(curr) && !isSpace(prev)) return true;
+            return false;
+        }
+
+        _isInfraChar(code) {
+            return code === 0x0020 || code === 0x3000 || code === 0x000A ||
+                   code === 0x3002 || code === 0xFF01 || code === 0xFF1F ||
+                   code === 0x002E || code === 0x002C;
         }
 
         // ──────────────────────────────────────────────────────
@@ -35237,9 +35129,27 @@ window.VideoRenderer   = VideoRenderer;
         }
 
         // ──────────────────────────────────────────────────────
-        // セグメンテーション（最長一致法）
+        // セグメンテーション（最長一致法 + コールドスタート文字種境界）
         // ──────────────────────────────────────────────────────
         _segment(text) {
+            // 語彙が少ない初期はコールドスタート（文字種変化で境界）
+            if (this.vocab.size < 5) {
+                const chars = [...text];
+                const tokens = [];
+                let start = 0;
+                for (let i = 1; i <= chars.length; i++) {
+                    const isBoundary = i === chars.length ||
+                        this._isInfraChar(text.charCodeAt(i)) ||
+                        this._isCharTypeBoundary(text.charCodeAt(i - 1), text.charCodeAt(i));
+                    if (isBoundary) {
+                        const seg = chars.slice(start, i).join('').trim();
+                        if (seg.length > 0) tokens.push({ surface: seg, score: 0, method: 'char' });
+                        start = i;
+                    }
+                }
+                return tokens;
+            }
+
             const result = [];
             const chars  = [...text];
             let   i      = 0;
@@ -35712,37 +35622,48 @@ window.VideoRenderer   = VideoRenderer;
         if (!being) return;
 
         // ① StatisticalTokenizer
+        // languageAcquisition.perceptualParser がすでに StatisticalTokenizer なので
+        // それを being.statisticalTokenizer として共有する（二重インスタンス防止）
         if (!being.statisticalTokenizer) {
-            being.statisticalTokenizer = new StatisticalTokenizer();
+            const sharedTokenizer =
+                being.languageOutputDL &&
+                being.languageOutputDL.languageAcquisition &&
+                being.languageOutputDL.languageAcquisition.perceptualParser instanceof StatisticalTokenizer
+                    ? being.languageOutputDL.languageAcquisition.perceptualParser
+                    : new StatisticalTokenizer();
 
-            // AdvancedLanguageInputDL の形態素解析にフックする
-            // morphologicalAnalysis のフォールバックをStatTokに差し替え
+            being.statisticalTokenizer = sharedTokenizer;
+
+            // languageInputDL側のperceptualParserも同じインスタンスに統一
+            if (being.languageInputDL &&
+                being.languageOutputDL &&
+                being.languageOutputDL.languageAcquisition) {
+                being.languageOutputDL.languageAcquisition.perceptualParser = sharedTokenizer;
+            }
+
+            // AdvancedLanguageInputDL の形態素解析フォールバックをStatTokに差し替え
             if (being.languageInputDL && typeof being.languageInputDL.simpleFallbackTokenize === 'function') {
-                const orig = being.languageInputDL.simpleFallbackTokenize.bind(being.languageInputDL);
                 being.languageInputDL.simpleFallbackTokenize = function(text) {
-                    try {
-                        const statTokens = being.statisticalTokenizer.tokenize(text);
-                        if (statTokens && statTokens.length > 0) {
-                            // StatTok形式 → kuromoji互換形式に変換
-                            return statTokens.map(t => ({
-                                surface_form:    t.surface,
-                                basic_form:      t.surface,
-                                pos:             '名詞',
-                                pos_detail_1:    t.method === 'stat' ? '統計' : '文字',
-                                conjugated_form: '*',
-                                _statScore:      t.score
-                            }));
-                        }
-                    } catch(e) {
-                        console.warn('[StatTok] フック失敗、フォールバック:', e);
+                    const statTokens = sharedTokenizer.tokenize(text);
+                    if (statTokens && statTokens.length > 0) {
+                        return statTokens.map(t => ({
+                            surface_form:    t.surface,
+                            basic_form:      t.surface,
+                            pos:             '名詞',
+                            pos_detail_1:    t.method === 'stat' ? '統計' : '文字',
+                            conjugated_form: '*',
+                            _statScore:      t.score
+                        }));
                     }
-                    return orig(text);
+                    return [...text].map(c => ({
+                        surface_form: c, basic_form: c, pos: '名詞',
+                        pos_detail_1: '文字', conjugated_form: '*'
+                    }));
                 };
                 being.addLog && being.addLog('[StatTok] 形態素解析フックを設置');
             }
 
-            // TokenClusterEngine に観測データをフィード
-            // （TokenClusterEngineのobserve後にStatTokにも学習させる）
+            // TokenClusterEngineのobserveにも同じStatTokで学習させる
             if (being.languageOutputDL &&
                 being.languageOutputDL.languageAcquisition &&
                 being.languageOutputDL.languageAcquisition.tokenClusterEngine) {
@@ -35750,15 +35671,14 @@ window.VideoRenderer   = VideoRenderer;
                 const orig = tce.observe.bind(tce);
                 tce.observe = function(tokens) {
                     orig(tokens);
-                    // StatTokも同じトークン列から学習
                     const text = tokens
                         .map(t => (typeof t === 'string' ? t : (t.surface || t.surface_form || '')))
                         .join('');
-                    if (text.length > 0) being.statisticalTokenizer._feed(text);
+                    if (text.length > 0) sharedTokenizer._feed(text);
                 };
             }
 
-            being.addLog && being.addLog('[StatTok] StatisticalTokenizer v1.0 接続完了');
+            being.addLog && being.addLog('[StatTok] StatisticalTokenizer v1.0 接続完了（perceptualParser統合）');
         }
 
         // ② SpatialInteractionModel
@@ -36553,26 +36473,8 @@ window.VideoRenderer   = VideoRenderer;
             const st = being.statisticalTokenizer || null;
             being.hierarchicalChunker = new HierarchicalChunker(st);
 
-            // StatTok の tokenize を拡張: 階層情報を付加して返す
-            if (being.statisticalTokenizer) {
-                const origTokenize = being.statisticalTokenizer.tokenize.bind(being.statisticalTokenizer);
-                being.statisticalTokenizer.tokenize = function(text) {
-                    const L0 = origTokenize(text);
-                    try {
-                        // 階層チャンキング実行（バックグラウンド学習）
-                        const hier = being.hierarchicalChunker.chunk(text);
-                        // L0 に階層情報を注釈
-                        for (const t of L0) {
-                            const inL1 = hier.L1.some(u => u.surface.includes(t.surface));
-                            const inL2 = hier.L2.some(u => u.surface.includes(t.surface));
-                            t.hierLevel = inL2 ? 2 : inL1 ? 1 : 0;
-                        }
-                    } catch(e) { /* silent */ }
-                    return L0;
-                };
-            }
-
-            // AdvancedLanguageInputDL のパース後に階層情報を追記
+            // tokenize ラップは廃止。HCH階層情報は languageInputDL.parse() 後に付加する
+            // （tokenize は学習専用、ラップを重ねない）
             if (being.languageInputDL) {
                 const origParse = being.languageInputDL.parse.bind(being.languageInputDL);
                 being.languageInputDL.parse = async function(text) {
@@ -36641,67 +36543,53 @@ window.VideoRenderer   = VideoRenderer;
             being.uncertaintyEstimator = new UncertaintyEstimator();
             const ue = being.uncertaintyEstimator;
 
-            // StatTok の tokenize にUEフック（初めて見る文字列を検出）
-            if (being.statisticalTokenizer) {
-                const origTok = being.statisticalTokenizer.tokenize.bind(being.statisticalTokenizer);
-                being.statisticalTokenizer.tokenize = function(text) {
-                    const tokens = origTok(text);
-                    const ueResult = ue.estimateFromTokens(tokens);
-
-                    // 「不明」フラグが立ったら未解釈プールに送る
-                    if (ueResult.isUnknown && being.languageInputDL && being.languageInputDL.pendingTerms) {
-                        for (const t of tokens.filter(tk => tk.method === 'char')) {
-                            const existing = being.languageInputDL.pendingTerms.get(t.surface);
-                            if (existing && typeof existing === 'object') {
-                                // 既存オブジェクトのfrequencyだけ更新（contexts等を破壊しない）
-                                existing.frequency = (existing.frequency || 0) + 1;
-                            } else {
-                                // 新規 or 数値で上書きされていた場合はオブジェクトで登録
-                                being.languageInputDL.pendingTerms.set(t.surface, {
-                                    category: 'unknown',
-                                    polarity: 0,
-                                    frequency: 1,
-                                    contexts: [],
-                                    registeredAt: Date.now()
-                                });
-                            }
-                        }
-                        being.addLog && being.addLog(
-                            `[UE] 未知入力検出 entropy=${(ueResult.entropy*100).toFixed(0)}% → 未解釈プールへ`
-                        );
-                    }
-
-                    // tokens にUE情報を付加
-                    tokens._ue = ueResult;
-                    return tokens;
-                };
-            }
+            // tokenize ラップは廃止。UE は languageInputDL.parse() 結果に後付けする
+            // （tokenize は学習専用、ラップを重ねない）
 
             // CIRのcounterfactual をラップしてUEで確信度補正
             if (being.causalInterventionReasoner) {
                 const cir    = being.causalInterventionReasoner;
                 const origCF = cir.counterfactual.bind(cir);
                 cir.counterfactual = function(action, metric) {
-                    const cf       = origCF(action, metric);
-                    const enriched = ue.enrichCounterfactual(cf);
-                    return enriched;
+                    return ue.enrichCounterfactual(origCF(action, metric));
                 };
             }
 
-            // LanguageInputDL のparse結果にUEを付加
+            // languageInputDL.parse() の結果にUEを付加
+            // ※ HCHラップの後に適用されるよう attachMissingPieces 内で順番を守る
             if (being.languageInputDL) {
                 const origParse = being.languageInputDL.parse.bind(being.languageInputDL);
                 being.languageInputDL.parse = async function(text) {
                     const result = await origParse(text);
                     try {
-                        const ueResult = ue.estimateFromText(text, being.statisticalTokenizer);
+                        // tokenize は呼ばず extractPerceptualFeatures で推定
+                        const tokens   = result.tokens || being.statisticalTokenizer.tokenize(text);
+                        const ueResult = ue.estimateFromTokens(tokens);
                         result.uncertainty = ueResult;
                         result.confidence  = ueResult.confidence;
                         result.meta = result.meta || {};
-                        result.meta.entropy    = ueResult.entropy;
-                        result.meta.isUnknown  = ueResult.isUnknown;
-                        result.meta.isCertain  = ueResult.isCertain;
-                        result.meta.ueLabel    = ueResult.label;
+                        result.meta.entropy   = ueResult.entropy;
+                        result.meta.isUnknown = ueResult.isUnknown;
+                        result.meta.isCertain = ueResult.isCertain;
+                        result.meta.ueLabel   = ueResult.label;
+
+                        // 未知トークンだけ pendingTerms へ（未解釈プール重複防止）
+                        if (ueResult.isUnknown && being.languageInputDL.pendingTerms) {
+                            for (const t of tokens.filter(tk => tk.method === 'char')) {
+                                const existing = being.languageInputDL.pendingTerms.get(t.surface);
+                                if (existing && typeof existing === 'object') {
+                                    existing.frequency = (existing.frequency || 0) + 1;
+                                } else {
+                                    being.languageInputDL.pendingTerms.set(t.surface, {
+                                        category: 'unknown', polarity: 0,
+                                        frequency: 1, contexts: [], registeredAt: Date.now()
+                                    });
+                                }
+                            }
+                            being.addLog && being.addLog(
+                                `[UE] 未知入力検出 entropy=${(ueResult.entropy*100).toFixed(0)}% → 未解釈プールへ`
+                            );
+                        }
                     } catch(e) { /* silent */ }
                     return result;
                 };
