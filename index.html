@@ -1253,16 +1253,8 @@ async function aoActivateAfterPaypal() {
             <button id="debugSaveBtn" onclick="(async()=>{
                 const sm = window.ao && window.ao.saveManager;
                 if(!sm){ alert('saveManager未初期化'); return; }
-                const ind = document.getElementById('saveStatus');
-                ind.textContent = '人格: 保存中...';
-                sm.isDirty = true;
-                try {
-                    await sm.save();
-                    ind.textContent = '人格: 保存完了 (' + new Date().toLocaleTimeString() + ')';
-                } catch(e) {
-                    ind.textContent = '人格: 保存失敗 ' + e.message;
-                    console.error('[DEBUG SAVE]', e);
-                }
+                sm.markDirty();
+                await sm.save();
             })()" style="padding:0.2rem 0.6rem;background:rgba(168,85,247,0.3);border:1px solid rgba(168,85,247,0.6);border-radius:9999px;color:#e9d5ff;font-size:0.7rem;cursor:pointer;white-space:nowrap;">💾 今すぐ保存</button>
             <div class="metabolism-indicator" id="metabolismStatus">代謝: 待機</div>
             <div class="gpu-indicator" id="gpuStatus">感覚野: 待機中</div>
@@ -28987,7 +28979,7 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
             constructor(being) {
                 console.log('[TRACE] PersonaSaveManager constructor called');
                 this.being = being;
-                this.autoSaveInterval = 30000; // 30秒ごとに自動保存
+                this.autoSaveInterval = 10000; // 10秒ごとに自動保存
                 this.lastSaveTime = 0;
                 this.isSaving = false;
                 this.isDirty = false; // 未保存フラグ
@@ -29197,6 +29189,7 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                     const sizeLabel = lzOk ? `${compKB}KB (raw ${rawKB}KB)` : `${rawKB}KB`;
 
                     console.log(`[SAVE] ✅ 完了 ${sizeLabel} turns:${personaData.coreState.identity?.turns}`);
+                    this.being.addLog(`💾 保存完了 ${timeStr} [${sizeLabel}] 概念:${concepts} EP:${episodes} (${this.useIndexedDB ? 'IndexedDB' : 'localStorage'})`);
 
                     if (saveIndicator) {
                         saveIndicator.textContent = `✅ 保存済み ${timeStr} [${sizeLabel}] 概念:${concepts} EP:${episodes}`;
@@ -29298,6 +29291,10 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                         const importSuccess = this.being.importAll(personaData);
                         
                         if (importSuccess) {
+                            const savedTime = new Date(personaData.timestamp);
+                            const concepts  = this.being.concepts?.concepts?.size  || 0;
+                            const episodes  = this.being.episodicMemory?.episodes?.length || 0;
+                            this.being.addLog(`📂 復元完了 v${personaData.version} (${savedTime.toLocaleTimeString()}) 概念:${concepts} EP:${episodes}`);
                             const saveIndicator = document.getElementById('saveStatus');
                             if (saveIndicator) {
                                 const savedTime = new Date(personaData.timestamp);
@@ -30434,6 +30431,14 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
         }, 10000);
         
                                 saveManager.startAutoSave();
+
+        // 閉じる直前にベストエフォート保存
+        window.addEventListener('beforeunload', () => {
+            if (saveManager && saveManager.isDirty) {
+                saveManager.markDirty();
+                saveManager.save();
+            }
+        });
                 
         // ============ Editor Integration Functions (v18.0) ============
         
