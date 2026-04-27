@@ -29158,12 +29158,24 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                         throw new Error('exportAll の戻り値が不正');
                     }
 
-                    // ② JSON化 → LZString圧縮
-                    const jsonString = JSON.stringify(personaData);
-                    const lzOk       = typeof LZString !== 'undefined';
-                    const saveString = lzOk ? LZString.compressToUTF16(jsonString) : jsonString;
-                    const rawKB      = (jsonString.length / 1024).toFixed(1);
-                    const compKB     = (saveString.length / 1024).toFixed(1);
+                    // ② JSON化 → LZString圧縮（メインスレッドをブロックしないよう非同期分割）
+                    const { jsonString, saveString } = await new Promise((resolve, reject) => {
+                        setTimeout(() => {
+                            try {
+                                const json = JSON.stringify(personaData);
+                                setTimeout(() => {
+                                    try {
+                                        const lzOk = typeof LZString !== 'undefined';
+                                        const compressed = lzOk ? LZString.compressToUTF16(json) : json;
+                                        resolve({ jsonString: json, saveString: compressed });
+                                    } catch(e) { reject(e); }
+                                }, 0);
+                            } catch(e) { reject(e); }
+                        }, 0);
+                    });
+                    const lzOk   = typeof LZString !== 'undefined';
+                    const rawKB  = (jsonString.length / 1024).toFixed(1);
+                    const compKB = (saveString.length / 1024).toFixed(1);
 
                     // ③ 保存（IndexedDB 優先 → localStorage フォールバック）
                     if (this.useIndexedDB && this.indexedDB) {
@@ -30209,116 +30221,154 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
         function initNeural() {
             const canvas = document.getElementById('neural');
             const ctx = canvas.getContext('2d');
-            canvas.width = 300;
-            canvas.height = 100;
-            
+
+            // ── パネル枠に合わせてcanvasを正確にリサイズ ──
+            function resizeCanvas() {
+                const dpr    = window.devicePixelRatio || 1;
+                const cssW   = canvas.clientWidth  || canvas.parentElement?.clientWidth || 300;
+                const cssH   = canvas.clientHeight || 100;
+                canvas.width  = Math.round(cssW * dpr);
+                canvas.height = Math.round(cssH * dpr);
+                ctx.scale(dpr, dpr);
+            }
+            resizeCanvas();
+
+            // パネル幅の変化を監視（スマホ回転・サイドバー開閉にも対応）
+            if (window.ResizeObserver) {
+                new ResizeObserver(() => resizeCanvas()).observe(canvas);
+            }
+
             const particles = [];
             for (let i = 0; i < 25; i++) {
                 particles.push({
-                    x: Math.random() * canvas.width,
-                    y: Math.random() * canvas.height,
+                    x: Math.random() * (canvas.clientWidth || 300),
+                    y: Math.random() * (canvas.clientHeight || 100),
                     vx: (Math.random() - 0.5) * 0.3,
                     vy: (Math.random() - 0.5) * 0.3,
                     r: Math.random() * 1.5 + 0.5
                 });
             }
-            
+
             let time = 0;
-            
-            function animate() {
-                ctx.fillStyle = 'rgba(10, 10, 20, 0.15)';
-                ctx.fillRect(0, 0, canvas.width, canvas.height);
-                
-                const arousal = 0.5 + ao.state.curiosity * 0.3;
-                const tensionMod = ao.state.tension * 0.5;
-                time += 0.05;
-                
-                ctx.strokeStyle = 'rgba(100, 200, 255, 0.4)';
-                ctx.lineWidth = 2;
-                ctx.beginPath();
-                for (let x = 0; x < canvas.width; x += 3) {
-                    const wave = Math.sin(time * 0.3 + x * 0.02) * arousal * 15;
-                    const y = canvas.height / 2 + wave;
-                    if (x === 0) ctx.moveTo(x, y);
-                    else ctx.lineTo(x, y);
+            let lastTs = null;
+            let rafId  = null;
+
+            // タブ非表示中はアニメを止めて time が溜まらないようにする
+            document.addEventListener('visibilitychange', () => {
+                if (document.hidden) {
+                    if (rafId) { cancelAnimationFrame(rafId); rafId = null; }
+                    lastTs = null;
+                } else {
+                    if (!rafId) rafId = requestAnimationFrame(animate);
                 }
-                ctx.stroke();
-                
-                if (ao.languageInputDL.processing || ao.languageOutputDL.processing ||
-                    ao.imageAdapter.processing || ao.audioAdapter.processing ||
-                    ao.videoAdapter.processing || ao.videoGenerator.processing) {
-                    ctx.strokeStyle = 'rgba(96, 165, 250, 0.6)';
+            });
+
+            function animate(ts) {
+                try {
+                    // 経過時間ベースで time を進める（固まり防止）
+                    if (lastTs === null) lastTs = ts;
+                    const dt = Math.min((ts - lastTs) / 1000, 0.1);
+                    lastTs = ts;
+                    time += dt * 3;
+
+                    const W = canvas.clientWidth  || 300;
+                    const H = canvas.clientHeight || 100;
+
+                    ctx.fillStyle = 'rgba(10, 10, 20, 0.15)';
+                    ctx.fillRect(0, 0, W, H);
+
+                    const arousal    = 0.5 + ao.state.curiosity * 0.3;
+                    const tensionMod = ao.state.tension * 0.5;
+
+                    ctx.strokeStyle = 'rgba(100, 200, 255, 0.4)';
                     ctx.lineWidth = 2;
                     ctx.beginPath();
-                    for (let x = 0; x < canvas.width; x += 2) {
-                        const dlWave = Math.sin(time * 1.2 + x * 0.05) * 10;
-                        const y = canvas.height / 2 + dlWave;
+                    for (let x = 0; x < W; x += 3) {
+                        const wave = Math.sin(time * 0.3 + x * 0.02) * arousal * 15;
+                        const y = H / 2 + wave;
                         if (x === 0) ctx.moveTo(x, y);
                         else ctx.lineTo(x, y);
                     }
                     ctx.stroke();
-                }
-                
-                if (tensionMod > 0.3) {
-                    ctx.strokeStyle = `rgba(245, 158, 11, ${tensionMod})`;
-                    ctx.lineWidth = 1.5;
-                    ctx.beginPath();
-                    for (let x = 0; x < canvas.width; x += 2) {
-                        const tensionWave = Math.sin(time * 0.7 + x * 0.04) * tensionMod * 12;
-                        const y = canvas.height / 2 + tensionWave;
-                        if (x === 0) ctx.moveTo(x, y);
-                        else ctx.lineTo(x, y);
-                    }
-                    ctx.stroke();
-                }
-                
-                const growth = ao.concepts.getGrowth();
-                if (growth.avgDepth > 0.3) {
-                    ctx.strokeStyle = `rgba(16, 185, 129, ${0.6 * growth.avgDepth})`;
-                    ctx.lineWidth = 2;
-                    ctx.beginPath();
-                    for (let x = 0; x < canvas.width; x += 2) {
-                        const depthWave = Math.sin(time * 0.5 + x * 0.03) * growth.avgDepth * 20;
-                        const y = canvas.height / 2 + depthWave;
-                        if (x === 0) ctx.moveTo(x, y);
-                        else ctx.lineTo(x, y);
-                    }
-                    ctx.stroke();
-                }
-                
-                ctx.strokeStyle = 'rgba(192, 132, 252, 0.15)';
-                ctx.lineWidth = 0.5;
-                particles.forEach((p, i) => {
-                    p.x += p.vx * arousal;
-                    p.y += p.vy * arousal;
-                    
-                    if (p.x < 0 || p.x > canvas.width) p.vx *= -1;
-                    if (p.y < 0 || p.y > canvas.height) p.vy *= -1;
-                    
-                    particles.forEach((p2, j) => {
-                        if (i !== j) {
-                            const dx = p.x - p2.x;
-                            const dy = p.y - p2.y;
-                            const dist = Math.sqrt(dx * dx + dy * dy);
-                            if (dist < 80) {
-                                ctx.beginPath();
-                                ctx.moveTo(p.x, p.y);
-                                ctx.lineTo(p2.x, p2.y);
-                                ctx.stroke();
-                            }
+
+                    if (ao.languageInputDL.processing || ao.languageOutputDL.processing ||
+                        ao.imageAdapter.processing || ao.audioAdapter.processing ||
+                        ao.videoAdapter.processing || ao.videoGenerator.processing) {
+                        ctx.strokeStyle = 'rgba(96, 165, 250, 0.6)';
+                        ctx.lineWidth = 2;
+                        ctx.beginPath();
+                        for (let x = 0; x < W; x += 2) {
+                            const dlWave = Math.sin(time * 1.2 + x * 0.05) * 10;
+                            const y = H / 2 + dlWave;
+                            if (x === 0) ctx.moveTo(x, y);
+                            else ctx.lineTo(x, y);
                         }
+                        ctx.stroke();
+                    }
+
+                    if (tensionMod > 0.3) {
+                        ctx.strokeStyle = `rgba(245, 158, 11, ${tensionMod})`;
+                        ctx.lineWidth = 1.5;
+                        ctx.beginPath();
+                        for (let x = 0; x < W; x += 2) {
+                            const tensionWave = Math.sin(time * 0.7 + x * 0.04) * tensionMod * 12;
+                            const y = H / 2 + tensionWave;
+                            if (x === 0) ctx.moveTo(x, y);
+                            else ctx.lineTo(x, y);
+                        }
+                        ctx.stroke();
+                    }
+
+                    const growth = ao.concepts.getGrowth();
+                    if (growth.avgDepth > 0.3) {
+                        ctx.strokeStyle = `rgba(16, 185, 129, ${0.6 * growth.avgDepth})`;
+                        ctx.lineWidth = 2;
+                        ctx.beginPath();
+                        for (let x = 0; x < W; x += 2) {
+                            const depthWave = Math.sin(time * 0.5 + x * 0.03) * growth.avgDepth * 20;
+                            const y = H / 2 + depthWave;
+                            if (x === 0) ctx.moveTo(x, y);
+                            else ctx.lineTo(x, y);
+                        }
+                        ctx.stroke();
+                    }
+
+                    ctx.strokeStyle = 'rgba(192, 132, 252, 0.15)';
+                    ctx.lineWidth = 0.5;
+                    particles.forEach((p, i) => {
+                        p.x += p.vx * arousal;
+                        p.y += p.vy * arousal;
+
+                        if (p.x < 0 || p.x > W) p.vx *= -1;
+                        if (p.y < 0 || p.y > H) p.vy *= -1;
+
+                        particles.forEach((p2, j) => {
+                            if (i !== j) {
+                                const dx = p.x - p2.x;
+                                const dy = p.y - p2.y;
+                                const dist = Math.sqrt(dx * dx + dy * dy);
+                                if (dist < 80) {
+                                    ctx.beginPath();
+                                    ctx.moveTo(p.x, p.y);
+                                    ctx.lineTo(p2.x, p2.y);
+                                    ctx.stroke();
+                                }
+                            }
+                        });
+
+                        ctx.fillStyle = 'rgba(192, 132, 252, 0.8)';
+                        ctx.beginPath();
+                        ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2);
+                        ctx.fill();
                     });
-                    
-                    ctx.fillStyle = 'rgba(192, 132, 252, 0.8)';
-                    ctx.beginPath();
-                    ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2);
-                    ctx.fill();
-                });
-                
-                requestAnimationFrame(animate);
+                } catch(e) {
+                    // エラーで止まらないようループ継続
+                }
+
+                rafId = requestAnimationFrame(animate);
             }
-            
-            animate();
+
+            rafId = requestAnimationFrame(animate);
         }
         
         function drift() {
