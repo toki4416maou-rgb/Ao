@@ -29190,13 +29190,14 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
 
                     console.log(`[SAVE] ✅ 完了 ${sizeLabel} turns:${personaData.coreState.identity?.turns}`);
                     this.being.addLog(`💾 保存完了 ${timeStr} [${sizeLabel}] 概念:${concepts} EP:${episodes} (${this.useIndexedDB ? 'IndexedDB' : 'localStorage'})`);
+                    if (typeof updateUI === 'function') updateUI();
 
                     if (saveIndicator) {
-                        saveIndicator.textContent = `✅ 保存済み ${timeStr} [${sizeLabel}] 概念:${concepts} EP:${episodes}`;
+                        // 短いテキストのみ（がたつき防止）
+                        saveIndicator.textContent = `💾 保存済み (${timeStr})`;
                         saveIndicator.classList.remove('saving');
                         saveIndicator.style.color   = '#4ade80';
                         saveIndicator.style.opacity = '1';
-                        // 3秒後に通常表示に戻す
                         setTimeout(() => {
                             if (saveIndicator) {
                                 saveIndicator.textContent = `人格: 保存済み (${timeStr})`;
