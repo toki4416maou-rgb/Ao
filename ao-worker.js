@@ -170,104 +170,247 @@ function _send (type, payload, label) {
 }
 
 // ================================================================
-// [A] SaveManager パッチ
-//     ao.saveManager.save() → Worker で圧縮 → localStorage 書込
+// [A] 保存パッチ
+//     本当の重さの原因は persistenceLayer.save() の中の
+//     JSON.stringify + LZString.compressToUTF16 がメインスレッドで同期実行されること。
+//     ここを直接 Worker にオフロードする。
+//     AutoSaveManager 経由・手動保存ボタン経由どちらも捕捉できる。
 // ================================================================
-function _patchSaveManager (ao) {
-    const sm = ao.saveManager;
-    if (!sm || sm._workerPatched) return !!sm;
 
-    // localStorage キーを既存の save 実装から検出（初回スニッフィング）
-    let _storageKey = null;
+// ---- exportAll を yield しながら収集（実際の構造に合わせた版）----
+async function _chunkedExportAll (ao) {
+    if (!ao.exportAll) return null;
 
-    const _origSave = sm.save ? sm.save.bind(sm) : null;
+    // 実際の exportAll() の構造に合わせてサブシステムを個別に yield しながら収集
+    // 一番重い concepts と episodicMemory は必ず個別に yield する
+    const yield_ = () => new Promise(r => setTimeout(r, 0));
 
-    // ---- キー検出: localStorage.setItem を一時フック ----
-    function _detectKey (origSaveFn) {
-        if (_storageKey || !origSaveFn) return;
-        const origSet = localStorage.setItem.bind(localStorage);
-        localStorage.setItem = function (k, v) {
-            // 圧縮データっぽい（長さ > 100）キーを記録
-            if (typeof v === 'string' && v.length > 100 && !_storageKey) {
-                _storageKey = k;
-                console.log('[AoWorker] localStorage キー検出:', k);
-            }
-            return origSet(k, v);
+    const cs = {}; // coreState
+
+    // ── 重いもの（個別に yield）──
+    try { cs.concepts        = ao.concepts.exportState();        } catch(_){}
+    await yield_();
+    try { cs.episodicMemory  = ao.episodicMemory.exportState();  } catch(_){}
+    await yield_();
+    try { cs.languageOutputDL = ao.languageOutputDL.exportState(); } catch(_){}
+    await yield_();
+
+    // ── 中程度（2〜3個まとめて yield）──
+    try { cs.protoConcepts   = ao.protoGenerator.exportState();  } catch(_){}
+    try { cs.hierarchy       = ao.hierarchy.exportState();       } catch(_){}
+    await yield_();
+    try { cs.valueLayer      = ao.valueLayer.exportState();      } catch(_){}
+    try { cs.failures        = ao.failures.exportState();        } catch(_){}
+    await yield_();
+    try { cs.personModel     = ao.personModel.exportState();     } catch(_){}
+    try { cs.sensoryIntegrator = ao.sensoryIntegrator.exportState(); } catch(_){}
+    await yield_();
+    try { cs.uninterpreted   = ao.uninterpreted.exportState();   } catch(_){}
+    try { cs.cognitiveMetabolism = ao.humanBrainMetabolism.exportState(); } catch(_){}
+    await yield_();
+
+    // ── 状態値（軽い）──
+    cs.state = {
+        joy:       ao._stateVector?.[0] ?? ao.state?.joy      ?? 0,
+        tension:   ao._stateVector?.[1] ?? ao.state?.tension  ?? 0,
+        curiosity: ao._stateVector?.[2] ?? ao.state?.curiosity?? 0,
+        calm:      ao._stateVector?.[3] ?? ao.state?.calm     ?? 0
+    };
+    cs.world    = { ...ao.world };
+    cs.identity = { ...ao.identity };
+    cs.conversationFlow = (ao.conversationFlow || []).slice(-30);
+    cs.log              = (ao.log || []).slice(-30);
+    cs.abstractionAttempts = ao.abstractionAttempts;
+    cs.questionEngineState = {
+        lastQuestion: ao.questionEngine?.lastQuestion,
+        cooldown:     ao.questionEngine?.cooldown
+    };
+    await yield_();
+
+    // ── 分散記憶 ──
+    try {
+        cs.distributedMemory = {
+            episodic:  ao.distributedEpisodic.exportState(),
+            semantic:  ao.distributedSemantic.exportState(),
+            affective: ao.distributedAffective.exportState()
         };
-        try { origSaveFn(); } catch (_) {}
-        // 検出後すぐ復元
-        setTimeout(() => { localStorage.setItem = origSet; }, 0);
+    } catch(_){}
+    await yield_();
+
+    // ── 視覚・音声関連 ──
+    try { cs.qualiaField           = ao.qualiaField?.exportState() ?? null; } catch(_){}
+    try { cs.visualHypothesisTable = ao.imageAdapter?.hypothesisTable.exportState() ?? null; } catch(_){}
+    try { cs.labelCoOccurrence     = ao.imageAdapter ? Array.from(ao.imageAdapter.labelCoOccurrence.entries()) : []; } catch(_){}
+    try { cs.audioLabelCoOccurrence = ao.audioAdapter?.exportCoOccurrence() ?? []; } catch(_){}
+    try { cs.videoParserState      = ao.videoAdapter?.videoParser?.exportState() ?? null; } catch(_){}
+    await yield_();
+
+    // ── 残りのサブシステム（まとめて）──
+    const optionals = [
+        ['perpetualLoop',          () => ao.perpetualLoop?.getState()],
+        ['intelligence',           () => ({
+            causalMemory:        ao.intelligence.causalMemory.exportState(),
+            knowledgeBoundary:   ao.intelligence.knowledgeBoundary.exportState(),
+            abstractResolution:  ao.intelligence.abstractResolution.exportState()
+        })],
+        ['worldView',              () => ao.worldView?.exportState()],
+        ['axisCodec',              () => ao.axisCodec?.exportState()],
+        ['identityManager',        () => ao.identityManager?.exportState()],
+        ['spatialState',           () => ao.spatialState?.exportState()],
+        ['intentGenerator',        () => ao.intentGenerator?.exportState()],
+        ['conceptIntegration',     () => ao.conceptIntegration?.exportState()],
+        ['abstractionController',  () => ao.abstractionController?.exportState()],
+        ['generationalCompression',() => ao.generationalCompression?.exportState()],
+        ['memoryLimits',           () => ao.memoryLimits?.exportState()],
+        ['attentionManager',       () => ao.attentionManager?.exportState()],
+        ['asymmetricMemory',       () => ao.asymmetricMemory?.exportState()],
+        ['predictionLayer',        () => ao.predictionLayer?.exportState()],
+        ['errorDrivenUpdate',      () => ao.errorDrivenUpdate?.exportState()],
+        ['thoughtBias',            () => ao.thoughtBias?.exportState()],
+        ['subjectiveFocus',        () => ao.subjectiveFocus?.exportState()],
+        ['mPFC',                   () => ao.mPFC?.exportState()],
+        ['hypothalamus',           () => ao.hypothalamus?.exportState()],
+        ['amygdala',               () => ao.amygdala?.exportState()],
+        ['acc',                    () => ao.acc?.exportState()],
+        ['inferenceMode',          () => ao.inferenceMode?.exportState()],
+        ['autonomousCreator',      () => ({
+            running:    ao.autonomousCreator.running,
+            mood:       ao.autonomousCreator.mood,
+            curiosity:  ao.autonomousCreator.curiosity,
+            tension:    ao.autonomousCreator.tension,
+            confidence: ao.autonomousCreator.confidence,
+            postCount:  ao.autonomousCreator.postCount
+        })],
+        ['sageSystem',             () => ({
+            metricsHistory:  ao.sageSystem.metrics.history,
+            generationCost:  ao.sageSystem.consolidation.generationCost,
+            lastUpdate:      ao.sageSystem.lastUpdate
+        })],
+        ['otakuCultureIntegration',() => ao.otakuCultureIntegration?.exportState()],
+    ];
+
+    for (let i = 0; i < optionals.length; i++) {
+        const [key, fn] = optionals[i];
+        try { const v = fn(); if (v !== undefined) cs[key] = v; } catch(_){}
+        if (i % 4 === 3) await yield_(); // 4件ごとに yield
     }
 
-    // ---- 非同期保存本体 ----
-    sm.save = async function () {
-        const t0 = performance.now();
+    return {
+        version:   '26.3.1',
+        timestamp: Date.now(),
+        coreState: cs
+    };
+}
+
+// ---- persistenceLayer.save() を Worker にオフロード ----
+function _patchPersistenceLayer (ao) {
+    const pl = ao.persistenceLayer;
+    if (!pl || pl._workerPatched) return false;
+
+    const _origSave = pl.save.bind(pl);
+
+    pl.save = async function (data) {
         try {
-            // exportAll() はメインスレッドで実行（ライブオブジェクトへの参照が必要）
-            const exportData = ao.exportAll ? ao.exportAll() : null;
-            if (!exportData) {
-                return _origSave ? _origSave() : null;
-            }
-
-            // キーが未検出なら既存 save を1回実行して検出
-            if (!_storageKey && _origSave) {
-                _detectKey(_origSave);
-            }
-
-            // Worker で JSON.stringify + LZString.compressToUTF16
+            // JSON.stringify + LZString を Worker に投げる
             const { compressed, originalBytes, compressedLen } = await _send(
-                'compress', exportData, 'save'
+                'compress', data, 'save'
             );
 
-            // localStorage への書込はメインスレッドで（Worker は非対応）
-            const key = _storageKey || 'ao_being_state';
-            localStorage.setItem(key, compressed);
+            // IndexedDB / localStorage への書き込みはメインスレッドで
+            if (pl.useLocalStorage) {
+                localStorage.setItem('ao_state', compressed);
+                localStorage.setItem('ao_state_compressed', '1');
+            } else if (pl.db) {
+                await new Promise((resolve, reject) => {
+                    const tx      = pl.db.transaction([pl.storeName], 'readwrite');
+                    const store   = tx.objectStore(pl.storeName);
+                    const request = store.put({
+                        id: 'current_state',
+                        timestamp: Date.now(),
+                        compressed: true,
+                        data: compressed
+                    });
+                    request.onsuccess = () => resolve();
+                    request.onerror   = () => reject(request.error);
+                });
+            }
 
             _stats.saves++;
-            _stats.totalMs += performance.now() - t0;
-
             console.log(
-                `[AoWorker] 非同期保存完了 key=${key}`,
-                `元サイズ: ${(originalBytes / 1024).toFixed(0)}KB`,
-                `圧縮後: ${(compressedLen / 1024).toFixed(0)}KB`,
-                `所要: ${(performance.now() - t0).toFixed(0)}ms`
+                `[AoWorker] persistenceLayer 非同期保存完了`,
+                `${(originalBytes/1024).toFixed(0)}KB → ${(compressedLen/1024).toFixed(0)}KB`
             );
-
-            // SaveManager の UI 更新フックを叩く（もし存在すれば）
-            if (typeof sm._onSaved === 'function') sm._onSaved();
-            if (typeof sm.onSaveComplete === 'function') sm.onSaveComplete();
-
-            return { success: true };
+            return { success: true, timestamp: Date.now() };
 
         } catch (e) {
-            console.warn('[AoWorker] 非同期保存失敗 → CPUフォールバック:', e.message);
+            console.warn('[AoWorker] persistenceLayer Worker失敗 → CPU退避:', e.message);
             _stats.errors++;
-            return _origSave ? _origSave() : null;
+            return _origSave(data);
         }
     };
 
-    // ---- 非同期ロード ----
-    const _origLoad = sm.load ? sm.load.bind(sm) : null;
-    if (_origLoad) {
-        sm.load = async function () {
-            try {
-                const key  = _storageKey || 'ao_being_state';
-                const raw  = localStorage.getItem(key);
-                if (!raw) return _origLoad();          // 保存データなし → 元の実装へ
-
-                const { data } = await _send('decompress', raw, 'load');
-                return { success: true, data, timestamp: data.timestamp };
-            } catch (e) {
-                console.warn('[AoWorker] 非同期ロード失敗 → CPUフォールバック:', e.message);
-                return _origLoad ? _origLoad() : { success: false };
-            }
-        };
-    }
-
-    sm._workerPatched = true;
-    console.log('[AoWorker] SaveManager 非同期パッチ 適用完了');
+    pl._workerPatched = true;
+    console.log('[AoWorker] persistenceLayer.save() Worker パッチ適用完了');
     return true;
 }
+
+// ---- AutoSaveManager._performAutoSave を chunked exportAll に差し替え ----
+function _patchAutoSaveManager (ao) {
+    const asm = ao.autoSaveManager;
+    if (!asm || asm._workerPatched) return false;
+
+    const _origPerform = asm._performAutoSave.bind(asm);
+
+    asm._performAutoSave = async function (reason) {
+        try {
+            const now = Date.now();
+            if (now - (asm.lastSave || 0) < 5000) return;
+
+            // exportAll を yield しながら収集（メインスレッドだが刻む）
+            const data = await _chunkedExportAll(ao);
+            if (!data) return _origPerform(reason);
+
+            // persistenceLayer.save() は Worker パッチ済みなので非同期
+            const result = await asm.persistenceLayer.save(data);
+            if (result?.success) {
+                asm.lastSave = now;
+                if (ao.saveManager) ao.saveManager.markClean?.();
+            }
+        } catch (e) {
+            console.warn('[AoWorker] AutoSave chunked失敗 → 元実装:', e.message);
+            return _origPerform(reason);
+        }
+    };
+
+    asm._workerPatched = true;
+    console.log('[AoWorker] AutoSaveManager._performAutoSave chunked パッチ適用完了');
+    return true;
+}
+
+function _patchSaveManager (ao) {
+    const plOK  = _patchPersistenceLayer(ao);
+    const asmOK = _patchAutoSaveManager(ao);
+
+    // 手動保存ボタン（saveManager.save）もパッチ
+    const sm = ao.saveManager;
+    if (sm && !sm._workerPatched) {
+        const _origSave = sm.save?.bind(sm);
+        sm.save = async function () {
+            try {
+                const data   = await _chunkedExportAll(ao);
+                if (!data) return _origSave?.();
+                return await ao.persistenceLayer.save(data);
+            } catch(e) {
+                return _origSave?.();
+            }
+        };
+        sm._workerPatched = true;
+        console.log('[AoWorker] saveManager.save() パッチ適用完了');
+    }
+
+    return plOK || asmOK || !!sm;
+}
+
 
 // ================================================================
 // [B] HippocampalReplay パッチ
