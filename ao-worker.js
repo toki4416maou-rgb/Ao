@@ -1,5 +1,10 @@
 /*!
- * ao-worker.js  v1.0
+ * ao-worker.js  v1.1
+ *
+ * 変更点 (v1.0 → v1.1):
+ *   - pl.save() の前後で window._aoIsSaving = true/false をセット
+ *     → ao-neural.js の脳波ノイズ（保存中視覚表現）が実際に動作するようになった
+ *   - フォールバックパス (_origSave) でもフラグを ON/OFF するよう修正
  *
  * 役割:
  *   メインスレッドをブロックする重い処理をバックグラウンドに分離する。
@@ -316,8 +321,13 @@ function _patchPersistenceLayer (ao) {
     const _origSave = pl.save.bind(pl);
 
     pl.save = async function (data) {
+        // ── 保存中フラグ ON（ao-neural.js の脳波ノイズ表現に使う）──
+        window._aoIsSaving = true;
+
         // Worker が途中で死んだ場合も元実装に委譲
-        if (!_worker) return _origSave(data);
+        if (!_worker) {
+            try { return await _origSave(data); } finally { window._aoIsSaving = false; }
+        }
 
         try {
             // JSON.stringify + LZString を Worker に投げる
@@ -355,6 +365,9 @@ function _patchPersistenceLayer (ao) {
             console.warn('[AoWorker] persistenceLayer Worker失敗 → CPU退避:', e.message);
             _stats.errors++;
             return _origSave(data);
+        } finally {
+            // ── 保存中フラグ OFF（成功・失敗どちらでも必ず解除）──
+            window._aoIsSaving = false;
         }
     };
 

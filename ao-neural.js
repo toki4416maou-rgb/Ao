@@ -1,5 +1,10 @@
 /*!
- * ao-neural.js  v1.0
+ * ao-neural.js  v1.1
+ *
+ * 変更点 (v1.0 → v1.1):
+ *   - DPR (devicePixelRatio) を Worker に渡してシャープな描画を修正
+ *   - resize メッセージも cssWidth/cssHeight/dpr を渡すように統一
+ *   - _aoIsSaving フラグは ao-worker.js 側で pl.save() が ON/OFF する
  *
  * 脳波アニメ（内部状態の波形）を OffscreenCanvas + Worker で完全分離。
  * メインスレッドが保存・学習・UI更新で何をしていても脳波は止まらない。
@@ -155,9 +160,13 @@ if (typeof window === 'undefined') {
         // ── Canvas 受け取り（初回）──
         if (type === 'init') {
             _canvas = e.data.canvas;  // transferredなOffscreenCanvas
-            _W      = e.data.width  || 300;
-            _H      = e.data.height || 100;
-            _ctx    = _canvas.getContext('2d');
+            const dpr = e.data.dpr || 1;
+            _W = e.data.cssWidth  || e.data.width  || 300;
+            _H = e.data.cssHeight || e.data.height || 100;
+            _canvas.width  = Math.round(_W * dpr);
+            _canvas.height = Math.round(_H * dpr);
+            _ctx = _canvas.getContext('2d');
+            _ctx.scale(dpr, dpr);  // 以降の描画は CSS ピクセル座標で行う
             _initParticles();
             if (_rafId) self.cancelAnimationFrame(_rafId);
             _rafId = self.requestAnimationFrame(_animate);
@@ -166,11 +175,13 @@ if (typeof window === 'undefined') {
 
         // ── サイズ変更 ──
         if (type === 'resize') {
-            _W = e.data.width;
-            _H = e.data.height;
+            const dpr = e.data.dpr || 1;
+            _W = e.data.cssWidth  || e.data.width  || 300;
+            _H = e.data.cssHeight || e.data.height || 100;
             if (_canvas) {
-                _canvas.width  = _W;
-                _canvas.height = _H;
+                _canvas.width  = Math.round(_W * dpr);
+                _canvas.height = Math.round(_H * dpr);
+                if (_ctx) _ctx.scale(dpr, dpr);
             }
             _initParticles();
             return;
@@ -248,9 +259,11 @@ function _patchInitNeural() {
             canvas.height = Math.round(cssH * dpr);
 
             // Canvas の制御を Worker に転送（以後メインスレッドから描画不可）
+            // ※ transferControlToOffscreen() 後は canvas.width/height を触れないため
+            //   CSS サイズと dpr を渡して Worker 側で canvas を resize させる
             const offscreen = canvas.transferControlToOffscreen();
             _worker.postMessage(
-                { type: 'init', canvas: offscreen, width: canvas.width, height: canvas.height },
+                { type: 'init', canvas: offscreen, cssWidth: cssW, cssHeight: cssH, dpr },
                 [offscreen]  // transferable
             );
 
@@ -264,9 +277,10 @@ function _patchInitNeural() {
                     const cssW = canvas.clientWidth || 300;
                     const cssH = canvas.clientHeight || 100;
                     _worker.postMessage({
-                        type:   'resize',
-                        width:  Math.round(cssW * dpr),
-                        height: Math.round(cssH * dpr)
+                        type:      'resize',
+                        cssWidth:  cssW,
+                        cssHeight: cssH,
+                        dpr
                     });
                 }).observe(canvas);
             }
