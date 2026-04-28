@@ -392,9 +392,17 @@
 
         // --- Scheduler に既存の500ms処理を登録 ---
         // updateUI（window スコープに存在する）
+        // RAF でラップして DOM 更新をフレームに同期させる
         if (typeof updateUI === 'function') {
-            Scheduler.register('updateUI', updateUI);
-            OPT.log('updateUI → Schedulerに統合');
+            let _uiRafId = null;
+            Scheduler.register('updateUI', () => {
+                if (_uiRafId) return; // 前フレームの描画が終わってなければスキップ
+                _uiRafId = requestAnimationFrame(() => {
+                    _uiRafId = null;
+                    try { updateUI(); } catch(e) {}
+                });
+            });
+            OPT.log('updateUI → Scheduler + RAF に統合');
         }
 
         // _updateIdentityUI
@@ -484,6 +492,33 @@
         if (being.concepts)       IdleGC.register(being.concepts,       ['_map', 'cache']);
         if (being.episodicMemory) IdleGC.register(being.episodicMemory, ['episodes']);
         if (being.worldView)      IdleGC.register(being.worldView,      ['cache']);
+
+        // --- ao-worker.js との連携: 保存中は Scheduler を一時停止 ---
+        // Worker 保存が走っている間に updateUI が競合するのを防ぐ
+        function connectWorkerSavePause() {
+            const sm = being.saveManager;
+            if (!sm || sm._optimizerConnected) return false;
+            const origSave = sm.save.bind(sm);
+            sm.save = async function(...args) {
+                Scheduler.pause();
+                try {
+                    return await origSave(...args);
+                } finally {
+                    Scheduler.resume();
+                }
+            };
+            sm._optimizerConnected = true;
+            OPT.log('SaveManager ↔ Scheduler 連携パッチ適用（保存中は停止）');
+            return true;
+        }
+        // ao-worker.js のパッチ後（3秒後）に接続を試みる
+        setTimeout(() => {
+            if (!connectWorkerSavePause()) {
+                const pollSave = setInterval(() => {
+                    if (connectWorkerSavePause()) clearInterval(pollSave);
+                }, 1000);
+            }
+        }, 3000);
 
         // --- 起動 ---
         Scheduler.start();

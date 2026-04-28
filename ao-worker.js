@@ -409,30 +409,6 @@ function _patchPALIdle (ao) {
 }
 
 // ================================================================
-// [E] updateUI の RAF バッチング
-//     毎 tick 呼ばれる全パネル更新を requestAnimationFrame に統合
-// ================================================================
-function _patchUpdateUI () {
-    // グローバルの updateUI 関数を RAF バッチング版に置き換え
-    if (typeof window.updateUI !== 'function' || window.updateUI._rafPatched) return false;
-
-    const _origUI = window.updateUI;
-    let   _rafId  = null;
-
-    window.updateUI = function () {
-        if (_rafId) return;  // すでにキューに入ってる → スキップ
-        _rafId = requestAnimationFrame(() => {
-            _rafId = null;
-            try { _origUI(); } catch (e) {}
-        });
-    };
-
-    window.updateUI._rafPatched = true;
-    console.log('[AoWorker] updateUI RAF バッチング 適用完了');
-    return true;
-}
-
-// ================================================================
 // 起動シーケンス
 // ================================================================
 const _workerOK = _initWorker();
@@ -444,6 +420,8 @@ window.aoWorker = _workerOK
     : null;
 
 // ao が初期化されるまでポーリングしてパッチを適用
+// ※ updateUI の RAF バッチングは ao-optimizer.js の Scheduler 側で処理するため
+//   ここでは行わない（二重パッチ防止）
 const _poll = setInterval(() => {
     const ao = window.ao;
     if (!ao) return;
@@ -453,10 +431,8 @@ const _poll = setInterval(() => {
     const decayOK  = _workerOK ? _patchDecay(ao)       : false;
     const palOK    = _patchPALIdle(ao);
 
-    _patchUpdateUI();
-
     // 主要パッチが全部完了したらポーリング終了
-    if (saveOK && replayOK) {
+    if (saveOK && replayOK && decayOK && palOK) {
         clearInterval(_poll);
         console.log('[AoWorker] 全パッチ適用完了');
     }
