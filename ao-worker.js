@@ -311,6 +311,7 @@ function _patchPersistenceLayer (ao) {
 
     pl.save = async function (data) {
         try {
+            window._aoIsSaving = true;
             // JSON.stringify + LZString を Worker に投げる
             const { compressed, originalBytes, compressedLen } = await _send(
                 'compress', data, 'save'
@@ -340,9 +341,11 @@ function _patchPersistenceLayer (ao) {
                 `[AoWorker] persistenceLayer 非同期保存完了`,
                 `${(originalBytes/1024).toFixed(0)}KB → ${(compressedLen/1024).toFixed(0)}KB`
             );
+            window._aoIsSaving = false;
             return { success: true, timestamp: Date.now() };
 
         } catch (e) {
+            window._aoIsSaving = false;
             console.warn('[AoWorker] persistenceLayer Worker失敗 → CPU退避:', e.message);
             _stats.errors++;
             return _origSave(data);
