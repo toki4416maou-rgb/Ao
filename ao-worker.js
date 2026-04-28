@@ -307,11 +307,19 @@ function _patchPersistenceLayer (ao) {
     const pl = ao.persistenceLayer;
     if (!pl || pl._workerPatched) return false;
 
+    // Worker が起動していない場合はパッチ不要
+    if (!_worker) {
+        console.log('[AoWorker] Worker未起動のため persistenceLayer パッチをスキップ');
+        return false;
+    }
+
     const _origSave = pl.save.bind(pl);
 
     pl.save = async function (data) {
+        // Worker が途中で死んだ場合も元実装に委譲
+        if (!_worker) return _origSave(data);
+
         try {
-            window._aoIsSaving = true;
             // JSON.stringify + LZString を Worker に投げる
             const { compressed, originalBytes, compressedLen } = await _send(
                 'compress', data, 'save'
@@ -341,11 +349,9 @@ function _patchPersistenceLayer (ao) {
                 `[AoWorker] persistenceLayer 非同期保存完了`,
                 `${(originalBytes/1024).toFixed(0)}KB → ${(compressedLen/1024).toFixed(0)}KB`
             );
-            window._aoIsSaving = false;
             return { success: true, timestamp: Date.now() };
 
         } catch (e) {
-            window._aoIsSaving = false;
             console.warn('[AoWorker] persistenceLayer Worker失敗 → CPU退避:', e.message);
             _stats.errors++;
             return _origSave(data);
@@ -394,21 +400,11 @@ function _patchSaveManager (ao) {
     const plOK  = _patchPersistenceLayer(ao);
     const asmOK = _patchAutoSaveManager(ao);
 
-    // 手動保存ボタン（saveManager.save）もパッチ
+    // saveManager.save() は PersonaSaveManager の isSaving/isDirty 管理を壊さないよう
+    // パッチしない（persistenceLayer.save が Worker 経由になった恩恵を自動的に受ける）
     const sm = ao.saveManager;
-    if (sm && !sm._workerPatched) {
-        const _origSave = sm.save?.bind(sm);
-        sm.save = async function () {
-            try {
-                const data   = await _chunkedExportAll(ao);
-                if (!data) return _origSave?.();
-                return await ao.persistenceLayer.save(data);
-            } catch(e) {
-                return _origSave?.();
-            }
-        };
-        sm._workerPatched = true;
-        console.log('[AoWorker] saveManager.save() パッチ適用完了');
+    if (sm) {
+        console.log('[AoWorker] saveManager.save() は元実装を維持（isSaving管理を保護）');
     }
 
     return plOK || asmOK || !!sm;
