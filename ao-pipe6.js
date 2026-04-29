@@ -940,6 +940,256 @@ function attachPipe6(being) {
 
 
 
+
+    // ═══════════════════════════════════════════════════════════════════
+    // MREパイプ：
+    // ① QualiaSnapshot → ConceptGraph saliency追加
+    // ② MRE.renderImage() → spatialベクトル → ImageRenderer
+    // ③ MRE.renderVideo() → CIR.designVideo() → GPU並列フレーム
+    // ═══════════════════════════════════════════════════════════════════
+
+    const mre = being.mre;
+    if (mre) {
+
+        // ── ① QualiaSnapshot.capture() をラップ ───────────────────────
+        // ConceptGraphのカテゴリをsaliencyに追加する
+        // MREが「今何を知っているか」を反映できるようになる
+        const origCaptureProto = window.QualiaSnapshot &&
+                                 window.QualiaSnapshot.prototype.capture;
+        if (origCaptureProto) {
+            window.QualiaSnapshot.prototype.capture = function() {
+                const snapshot = origCaptureProto.call(this);
+                try {
+                    const cg = this.being.conceptGraph || window._aoConceptGraph;
+                    if (cg && cg.groups.size > 0) {
+                        // ConceptGraphのカテゴリをsaliencyとして追加
+                        const cgSaliency = [...cg.groups.entries()]
+                            .map(([category, members]) => ({
+                                concept:      category,
+                                depth:        members.size / 10,
+                                saliency:     Math.min(1.0, members.size / 5 * 0.8),
+                                fromConcept:  true,
+                                memberCount:  members.size,
+                            }))
+                            .filter(c => c.saliency > 0.1)
+                            .sort((a, b) => b.saliency - a.saliency)
+                            .slice(0, 5);
+
+                        // 既存saliencyとマージ（概念由来を後ろに）
+                        snapshot.saliency = [
+                            ...snapshot.saliency,
+                            ...cgSaliency.filter(cg =>
+                                !snapshot.saliency.find(s => s.concept === cg.concept)
+                            ),
+                        ].sort((a, b) => b.saliency - a.saliency);
+                    }
+                } catch(e) { console.warn('[PIPE6/MRE①] capture hook error:', e); }
+                return snapshot;
+            };
+        }
+
+        // ── ② MRE.renderImage() をラップ ─────────────────────────────
+        // saliencyトップ概念のspatialベクトルをGPU合成してImageRendererに渡す
+        const origRenderImage = mre.renderImage.bind(mre);
+        mre.renderImage = function() {
+            try {
+                const intent   = mre._buildIntent('image');
+                const snapshot = mre._captureQualia(intent);
+
+                // saliencyトップ5概念のspatialベクトルを取得
+                const spatialPairs = [];
+                const weights      = [];
+                for (const sal of snapshot.saliency.slice(0, 5)) {
+                    const hyp = being.imageAdapter &&
+                                being.imageAdapter.hypothesisTable &&
+                                being.imageAdapter.hypothesisTable.hypotheses &&
+                                being.imageAdapter.hypothesisTable.hypotheses.get(sal.concept);
+                    if (hyp && hyp.spatial && hyp.spatial.samples >= 4) {
+                        const n = hyp.spatial.samples;
+                        spatialPairs.push(new Float32Array(hyp.spatial.sum.map(v => v / n)));
+                        weights.push(sal.saliency);
+                    }
+                }
+
+                if (spatialPairs.length > 0) {
+                    // GPU合成
+                    const blended = being._gpuBlender
+                        ? being._gpuBlender.blend(spatialPairs, weights)
+                        : null;
+
+                    if (blended) {
+                        // snapshotにspatialVectorを追加してImageRendererに渡す
+                        snapshot.spatialVector = blended;
+                        snapshot.attributes.fromSpatial = true;
+
+                        being.addLog && being.addLog(
+                            `[PIPE6/MRE②] 画像: ${spatialPairs.length}概念のspatialをGPU合成`
+                        );
+
+                        // ImageRendererのrender()でspatialVectorを使う
+                        const dataUrl = mre.imgRenderer.render(snapshot);
+                        const desc    = mre._describeOutput(snapshot, 'image');
+                        being.addLog && being.addLog(`[MRE] 画像レンダリング完了(GPU): ${desc}`);
+                        return { dataUrl, description: desc, intent, snapshot };
+                    }
+                }
+            } catch(e) { console.warn('[PIPE6/MRE②] renderImage hook error:', e); }
+            return origRenderImage();
+        };
+
+        // ── ③ MRE.renderVideo() をラップ ─────────────────────────────
+        // saliencyトップ概念をCIR.designVideo()に渡して因果設計してから生成
+        const origRenderVideo = mre.renderVideo.bind(mre);
+        mre.renderVideo = async function(frameCount = 12, fps = 8) {
+            try {
+                const intent   = mre._buildIntent('video');
+                const snapshot = mre._captureQualia(intent);
+
+                // saliencyトップ概念でテキストを構成
+                const topConcepts = snapshot.saliency
+                    .slice(0, 3)
+                    .map(s => s.concept)
+                    .join(' ');
+
+                if (topConcepts && cir.designVideo) {
+                    being.addLog && being.addLog(
+                        `[PIPE6/MRE③] 動画: CIR.designVideo("${topConcepts}")`
+                    );
+
+                    const duration = Math.ceil(frameCount / fps);
+                    const design   = cir.designVideo({ text: topConcepts, duration });
+
+                    if (design && design.scenes.length > 0 && being._gpuBlender) {
+                        const result = await _triggerVideoFromDesign(being, design, being._gpuBlender);
+                        if (result) {
+                            being.addLog && being.addLog(
+                                `[MRE] 動画レンダリング完了(CIR+GPU): ${result.frames.length}フレーム`
+                            );
+                            return {
+                                frames:      result.frames,
+                                fps,
+                                description: result.description,
+                                intent,
+                                snapshot,
+                            };
+                        }
+                    }
+                }
+            } catch(e) { console.warn('[PIPE6/MRE③] renderVideo hook error:', e); }
+            return origRenderVideo(frameCount, fps);
+        };
+
+        being.addLog && being.addLog('[PIPE6/MRE] MRE → ConceptGraph・CIR・GPU パイプ接続完了');
+    }
+
+
+    // ═══════════════════════════════════════════════════════════════════
+    // CSEパイプ：概念生成・ラベル付け機構 ↔ 因果推論野
+    // ① CSE._validateAndStore() → ConceptGraph登録
+    // ② CIR履歴 → CSE._pickAttrValue()のヒント
+    // ③ CSE.synthesize()完了 → CIRに記録
+    // ═══════════════════════════════════════════════════════════════════
+
+    const cse = being.cse;
+    if (cse) {
+
+        // ── ① _validateAndStore() をラップ ────────────────────────────
+        // 検証通過した概念をConceptGraphに自動登録する
+        const origValidateStore = cse._validateAndStore.bind(cse);
+        cse._validateAndStore = function(candidate, space) {
+            const result = origValidateStore(candidate, space);
+            if (!result) return result;
+
+            try {
+                const cg  = being.conceptGraph || window._aoConceptGraph;
+                const label = result.primaryLabel || result.id;
+
+                if (cg && label) {
+                    // 合成元概念をis-aまたはhas-propertyとしてConceptGraphに登録
+                    if (result.operation === 'merge' && result.sourceIds) {
+                        // merge: 合成元 is-a 新概念
+                        for (const srcId of result.sourceIds) {
+                            cg.addRelation(srcId, 'is-a', label);
+                        }
+                    } else if (result.operation === 'add_attr' || result.operation === 'replace_attr') {
+                        // 属性追加: 新概念 has-property 属性
+                        const attrs = result.attributes || {};
+                        for (const [k, v] of Object.entries(attrs)) {
+                            cg.addRelation(label, 'has-property', `${k}:${v}`);
+                        }
+                    }
+
+                    // ③ CIRに新概念生成を記録（因果推論の素材）
+                    cir.record(
+                        `概念生成[${result.operation}]:${label}`,
+                        { conceptCount: cse.synthesized.length - 1 },
+                        {
+                            conceptCount:  cse.synthesized.length,
+                            label,
+                            operation:     result.operation,
+                            validScore:    result.validationScore,
+                            sourceIds:     result.sourceIds || [],
+                            relationType:  'concept-synthesized',
+                            grammarConf:   result.validationScore || 0.5,
+                            subject:       label,
+                            predicate:     result.operation,
+                        }
+                    );
+
+                    being.addLog && being.addLog(
+                        `[PIPE6/CSE] 新概念→ConceptGraph: 「${label}」op=${result.operation} score=${(result.validationScore||0).toFixed(2)}`
+                    );
+                }
+            } catch(e) { console.warn('[PIPE6/CSE①] error:', e); }
+            return result;
+        };
+
+        // ── ② _pickAttrValue() をラップ ───────────────────────────────
+        // CIR履歴から高信用値の述語を属性値候補に追加する
+        // ランダム選択ではなく因果推論が蓄積した語彙を優先使用
+        const origPickAttr = cse._pickAttrValue.bind(cse);
+        cse._pickAttrValue = function() {
+            try {
+                // CIR履歴から grammarConf > 0.6 の述語を収集
+                const cirVocab = cir.history
+                    .filter(e => e.stateAfter &&
+                        (e.stateAfter.grammarConf || 0) > 0.6 &&
+                        e.stateAfter.predicate)
+                    .map(e => e.stateAfter.predicate)
+                    .filter(Boolean);
+
+                if (cirVocab.length > 0 && Math.random() > 0.4) {
+                    // 40%の確率でCIR由来の語彙を使う（残り60%は既存処理）
+                    const val = cirVocab[Math.floor(Math.random() * cirVocab.length)];
+                    being.addLog && being.addLog(
+                        `[PIPE6/CSE②] 属性値をCIR由来で選択: "${val}"`
+                    );
+                    return val;
+                }
+            } catch(e) { console.warn('[PIPE6/CSE②] error:', e); }
+            return origPickAttr();
+        };
+
+        // ── cycle() 完了後にConceptGraph→12軸更新をトリガー ──────────
+        const origCycle = cse.cycle.bind(cse);
+        cse.cycle = function() {
+            const generated = origCycle();
+            try {
+                if (generated && generated.length > 0 && being.worldView) {
+                    // 新概念が生まれるたびにinformation軸を少し伸ばす
+                    being.worldView.growAxis &&
+                        being.worldView.growAxis('information', 0.01 * generated.length);
+                    // 合成成功 → causality軸も成長
+                    being.worldView.growAxis &&
+                        being.worldView.growAxis('causality', 0.005 * generated.length);
+                }
+            } catch(e) { console.warn('[PIPE6/CSE cycle] error:', e); }
+            return generated;
+        };
+
+        being.addLog && being.addLog('[PIPE6/CSE] 概念生成・ラベル付け機構 ↔ CIR パイプ接続完了');
+    }
+
     console.log('[PIPE6] クオリア力場→意思決定→CIR→出力生成 パイプ接続完了');
     being.addLog && being.addLog('[PIPE6] 意思→因果推論→出力 パイプ6 接続完了');
 }
