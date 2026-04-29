@@ -55,17 +55,37 @@ function attachPipe1(being) {
         if (predicate)      structureScore += 0.1;
         structureScore = Math.min(1.0, structureScore);
 
-        // ── 2. StatisticalTokenizer の PMI スコア ──
-        // statTokがあればbigram/PMIから主語-述語の結びつき強度を取る
-        let pmiScore = 0.5; // デフォルト（statTokなし時）
+        // ── 2. StatisticalTokenizer の PMI + 4軸信用値 ──
+        // PIPE4が付与した4軸（接尾語・語末・位置・区切り）をPMIと合成する
+        // これにより因果推論野が「どの軸で文法が決まっているか」を理解できる
+        let pmiScore    = 0.5; // デフォルト（statTokなし時）
+        let axis4Signal = { suffix: 0, wordEnd: 0, position: 0, delim: 0 };
+
         if (statTok && subject && predicate) {
             try {
                 const feats = statTok.extractPerceptualFeatures(
                     `${subject} ${predicate}`,
                     [subject, predicate]
                 );
-                // avgPMIが高い = この2語の共起が統計的に確立している
-                pmiScore = Math.min(1.0, (feats.avgPMI || 0) * 2 + 0.3);
+
+                // PMI基本スコア
+                const basePMI = Math.min(1.0, (feats.avgPMI || 0) * 2 + 0.3);
+
+                // 4軸信用値（PIPE4が追加したフィールド）
+                const suffixConf   = feats.avgSuffixConf   || 0;
+                const wordEndConf  = feats.avgWordEndConf  || 0;
+                const positionConf = feats.avgPositionConf || 0;
+                const delimConf    = feats.avgDelimConf    || 0;
+
+                // 4軸の中で最も強い信号を使ってPMIを補正する
+                // 接尾語が強い → その言語は接尾語で文法が決まる確信度が上がる
+                // 位置が強い  → その言語は語順で文法が決まる確信度が上がる
+                const axis4Max = Math.max(suffixConf, wordEndConf, positionConf, delimConf);
+                pmiScore = Math.min(1.0, basePMI * 0.6 + axis4Max * 0.4);
+
+                // CIRに渡すために保存
+                axis4Signal = { suffix: suffixConf, wordEnd: wordEndConf, position: positionConf, delim: delimConf };
+
             } catch (_) {}
         }
 
@@ -99,7 +119,11 @@ function attachPipe1(being) {
         }
 
         // ── 4. 総合信用値（CIRのstateBefore/Afterに載せる） ──
-        const grammarConfidence = (structureScore * 0.6) + (pmiScore * 0.4);
+        // 4軸信号が強い場合はstructureScoreの重みを下げて4軸に委ねる
+        const axis4Dominant = Math.max(axis4Signal.suffix, axis4Signal.position) > 0.5;
+        const grammarConfidence = axis4Dominant
+            ? (structureScore * 0.4) + (pmiScore * 0.6)  // 4軸が主役
+            : (structureScore * 0.6) + (pmiScore * 0.4); // 構造スコアが主役
 
         return {
             patternLabel:       relationLabel,
@@ -107,6 +131,8 @@ function attachPipe1(being) {
             grammarConfidence:  grammarConfidence,
             structureScore:     structureScore,
             subjectPredicatePMI: pmiScore,
+            axis4Signal:        axis4Signal,   // CIRへ渡す4軸情報
+            axis4Dominant:      axis4Dominant, // どちらが主役か
             subject:            subject,
             predicate:          predicate,
             object:             object,
@@ -150,12 +176,19 @@ function attachPipe1(being) {
                     subject:        signal.subject,
                     predicate:      signal.predicate,
                     relationType:   signal.relationType,
+                    // PIPE4から来た4軸信用値（因果推論野が言語構造を理解するための鍵）
+                    axis4:          signal.axis4Signal,
+                    axis4Dominant:  signal.axis4Dominant,
+                    // どの軸が主役か（CIRが蓄積して言語の文法型を自律的に把握する）
+                    dominantAxis: signal.axis4Signal
+                        ? Object.entries(signal.axis4Signal).sort((a,b) => b[1]-a[1])[0][0]
+                        : 'unknown',
                 };
 
                 cir.record(signal.patternLabel, stateBefore, stateAfter);
 
                 being.addLog && being.addLog(
-                    `[PIPE1] ${signal.patternLabel} conf=${(signal.grammarConfidence*100).toFixed(0)}%`
+                    `[PIPE1] ${signal.patternLabel} conf=${(signal.grammarConfidence*100).toFixed(0)}% axis=${stateAfter.dominantAxis}`
                 );
             }
         } catch(e) {
