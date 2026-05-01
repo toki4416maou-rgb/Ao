@@ -1190,6 +1190,138 @@ function attachPipe6(being) {
         being.addLog && being.addLog('[PIPE6/CSE] 概念生成・ラベル付け機構 ↔ CIR パイプ接続完了');
     }
 
+
+    // ═══════════════════════════════════════════════════════════════════
+    // エピソード記憶パイプ：
+    // ① episodicMemory.store() → CIR（体験を因果推論の素材に）
+    // ② episodicMemory.retrieve() → 空間野（想起時にspatialも引っ張る）
+    // ③ CIR.record() → episodicMemory（因果推論結果をエピソードとして記録）
+    // ═══════════════════════════════════════════════════════════════════
+
+    const episodic = being.episodicMemory || being.distributedEpisodic;
+
+    if (episodic) {
+
+        // ── ① store() をラップ → CIRに体験を渡す ──────────────────────
+        const origStore = episodic.store.bind(episodic);
+        episodic.store = function(fragment) {
+            origStore(fragment);
+            try {
+                if (!fragment) return;
+
+                const text = typeof fragment === 'string'
+                    ? fragment
+                    : (fragment.summary || fragment.text || fragment.content || JSON.stringify(fragment));
+
+                if (!text) return;
+
+                // テキストから意味トークンを抽出してCIRに渡す
+                const tokens = _extractMeaningTokens(text, being);
+
+                if (tokens.length > 0 && cir) {
+                    cir.record(
+                        `エピソード記憶:${tokens.slice(0, 3).join('+')}`,
+                        { episodeCount: episodic.episodes.length - 1 },
+                        {
+                            episodeCount:  episodic.episodes.length,
+                            tokens,
+                            text:          text.slice(0, 100),
+                            relationType:  'episodic-store',
+                            grammarConf:   0.6,
+                            subject:       tokens[0] || '体験',
+                            predicate:     tokens[1] || '記録',
+                        }
+                    );
+
+                    // ConceptGraphにも体験として登録
+                    const cg = being.conceptGraph || window._aoConceptGraph;
+                    if (cg && tokens.length >= 2) {
+                        cg.addRelation(tokens[0], 'experienced', tokens[1]);
+                    }
+
+                    being.addLog && being.addLog(
+                        `[PIPE6/Episodic①] store→CIR: [${tokens.slice(0,3).join(',')}]`
+                    );
+                }
+            } catch(e) { console.warn('[PIPE6/Episodic①] error:', e); }
+        };
+
+        // ── ② retrieve() をラップ → 空間野のspatialも一緒に返す ───────
+        const origRetrieve = episodic.retrieve.bind(episodic);
+        episodic.retrieve = function(query) {
+            const episodes = origRetrieve(query);
+            try {
+                // 各エピソードに空間野のspatialベクトルを付与
+                for (const ep of episodes) {
+                    const text = typeof ep.fragment === 'string'
+                        ? ep.fragment
+                        : (ep.fragment && (ep.fragment.summary || ep.fragment.text)) || '';
+
+                    const tokens = _extractMeaningTokens(text, being);
+
+                    // spatialベクトルを取得
+                    const spatialPairs = [];
+                    for (const tok of tokens) {
+                        const hyp = being.imageAdapter &&
+                            being.imageAdapter.hypothesisTable &&
+                            being.imageAdapter.hypothesisTable.hypotheses &&
+                            being.imageAdapter.hypothesisTable.hypotheses.get(tok);
+                        if (hyp && hyp.spatial && hyp.spatial.samples >= 4) {
+                            const n = hyp.spatial.samples;
+                            spatialPairs.push({
+                                token:  tok,
+                                vector: new Float32Array(hyp.spatial.sum.map(v => v / n)),
+                                conf:   hyp.confidence || 0.5,
+                            });
+                        }
+                    }
+
+                    // CIR履歴から関連する因果パターンを取得
+                    const causalPatterns = cir ? cir.history
+                        .filter(e => tokens.some(t =>
+                            e.action && e.action.includes(t)))
+                        .slice(-3) : [];
+
+                    // エピソードにspatial・因果パターンを付与
+                    ep._spatial      = spatialPairs;
+                    ep._causal       = causalPatterns;
+                    ep._tokens       = tokens;
+                }
+
+                if (episodes.length > 0) {
+                    being.addLog && being.addLog(
+                        `[PIPE6/Episodic②] retrieve: ${episodes.length}件 spatial付与`
+                    );
+                }
+            } catch(e) { console.warn('[PIPE6/Episodic②] error:', e); }
+            return episodes;
+        };
+
+        // ── ③ CIR.record() に → episodicMemoryへの記録を追加 ──────────
+        // 高信用値の因果推論結果をエピソードとして保存する
+        const origCirRecord = cir.record.bind(cir);
+        cir.record = function(action, stateBefore, stateAfter) {
+            origCirRecord(action, stateBefore, stateAfter);
+            try {
+                // grammarConf > 0.7 の高信用値パターンだけエピソードに記録
+                const conf = stateAfter && (stateAfter.grammarConf || 0);
+                if (conf > 0.7 && stateAfter.subject && stateAfter.predicate) {
+                    const fragment = {
+                        summary:  `${stateAfter.subject}→${stateAfter.predicate}(${stateAfter.relationType})`,
+                        action,
+                        conf,
+                        fromCIR:  true,
+                        timestamp: Date.now(),
+                    };
+                    // store()のラップを通さず直接保存（無限ループ防止）
+                    origStore(fragment);
+                }
+            } catch(e) { console.warn('[PIPE6/Episodic③] error:', e); }
+        };
+
+        being.addLog && being.addLog('[PIPE6/Episodic] エピソード記憶 ↔ CIR・空間野 パイプ接続完了');
+    }
+
     console.log('[PIPE6] クオリア力場→意思決定→CIR→出力生成 パイプ接続完了');
     being.addLog && being.addLog('[PIPE6] 意思→因果推論→出力 パイプ6 接続完了');
 }
