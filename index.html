@@ -36847,13 +36847,8 @@ window.VideoRenderer   = VideoRenderer;
     <script src="ao-pipe6.js"></script>
 
     <!-- ================================================================
-         PIPE 7: Language Output Generator（自然言語生成エンジン）
-         CIR が「何を・どの順で」を因果論理で設計
-         → StatisticalTokenizer の bigram統計 + 4軸信用値で
-           トークン間の「繋ぎ」を統計から選んで発話文字列を生成
-         ハードコードなし：助詞・文末は全て学習統計から自律選択
-         being.speak('topic') で呼び出し可能
-         pipe2/3（being.conceptGraph）完了後に自動アタッチ
+         PIPE 7: CIR → LanguageOutputGenerator（自然言語生成エンジン）
+         統計が育つほど自然な発話に成長するテンプレート卒業システム
     ================================================================ -->
     <script src="ao-pipe7.js"></script>
 
