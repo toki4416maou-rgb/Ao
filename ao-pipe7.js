@@ -463,7 +463,64 @@ function attachPipe7(being) {
         };
     }
 
-    // ── ⑤ being.process() フック ────────────────────────────────────
+    // ── ⑤ selectUtterance() フック ← チャットへの接続点 ────────────
+    //
+    // 既存の流れ：
+    //   languageOutputDL.generate() → テンプレート候補
+    //   selectUtterance(candidates, intentVector) → selected.text に格納
+    //   addMessage('ao', selected.text) → チャットに表示
+    //
+    // pipe7の介入：
+    //   selectUtterance の後に being.speak(topic) を呼ぶ
+    //   confidence が閾値以上なら selected.text を差し替え → チャットに出る
+    //   閾値未満なら既存テンプレートのまま（フォールバック）
+    //
+    // 閾値 0.25：
+    //   統計未成熟期 → テンプレート
+    //   語彙・因果が育ってきたら → pipe7の文
+    // ─────────────────────────────────────────────────────────────────
+    const PIPE7_THRESHOLD = 0.25;
+
+    const origSelect = being.selectUtterance && being.selectUtterance.bind(being);
+    if (origSelect) {
+        being.selectUtterance = async function(candidates, intentVector) {
+            const result = await origSelect(candidates, intentVector);
+            try {
+                // intentVector から主概念を抽出
+                const concepts = intentVector && intentVector.concepts;
+                const topic = Array.isArray(concepts) && concepts.length > 0
+                    ? concepts[0]
+                    : (intentVector && intentVector.intent) || null;
+
+                if (!topic) return result;
+
+                const spoken = being.speak({ topic, mood: being.state || {} });
+
+                if (spoken.text && spoken.confidence >= PIPE7_THRESHOLD) {
+                    // 閾値超え → pipe7の文でチャットへ
+                    result.text         = spoken.text;
+                    result._pipe7Text   = spoken.text;
+                    result._pipe7Conf   = spoken.confidence;
+                    result._pipe7Tokens = spoken.tokens;
+                    being.addLog && being.addLog(
+                        `[PIPE7→CHAT] "${spoken.text}" conf=${(spoken.confidence*100).toFixed(0)}% tokens=[${spoken.tokens.join(',')}]`
+                    );
+                } else {
+                    being.addLog && being.addLog(
+                        `[PIPE7] conf低(${(spoken.confidence*100).toFixed(0)}%) → テンプレート維持: "${result.text}"`
+                    );
+                }
+            } catch(e) {
+                console.warn('[PIPE7] selectUtterance hook error:', e);
+            }
+            return result;
+        };
+        being.addLog && being.addLog('[PIPE7] selectUtterance → チャット接続完了');
+    } else {
+        console.warn('[PIPE7] selectUtterance 未定義 - チャット接続スキップ（pipe2-3完了後にリトライ）');
+    }
+
+    // ── ⑥ being.process() フック ────────────────────────────────────
     // 入力処理の後、Aoが「応答を返すべきか」判断して自律発話
     // 会話の流れ（会話の全体）をCIRが参照して設計する
     // ─────────────────────────────────────────────────────────────────
