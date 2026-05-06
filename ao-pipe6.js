@@ -1322,6 +1322,170 @@ function attachPipe6(being) {
         being.addLog && being.addLog('[PIPE6/Episodic] エピソード記憶 ↔ CIR・空間野 パイプ接続完了');
     }
 
+
+    // ═══════════════════════════════════════════════════════════════════
+    // 4軸学習連携パイプ：
+    // PIPE4の4軸信用値（接尾語・語末・位置・区切り）を
+    // ① TemplateSelector.record() のstateVectorに追加
+    // ② LanguageInputDL.parse() の理解深度に反映
+    // ③ episodicMemory.store() のエピソードに付与
+    // ═══════════════════════════════════════════════════════════════════
+
+    const statTok = being.statisticalTokenizer
+        || (being.languageOutputDL
+            && being.languageOutputDL.languageAcquisition
+            && being.languageOutputDL.languageAcquisition.perceptualParser);
+
+    const templateSel = being.templateSelector;
+    const langDL      = being.languageInputDL;
+    const episodic2   = being.episodicMemory || being.distributedEpisodic;
+
+    if (statTok && statTok._axis4) {
+
+        // ── ① TemplateSelector.record() をラップ ──────────────────────
+        // stateVectorに4軸平均信用値を追加して
+        // 「この言語状態でこのテンプレートが使われた」を精密に記録する
+        if (templateSel) {
+            const origRecord = templateSel.record.bind(templateSel);
+            templateSel.record = function(templateIdx, stateVector) {
+                try {
+                    // 4軸の平均信用値を計算
+                    let sumSuffix = 0, sumEnd = 0, sumPos = 0, sumDelim = 0, count = 0;
+                    for (const [, ax] of statTok._axis4) {
+                        if (ax.total > 0) {
+                            sumSuffix += ax.suffixCount  / ax.total;
+                            sumEnd    += ax.wordEndCount / ax.total;
+                            sumPos    += ax.posCount > 0 ? Math.min(1, ax.posSum / ax.posCount) : 0;
+                            sumDelim  += ax.delimCount   / ax.total;
+                            count++;
+                        }
+                    }
+                    // 4軸信用値をstateVectorに追加
+                    const axis4Avg = count > 0 ? [
+                        sumSuffix / count,
+                        sumEnd    / count,
+                        sumPos    / count,
+                        sumDelim  / count,
+                    ] : [0, 0, 0, 0];
+
+                    // 既存stateVector + 4軸平均 = より精密な状態表現
+                    const enrichedState = [...(stateVector || []), ...axis4Avg];
+                    origRecord(templateIdx, enrichedState);
+                } catch(e) {
+                    origRecord(templateIdx, stateVector);
+                }
+            };
+
+            // select() も同じenrichedStateで選ぶようにラップ
+            const origSelect = templateSel.select.bind(templateSel);
+            templateSel.select = function(stateVector, conceptStr) {
+                try {
+                    let sumSuffix = 0, sumEnd = 0, sumPos = 0, sumDelim = 0, count = 0;
+                    for (const [, ax] of statTok._axis4) {
+                        if (ax.total > 0) {
+                            sumSuffix += ax.suffixCount  / ax.total;
+                            sumEnd    += ax.wordEndCount / ax.total;
+                            sumPos    += ax.posCount > 0 ? Math.min(1, ax.posSum / ax.posCount) : 0;
+                            sumDelim  += ax.delimCount   / ax.total;
+                            count++;
+                        }
+                    }
+                    const axis4Avg = count > 0 ? [
+                        sumSuffix / count,
+                        sumEnd    / count,
+                        sumPos    / count,
+                        sumDelim  / count,
+                    ] : [0, 0, 0, 0];
+
+                    const enrichedState = [...(stateVector || []), ...axis4Avg];
+                    return origSelect(enrichedState, conceptStr);
+                } catch(e) {
+                    return origSelect(stateVector, conceptStr);
+                }
+            };
+
+            being.addLog && being.addLog('[PIPE/4軸①] TemplateSelector → 4軸stateVector拡張 完了');
+        }
+
+        // ── ② LanguageInputDL の理解深度に4軸を反映 ───────────────────
+        // parse()が返すsyntaxInfoに4軸信用値を追加する
+        // 「この言語はsuffix型か position型か」を理解に乗せる
+        if (langDL && langDL.parse) {
+            const origLangParse = langDL.parse.bind(langDL);
+            langDL.parse = async function(text, ...args) {
+                const result = await origLangParse(text, ...args);
+                try {
+                    // テキストのトークンから4軸信用値を取得
+                    const tokens = statTok._segment ? statTok._segment(text) : [];
+                    if (tokens.length > 0) {
+                        let sumSuffix = 0, sumEnd = 0, sumPos = 0, sumDelim = 0, count = 0;
+                        for (const tok of tokens) {
+                            const info = statTok.tokenScores && statTok.tokenScores.get(tok.surface);
+                            if (info) {
+                                sumSuffix += info.suffixConf   || 0;
+                                sumEnd    += info.wordEndConf  || 0;
+                                sumPos    += info.positionConf || 0;
+                                sumDelim  += info.delimConf    || 0;
+                                count++;
+                            }
+                        }
+                        if (count > 0 && result) {
+                            result.axis4 = {
+                                suffix:   sumSuffix / count,
+                                wordEnd:  sumEnd    / count,
+                                position: sumPos    / count,
+                                delim:    sumDelim  / count,
+                            };
+                            // 支配的な軸を判定（この言語の文法タイプ）
+                            const axes = result.axis4;
+                            result.dominantGrammarAxis = Object.entries(axes)
+                                .sort((a, b) => b[1] - a[1])[0][0];
+                        }
+                    }
+                } catch(e) { console.warn('[PIPE/4軸②] langDL.parse hook error:', e); }
+                return result;
+            };
+
+            being.addLog && being.addLog('[PIPE/4軸②] LanguageInputDL → 4軸理解深度 完了');
+        }
+
+        // ── ③ episodicMemory.store() に4軸信用値を付与 ─────────────────
+        // エピソードに「このとき言語の何軸が強かったか」を記録する
+        // 後でretrieve()したとき因果推論野が言語文脈を再現できる
+        if (episodic2) {
+            const origStore2 = episodic2.store.bind(episodic2);
+            episodic2.store = function(fragment) {
+                try {
+                    // 4軸の現在値をスナップショットとして付与
+                    let sumSuffix = 0, sumEnd = 0, sumPos = 0, sumDelim = 0, count = 0;
+                    for (const [, ax] of statTok._axis4) {
+                        if (ax.total > 0) {
+                            sumSuffix += ax.suffixCount  / ax.total;
+                            sumEnd    += ax.wordEndCount / ax.total;
+                            sumPos    += ax.posCount > 0 ? Math.min(1, ax.posSum / ax.posCount) : 0;
+                            sumDelim  += ax.delimCount   / ax.total;
+                            count++;
+                        }
+                    }
+                    if (count > 0 && fragment && typeof fragment === 'object') {
+                        fragment._axis4Snapshot = {
+                            suffix:   sumSuffix / count,
+                            wordEnd:  sumEnd    / count,
+                            position: sumPos    / count,
+                            delim:    sumDelim  / count,
+                            timestamp: Date.now(),
+                        };
+                    }
+                } catch(e) {}
+                origStore2(fragment);
+            };
+
+            being.addLog && being.addLog('[PIPE/4軸③] episodicMemory → 4軸スナップショット付与 完了');
+        }
+
+        being.addLog && being.addLog('[PIPE/4軸] 4軸信用値 → 学習系全接続 完了');
+    }
+
     console.log('[PIPE6] クオリア力場→意思決定→CIR→出力生成 パイプ接続完了');
     being.addLog && being.addLog('[PIPE6] 意思→因果推論→出力 パイプ6 接続完了');
 }
