@@ -1338,7 +1338,6 @@ function attachPipe6(being) {
 
     const templateSel = being.templateSelector;
     const langDL      = being.languageInputDL;
-    const episodic2   = being.episodicMemory || being.distributedEpisodic;
 
     if (statTok && statTok._axis4) {
 
@@ -1449,41 +1448,7 @@ function attachPipe6(being) {
             being.addLog && being.addLog('[PIPE/4軸②] LanguageInputDL → 4軸理解深度 完了');
         }
 
-        // ── ③ episodicMemory.store() に4軸信用値を付与 ─────────────────
-        // エピソードに「このとき言語の何軸が強かったか」を記録する
-        // 後でretrieve()したとき因果推論野が言語文脈を再現できる
-        if (episodic2) {
-            const origStore2 = episodic2.store.bind(episodic2);
-            episodic2.store = function(fragment) {
-                try {
-                    // 4軸の現在値をスナップショットとして付与
-                    let sumSuffix = 0, sumEnd = 0, sumPos = 0, sumDelim = 0, count = 0;
-                    for (const [, ax] of statTok._axis4) {
-                        if (ax.total > 0) {
-                            sumSuffix += ax.suffixCount  / ax.total;
-                            sumEnd    += ax.wordEndCount / ax.total;
-                            sumPos    += ax.posCount > 0 ? Math.min(1, ax.posSum / ax.posCount) : 0;
-                            sumDelim  += ax.delimCount   / ax.total;
-                            count++;
-                        }
-                    }
-                    if (count > 0 && fragment && typeof fragment === 'object') {
-                        fragment._axis4Snapshot = {
-                            suffix:   sumSuffix / count,
-                            wordEnd:  sumEnd    / count,
-                            position: sumPos    / count,
-                            delim:    sumDelim  / count,
-                            timestamp: Date.now(),
-                        };
-                    }
-                } catch(e) {}
-                origStore2(fragment);
-            };
-
-            being.addLog && being.addLog('[PIPE/4軸③] episodicMemory → 4軸スナップショット付与 完了');
-        }
-
-        being.addLog && being.addLog('[PIPE/4軸] 4軸信用値 → 学習系全接続 完了');
+        being.addLog && being.addLog('[PIPE/4軸] 4軸信用値 → 学習系接続 完了（TemplateSelector・LanguageInputDL）');
     }
 
     console.log('[PIPE6] クオリア力場→意思決定→CIR→出力生成 パイプ接続完了');
