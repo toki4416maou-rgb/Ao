@@ -1451,6 +1451,268 @@ function attachPipe6(being) {
         being.addLog && being.addLog('[PIPE/4軸] 4軸信用値 → 学習系接続 完了（TemplateSelector・LanguageInputDL）');
     }
 
+
+    // ═══════════════════════════════════════════════════════════════════
+    // 姿勢・動作認識統合パイプ v2.0:
+    //
+    // 【旧】HOGクラスタ + hardcoded閾値 → 固定ラベル（'座り'/'走り'等）
+    // 【新】視覚野(IdentityManager) → 空間野(SpatialStateManager/MotionTracker)
+    //       → 因果野(CIR) の3野を接続し、
+    //       「姿勢や動きが変わっても同じ対象を認識し続ける」ことを実現
+    //
+    // IdentityManager:  視点正規化canonical特徴量でフレーム間同一性を維持
+    // SpatialStateManager: identityごとのvelocity/motionTypeを追跡
+    // CIR: identityIdを軸に「猫が走った・座った」を累積学習
+    // ═══════════════════════════════════════════════════════════════════
+
+    const videoAdapter = being.videoAdapter;
+    const sim          = being.spatialInteractionModel;
+    const imageAdapter = being.imageAdapter;
+    const cg           = being.conceptGraph || window._aoConceptGraph;
+
+    if (videoAdapter && videoAdapter.videoParser && sim && cg) {
+
+        // ── HOG視点ラベル生成（IdentityManagerのposeから導出）──────────
+        // ハードコードなし：yaw/pitch数値から区間ラベルを生成する
+        // ラベル文字列は固定だが、どの区間に分類するかは数値で決まる
+        function _poseViewLabel(pose) {
+            if (!pose || (pose.confidence || 0) < 0.15) return 'unknown';
+            const yawAbs = Math.abs(pose.yaw || 0);
+            const pitch  = pose.pitch || 0;
+            // yaw=0: 正面, yaw=±1: 完全横顔
+            if (yawAbs < 0.20) return pitch < -0.30 ? 'overhead' : 'frontal';
+            if (yawAbs < 0.55) return (pose.yaw > 0) ? 'left-quarter'  : 'right-quarter';
+            return                     (pose.yaw > 0) ? 'left-profile'  : 'right-profile';
+        }
+
+        // ── VideoAdapterのextractMeaning()をラップ ───────────────────
+        // 視覚野→空間野→因果野 の順に処理する統合パイプ
+        const origExtractMeaning = videoAdapter.extractMeaning.bind(videoAdapter);
+        videoAdapter.extractMeaning = async function(videoFile, mode) {
+            const result = await origExtractMeaning(videoFile, mode);
+            try {
+                if (!result || !result.tokens || result.tokens.length === 0) return result;
+
+                // 視覚野・空間野コンポーネントを取得
+                const idMgr      = being.identityManager;        // IdentityManager v2.0
+                const spatialMgr = being.spatialState;           // SpatialStateManager v2.0
+                const vht        = imageAdapter && imageAdapter.hypothesisTable;
+
+                for (const token of result.tokens) {
+                    const clusterId = token.cluster;
+                    const scene     = result.scenes && result.scenes[token.timeStart];
+
+                    // ── 生特徴量の組み立て ──────────────────────────────
+                    let rawFeatures    = null;
+                    let hueHist        = [];
+                    let brightnessGrid = [];
+                    let spatialVec     = [];
+
+                    if (scene && scene.features) {
+                        const f    = scene.features;
+                        hueHist        = f.hue_hist        || [];
+                        brightnessGrid = f.brightness_grid || [];
+                        const gradHist  = f.gradient_hist  || [];
+                        const hogBlocks = f.hog_blocks     || [];
+                        const gabor     = f.gabor_features || [];
+                        const lbp       = f.lbp_features   || [];
+
+                        // VHT観察・IdentityManager視点正規化用 (2368次元)
+                        const visualVector = [
+                            ...hueHist, ...brightnessGrid,
+                            ...gradHist, ...hogBlocks,
+                            ...gabor, ...lbp,
+                        ];
+                        spatialVec = [...gradHist, ...hogBlocks, ...gabor, ...lbp];
+
+                        if (hogBlocks.length > 0) {
+                            rawFeatures = { visualVector, hogBlocks };
+                        }
+                    }
+
+                    // ── ① 視覚野：IdentityManagerで同一対象を認識 ────────
+                    // 姿勢・視点が変わっても canonical 空間で同一 identity に束ねる
+                    let identityResult = null;
+                    let identityId     = null;
+                    let pose           = { yaw: 0, pitch: 0, profileLikelihood: 0, confidence: 0 };
+
+                    if (idMgr && rawFeatures) {
+                        identityResult = idMgr.assign(
+                            token.axisDist || {},
+                            'image',
+                            { clusterId, tokenSurface: token.surface || '' },
+                            rawFeatures
+                        );
+                        identityId = identityResult.identity.id;
+                        pose       = identityResult.pose || pose;
+                    } else {
+                        // IdentityManager未接続時: VideoParserのidentityIdをフォールバック
+                        identityId = token.identityId || `cluster_${clusterId}`;
+                    }
+
+                    // ── ② 空間野：identity単位で速度・動作種別を更新 ──────
+                    // MotionTracker が連続フレームを追跡し motionType を決定する
+                    // ハードコードなし：速度分布は MotionTracker._classifyMotion() が管理
+                    let motionType = 'still';
+                    let velocity   = [0, 0, 0];
+
+                    if (spatialMgr && identityResult) {
+                        const { state } = spatialMgr.update(
+                            identityId,
+                            identityResult.identity.canonical,
+                            pose,
+                            Math.min(0.95, 0.3 + (identityResult.identity.observeCount || 1) * 0.05),
+                            identityResult.identity
+                        );
+                        motionType = state.motionType || 'still';
+                        velocity   = state.velocity   || [0, 0, 0];
+
+                        // PredictionUpdateLoopにも通知
+                        if (being.predictionLoop) {
+                            const emotionState = being.state
+                                ? { tension: being.state.tension || 0,
+                                    joy:     being.state.joy     || 0,
+                                    curiosity: being.state.curiosity || 0 }
+                                : {};
+                            being.predictionLoop.cycle(
+                                identityResult.identity,
+                                new Array(12).fill(0.5),  // 動画軸は中立
+                                emotionState
+                            );
+                        }
+
+                    } else {
+                        // BootstrapフォールバックのみのためのVelocity取得
+                        // （IdentityManager/SpatialStateManagerが育てば使われなくなる）
+                        const objects = sim.ssf ? sim.ssf.getAll() : [];
+                        const obj = objects.find(o => o.clusterId === clusterId) || objects[0];
+                        velocity  = obj ? (obj.velocity || [0, 0, 0]) : [0, 0, 0];
+
+                        // Bootstrap motionType（SpatialStateManager._classifyMotionと同じロジック）
+                        const spd = Math.sqrt(velocity[0]**2 + velocity[1]**2 + (velocity[2]||0)**2);
+                        const yawRate = Math.abs(velocity[2] || 0); // z速度を回転代理に使う
+                        if      (spd < 0.01)        motionType = 'still';
+                        else if (yawRate > 0.5)     motionType = 'rotating';
+                        else if (spd < 0.05)        motionType = 'slow';
+                        else if (spd < 0.15)        motionType = 'walking';
+                        else                        motionType = 'fast';
+
+                        // HOG から yaw を直接推定（ViewpointNormalizerが使えない場合）
+                        const hb = scene?.features?.hog_blocks || [];
+                        if (hb.length >= 4) {
+                            const half = Math.floor(hb.length / 2);
+                            const lE = hb.slice(0, half).reduce((s,v) => s + Math.abs(v), 0);
+                            const rE = hb.slice(half).reduce((s,v) => s + Math.abs(v), 0);
+                            const tot = lE + rE + 1e-6;
+                            pose.yaw        = (lE - rE) / tot;
+                            pose.confidence = Math.min(1, (lE + rE) / (hb.length * 0.1 + 1));
+                        }
+                    }
+
+                    const poseViewLabel = _poseViewLabel(pose);
+                    const speed = Math.sqrt(velocity[0]**2 + velocity[1]**2 + (velocity[2]||0)**2);
+                    const poseKnown = !!identityResult && !identityResult.isNew;
+
+                    // ── ③ ConceptGraph：3野の学習結果を概念グラフに統合 ───
+                    for (const concept of token.concepts) {
+
+                        // 概念 → 観測された identity（同一対象のID）
+                        cg.addRelation(concept, 'has-identity', identityId);
+
+                        // identity → 動作・視点の累積観測（identity軸で蓄積）
+                        cg.addRelation(identityId, 'instance-of', concept);
+                        cg.addRelation(identityId, 'has-motion',  motionType);
+                        cg.addRelation(identityId, 'has-view',    poseViewLabel);
+
+                        // ── ④ VHT：概念クラス単位で視覚外観を学習 ──────────
+                        // identity が違っても同じ概念ラベルで学習する
+                        // → 「猫の見え方」を姿勢横断的に汎化する
+                        if (vht && spatialVec.length > 0) {
+                            vht.observe(concept, hueHist, brightnessGrid, spatialVec);
+                        }
+
+                        // ── ⑤ 因果野(CIR)：identity を軸にした記録 ──────────
+                        // identityId が同じなら「同じ猫が走った/座った」と連続学習できる
+                        // _source: 'pipe6' を付けることで PIPE2 の二重書きガードが機能する
+                        if (cir) {
+                            cir.record(
+                                `姿勢認識[${concept}]:${motionType}`,
+                                { poseKnown },
+                                {
+                                    concept,
+                                    identityId,
+                                    motionType,
+                                    poseViewLabel,
+                                    pose,
+                                    velocity,
+                                    speed,
+                                    clusterId,
+                                    observeCount:  identityResult?.identity?.observeCount || 1,
+                                    isNewIdentity: identityResult?.isNew ?? true,
+                                    relationType:  'pose-recognized',
+                                    _source:       'pipe6',   // PIPE2二重書き防止フラグ
+                                    // identityが安定しているほど文法信頼度を上げる
+                                    grammarConf:   poseKnown ? Math.min(0.95, 0.65 + (identityResult.identity.observeCount || 1) * 0.02) : 0.50,
+                                    subject:       identityId,
+                                    predicate:     motionType,
+                                }
+                            );
+                        }
+
+                        being.addLog && being.addLog(
+                            `[PIPE6/Pose] ${concept} id=${identityId} motion=${motionType}` +
+                            ` view=${poseViewLabel} (${identityResult?.isNew ? '新規identity' : `既知 観測${identityResult?.identity?.observeCount}回`})`
+                        );
+                    }
+                }
+            } catch(e) {
+                console.warn('[PIPE6/Pose] 姿勢推定エラー:', e);
+            }
+            return result;
+        };
+
+        // ── 姿勢照会API v2.0 ──────────────────────────────────────────
+        // being.queryPose('猫') → { motions: ['still','walking',...], views: ['frontal',...], identities: [...] }
+        // identity を軸に「この概念がどんな動作・視点で観測されたか」を返す
+        //
+        // ※ ConceptGraph.groups は is-a 関係のみ記録する（pipe2-3参照）
+        //    instance-of / has-motion / has-view は edges にしか入らないので
+        //    edges を直接走査する
+        being.queryPose = function(concept) {
+            if (!cg || !cg.edges) return { motions: [], views: [], identities: [] };
+
+            const motions    = new Set();
+            const views      = new Set();
+            const identities = [];
+
+            for (const [node, relMap] of cg.edges) {
+                // identity ノード（id_N または cluster_N）のみ対象
+                if (!node.startsWith('id_') && !node.startsWith('cluster_')) continue;
+
+                // instance-of で concept を持つか確認
+                const instanceOf = relMap.get('instance-of');
+                if (!instanceOf || !instanceOf.has(concept)) continue;
+
+                identities.push(node);
+
+                // has-motion / has-view を収集
+                const hasMotion = relMap.get('has-motion');
+                if (hasMotion) for (const m of hasMotion) motions.add(m);
+
+                const hasView = relMap.get('has-view');
+                if (hasView) for (const v of hasView) views.add(v);
+            }
+
+            return {
+                motions:    [...motions],
+                views:      [...views],
+                identities: identities.slice(0, 20),
+            };
+        };
+
+        being.addLog && being.addLog('[PIPE6/Pose] 姿勢・動作認識統合パイプ v2.0 接続完了（視覚野→空間野→因果野）');
+    }
+
     console.log('[PIPE6] クオリア力場→意思決定→CIR→出力生成 パイプ接続完了');
     being.addLog && being.addLog('[PIPE6] 意思→因果推論→出力 パイプ6 接続完了');
 }

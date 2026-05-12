@@ -173,6 +173,15 @@ function attachPipe2(being, conceptGraph) {
         return;
     }
 
+    // ── PIPE2が ConceptGraph に二重書きしないよう除外する relationType ──
+    // 視覚野・空間野・因果野パイプ（PIPE6等）は自ら ConceptGraph を更新する。
+    // PIPE2がここで再度書くと二重登録になるため、_source または relationType で判定してスキップ。
+    const _P2_SKIP_RELATION_TYPES = new Set([
+        'pose-recognized',   // PIPE6: 姿勢・動作認識
+        'category-update',   // PIPE3自身が発行する更新イベント（循環防止）
+        'shared-category',   // PIPE3: 共通カテゴリ推論
+    ]);
+
     // CIR.record() をラップ：is-a 系パターンが来たら即 ConceptGraph に登録
     const origRecord = cir.record.bind(cir);
     cir.record = function(action, stateBefore, stateAfter) {
@@ -183,6 +192,10 @@ function attachPipe2(being, conceptGraph) {
             const sub = stateAfter && stateAfter.subject;
             const obj = stateAfter && stateAfter.predicate;
             if (!sub || !obj) return;
+
+            // 視覚野・空間野由来のレコードはここでは処理しない
+            if (_P2_SKIP_RELATION_TYPES.has(rel)) return;
+            if (stateAfter._source === 'pipe6') return;
 
             if (rel === 'is-a') {
                 conceptGraph.addRelation(sub, 'is-a', obj);
@@ -298,7 +311,7 @@ function attachPipe3(being, conceptGraph) {
     conceptGraph.addRelation = function(subject, relation, object) {
         origAddRelation(subject, relation, object);
 
-        // is-a でカテゴリが更新されたとき
+        // ── is-a: 既存処理（カテゴリ構造 → hierarchy/causality/information軸）──
         if (relation === 'is-a') {
             try {
                 const result = mapConceptToAxes(object);
@@ -325,6 +338,73 @@ function attachPipe3(being, conceptGraph) {
             } catch(e) {
                 console.warn('[PIPE3] mapConceptToAxes error:', e);
             }
+        }
+
+        // ── instance-of（PIPE6: identity → 概念クラス）→ hierarchy軸 ──────
+        // 個体が概念に属するという認識が増えるほど分類構造が育つ
+        else if (relation === 'instance-of') {
+            try {
+                worldView.growAxis('hierarchy', 0.005);
+                being.addLog && being.addLog(
+                    `[PIPE3] hierarchy軸+: ${subject} instance-of ${object}`
+                );
+            } catch(e) { console.warn('[PIPE3] instance-of axis error:', e); }
+        }
+
+        // ── has-identity（PIPE6: 概念 → identity）→ social軸 ────────────
+        // 概念を個体レベルで識別できるようになるほど社会認識が育つ
+        else if (relation === 'has-identity') {
+            try {
+                worldView.growAxis('social', 0.008);
+                being.addLog && being.addLog(
+                    `[PIPE3] social軸+: ${subject} has-identity ${object}`
+                );
+            } catch(e) { console.warn('[PIPE3] has-identity axis error:', e); }
+        }
+
+        // ── has-motion（PIPE6: identity → 動作種別）→ evolution/constraint軸 ──
+        // 動いている → evolution（変化・動態の理解）
+        // 静止している → constraint（安定・制約の理解）
+        else if (relation === 'has-motion') {
+            try {
+                const dynamicMotions = new Set(['walking', 'fast', 'rotating', 'slow']);
+                const updatedAxes    = [];
+
+                if (dynamicMotions.has(object)) {
+                    // 動的な動作が観測されるほど「変化する世界」の理解が深まる
+                    const gain = object === 'fast' ? 0.015 : 0.010;
+                    worldView.growAxis('evolution', gain);
+                    worldView.growAxis('causality', gain * 0.5);
+                    updatedAxes.push('evolution', 'causality');
+                } else if (object === 'still') {
+                    // 静止が観測されるほど「制約・安定」の理解が深まる
+                    worldView.growAxis('constraint', 0.005);
+                    updatedAxes.push('constraint');
+                }
+
+                if (updatedAxes.length > 0) {
+                    being.addLog && being.addLog(
+                        `[PIPE3] ${updatedAxes.join('/')}軸+: ${subject} has-motion ${object}`
+                    );
+                }
+            } catch(e) { console.warn('[PIPE3] has-motion axis error:', e); }
+        }
+
+        // ── has-view（PIPE6: identity → 視点ラベル）→ boundary軸 ───────
+        // 多様な視点から観測できるほど「対象の境界・外界との接触面」の理解が育つ
+        else if (relation === 'has-view') {
+            try {
+                // unknown や overhead は視点情報として薄いので小さめ
+                const gain = object === 'unknown' ? 0.002 : 0.008;
+                worldView.growAxis('boundary', gain);
+                // 横顔(profile)まで観測できると対象の3D構造理解が深まる
+                if (object.includes('profile')) {
+                    worldView.growAxis('information', 0.005);
+                }
+                being.addLog && being.addLog(
+                    `[PIPE3] boundary軸+: ${subject} has-view ${object}`
+                );
+            } catch(e) { console.warn('[PIPE3] has-view axis error:', e); }
         }
     };
 
