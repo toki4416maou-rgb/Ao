@@ -1016,7 +1016,7 @@
           }).render('#paypal-button-container');
         }
         var sdkScript = document.createElement('script');
-        sdkScript.src = 'https://www.paypal.com/sdk/js?client-id=AVmxoq2kPDYwoPn2TB4FY9mqH1cnib04M8Vmw_ksRhiSYYdqTTXmKVFQqkPlsdugJTSqH1c3Gsn-Dczb&vault=true&intent=subscription';
+        sdkScript.src = 'https://www.paypal.com/sdk/js?client-id=AVmxoq2kPDYwoPn2TB4FY9mqH1cnib04M8Vmw_ksRhiSYYdqTTXmKVFQqkPlsdugJTSqH1c3Gsn-Dczb&vault=true&intent=subscription&disable-funding=card,credit,venmo';
         sdkScript.onload = initPayPalBtn;
         document.head.appendChild(sdkScript);
       </script>
