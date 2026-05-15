@@ -8154,7 +8154,7 @@ MemoryLimitsConfig._instance = null;
             // ---- [v27.0新規] 仮説テーブル更新: featuresオブジェクトから3チャンネルを分離して観測 ----
             // これにより「赤」「明るい」「丸い」等を
             // どのチャンネル（色/明度/形状）に帰属するかをボトムアップに学習する
-            learnHypothesis(label, features) {
+            learnHypothesis(label, features, spatialState = null) {
                 try {
                     if (!features || !features.hue_hist) return;
                     const hueHist        = features.hue_hist;          //    8次元
@@ -8168,7 +8168,17 @@ MemoryLimitsConfig._instance = null;
                         ? [...gradHist, ...hogBlocks, ...gaborFeatures, ...lbpFeatures]
                         : (gradHist || []);
 
-                    this.hypothesisTable.observe(label, hueHist, brightnessGrid, spatialVec);
+                    // [v28.1] 姿勢特定情報をspatialVecに統合
+                    const MOTION_MAP = { still: 0.0, slow: 0.25, walking: 0.5, fast: 0.75, rotating: 1.0 };
+                    const poseVec = spatialState ? [
+                        (spatialState.pose?.yaw        || 0) / 180,
+                        (spatialState.pose?.pitch      || 0) / 90,
+                        (spatialState.pose?.confidence || 0),
+                        MOTION_MAP[spatialState.motionType] ?? 0.0,
+                        Math.min(1.0, spatialState.poseDiversity || 0)
+                    ] : [0, 0, 0, 0, 0];
+
+                    this.hypothesisTable.observe(label, hueHist, brightnessGrid, [...spatialVec, ...poseVec]);
                 } catch (e) {
                     console.error('[ImageAdapter] learnHypothesis error:', e);
                 }
@@ -18308,6 +18318,11 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                 return s && s.confidence > 0.65 && s.predictionError < 0.25;
             }
 
+            // [v28.1] ラベルに対応するspatialStateを取得
+            getState(identityId) {
+                return this.states.get(identityId) || null;
+            }
+
             exportState() {
                 const obj = {};
                 for (const [id, s] of this.states) obj[id] = {
@@ -24117,8 +24132,9 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                             const label = inputs.text.trim().substring(0, 20);
                             this.imageAdapter.learnPrototype(label, imageResult.visual_vector);
                             this.imageAdapter.learnSpatialPrototype(label, imageResult.features); // [v28]
-                            // [v27.0] 仮説テーブル更新
-                            this.imageAdapter.learnHypothesis(label, imageResult.features);
+                            // [v27.0] 仮説テーブル更新（[v28.1] 姿勢情報統合）
+                            const _ps1 = this.spatialState?.getState?.(label) || null;
+                            this.imageAdapter.learnHypothesis(label, imageResult.features, _ps1);
                             activeLabels.push(label);
                             const hStats = this.imageAdapter.hypothesisTable.getStats();
                             this.addLog(`視覚野: 「${label}」仮説更新 [定義:${hStats.defined}/${hStats.total}]`);
@@ -24129,7 +24145,8 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                             this.imageAdapter.learnPrototype(topConcept, imageResult.visual_vector);
                             this.imageAdapter.learnSpatialPrototype(topConcept, imageResult.features); // [v28]
                             if (!imageResult.semantic_candidates[0].fromHypothesis) {
-                                this.imageAdapter.learnHypothesis(topConcept, imageResult.features);
+                                const _ps2 = this.spatialState?.getState?.(topConcept) || null;
+                                this.imageAdapter.learnHypothesis(topConcept, imageResult.features, _ps2);
                             }
                             activeLabels.push(topConcept);
                         }
