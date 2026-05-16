@@ -8168,15 +8168,16 @@ MemoryLimitsConfig._instance = null;
                         ? [...gradHist, ...hogBlocks, ...gaborFeatures, ...lbpFeatures]
                         : (gradHist || []);
 
-                    // [v28.1] 姿勢特定情報をspatialVecに統合
+                    // [v28.1] 姿勢特定＋質感情報をspatialVecに統合
                     const MOTION_MAP = { still: 0.0, slow: 0.25, walking: 0.5, fast: 0.75, rotating: 1.0 };
                     const poseVec = spatialState ? [
-                        (spatialState.pose?.yaw        || 0) / 180,
-                        (spatialState.pose?.pitch      || 0) / 90,
-                        (spatialState.pose?.confidence || 0),
+                        (spatialState.pose?.yaw           || 0) / 180,
+                        (spatialState.pose?.pitch         || 0) / 90,
+                        (spatialState.pose?.confidence    || 0),
                         MOTION_MAP[spatialState.motionType] ?? 0.0,
-                        Math.min(1.0, spatialState.poseDiversity || 0)
-                    ] : [0, 0, 0, 0, 0];
+                        Math.min(1.0, spatialState.poseDiversity     || 0),
+                        Math.min(1.0, spatialState.textureReliability || 0)  // [v28.1] 質感信頼度
+                    ] : [0, 0, 0, 0, 0, 0];
 
                     this.hypothesisTable.observe(label, hueHist, brightnessGrid, [...spatialVec, ...poseVec]);
                 } catch (e) {
@@ -18245,13 +18246,15 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
             _defaultState(identityId) {
                 return {
                     identityId,
-                    shape_latent: new Array(64).fill(0),  // canonical特徴量(64次元)
+                    shape_latent:   new Array(64).fill(0),  // canonical特徴量(64次元)
+                    texture_latent: new Array(32).fill(0),  // [v28.1] Gabor質感特徴量(32次元)
                     pose:     { yaw: 0, pitch: 0, profileLikelihood: 0, confidence: 0 },
                     position: [0, 0, 0],   // [x, y, z] canonical空間での位置
                     scale:    1.0,
                     velocity: [0, 0, 0],   // MotionTrackerから取得
                     motionType: 'still',
                     poseDiversity: 0,      // 複数視点から観測された多様性
+                    textureReliability: 0, // [v28.1] 質感信頼度
                     confidence: 0.3,
                     lastUpdated: Date.now(),
                     predictionError: 0
@@ -18301,6 +18304,21 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                 s.confidence  = Math.min(1, s.confidence + confidence * 0.08);
                 s.lastUpdated = Date.now();
                 return { state: s, predictionError: s.predictionError };
+            }
+
+            // [v28.1] 質感情報をtexture_latentに蓄積
+            updateTexture(identityId, gaborFeatures, textureReliability) {
+                if (!this.states.has(identityId)) {
+                    this.states.set(identityId, this._defaultState(identityId));
+                }
+                const s = this.states.get(identityId);
+                if (!gaborFeatures || gaborFeatures.length === 0) return;
+                const K = Math.min(0.8, textureReliability * 0.6 + 0.1);
+                const dim = Math.min(gaborFeatures.length, s.texture_latent.length);
+                for (let i = 0; i < dim; i++) {
+                    s.texture_latent[i] = (1 - K) * s.texture_latent[i] + K * gaborFeatures[i];
+                }
+                s.textureReliability = Math.min(1, (s.textureReliability || 0) + textureReliability * 0.08);
             }
 
             // 等速直線運動で次状態を予測
@@ -24132,8 +24150,11 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                             const label = inputs.text.trim().substring(0, 20);
                             this.imageAdapter.learnPrototype(label, imageResult.visual_vector);
                             this.imageAdapter.learnSpatialPrototype(label, imageResult.features); // [v28]
-                            // [v27.0] 仮説テーブル更新（[v28.1] 姿勢情報統合）
+                            // [v27.0] 仮説テーブル更新（[v28.1] 姿勢・質感情報統合）
                             const _ps1 = this.spatialState?.getState?.(label) || null;
+                            this.spatialState?.updateTexture?.(label,
+                                imageResult.features.gabor_features || [],
+                                imageResult.features.textureReliability || 0);
                             this.imageAdapter.learnHypothesis(label, imageResult.features, _ps1);
                             activeLabels.push(label);
                             const hStats = this.imageAdapter.hypothesisTable.getStats();
@@ -24146,6 +24167,9 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                             this.imageAdapter.learnSpatialPrototype(topConcept, imageResult.features); // [v28]
                             if (!imageResult.semantic_candidates[0].fromHypothesis) {
                                 const _ps2 = this.spatialState?.getState?.(topConcept) || null;
+                                this.spatialState?.updateTexture?.(topConcept,
+                                    imageResult.features.gabor_features || [],
+                                    imageResult.features.textureReliability || 0);
                                 this.imageAdapter.learnHypothesis(topConcept, imageResult.features, _ps2);
                             }
                             activeLabels.push(topConcept);
