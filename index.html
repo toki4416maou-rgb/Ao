@@ -17032,7 +17032,12 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                     return { idx, count, tmpl };
                 }).sort((a, b) => b.count - a.count || Math.random() - 0.5);
 
-                return scored.slice(0, n).map(({ idx, tmpl }) => ({
+                // [v28.2] conceptStrが空のとき${concept}を含むテンプレートは除外
+                const filtered = conceptStr
+                    ? scored
+                    : scored.filter(({ tmpl }) => !tmpl.includes('${concept}'));
+
+                return filtered.slice(0, n).map(({ idx, tmpl }) => ({
                     text: tmpl.replace('${concept}', conceptStr || ''),
                     templateIdx: idx
                 }));
@@ -17084,10 +17089,11 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                 }
                 
                 // v26.2 言語野修復: conceptStr安全化
+                // [v28.2] intentはconceptStrに絶対に含めない
                 const hasConcepts = concepts && concepts.length > 0;
                 const conceptStr = hasConcepts 
                     ? concepts.join('、')
-                    : '今感じていること';
+                    : '';  // 空のままbootstrapModeに流す（intentを入れない）
                 
                 const certaintyLevel = tone.certainty;
                 const hesitationLevel = tone.hesitation;
@@ -25162,16 +25168,10 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                         .slice(0, 2)
                     : [];
                 
-                let intent = '説明したい';
-                
-                const activeProtos = this.protoGenerator.getActive();
-                if (activeProtos.length > 0 && Math.random() < 0.3) {
-                    intent = '迷いを伝えたい';
-                }
-                
-                if (this.state.curiosity > 0.7 && Math.random() < 0.4) {
-                    intent = '問いかけたい';
-                }
+                // [v28.2] intentはIntentGeneratorの無意識判断に委ねる
+                // ハードコードで「迷いを伝えたい」「問いかけたい」を強制しない
+                // PIPE7が内部状態から自然に言語化する
+                let intent = '説明したい'; // デフォルトのみ残す
                 
                 if (relations.length >= 2 && Math.random() < 0.3) {
                     intent = '関係を述べたい';
