@@ -17308,7 +17308,7 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                     expressionBias: this.expressionBias.get(c) || 0
                 }));
 
-                const filtered = withScores.filter(c => c.meaningScore >= 0.2);
+                const filtered = withScores.filter(c => c.meaningScore >= 0.05); // [v28.2] 学習文法が捨てられないよう閾値を緩和
                 const finalCandidates = filtered.length > 0 ? filtered : withScores.slice(0, 3);
                 
                 this.processing = false;
@@ -17363,8 +17363,9 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                     // 3. 内省・観測表現の優遇
                     const introspectionPhrases = [
                         '考えている', '感じている', 'まだ', 'よく分からない',
-                        '掴めそう', '見えてきた', 'もう少し', '何か'
-                    ];
+                        '掴めそう', '見えてきた', 'もう少し', '何か',
+                        '分かってきた', 'もっと知りたい', '掴めていない', 'と', 'は', 'が', 'だ', 'です'
+                    ]; // [v28.2] 学習文法パターンも加点対象に
                     for (const phrase of introspectionPhrases) {
                         if (candidateText.includes(phrase)) {
                             score += 0.1;
