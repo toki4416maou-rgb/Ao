@@ -18707,7 +18707,7 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
         class AutonomousQuestionEngine {
             constructor() {
                 this.lastQuestion = 0;
-                this.cooldown = 30000;
+                this.cooldown = 60000; // [v28.2] cooldownを60秒に延長してループ防止
             }
             
             shouldGenerate(being) {
@@ -18719,7 +18719,7 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                 const triggers = [
                     density > 0.6,
                     state.curiosity > 0.7 && state.tension < 0.4,
-                    being.getStagnantConcepts().length > 0
+                    being.getStagnantConcepts().length > 3  // [v28.2] 停滞概念が3つ以上のときだけ発動
                 ];
                 
                 return triggers.some(t => t);
@@ -18735,7 +18735,7 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                     return {
                         intentVector: {
                             intent: '問いかけたい',
-                            concepts: ['未解釈'],
+                            concepts: [],  // [v28.2] 概念名をそのまま発話しないようにbootstrapModeへ
                             tone: {
                                 certainty: 0.2,
                                 hesitation: 0.8,
@@ -18756,7 +18756,7 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                     return {
                         intentVector: {
                             intent: '問いかけたい',
-                            concepts: [concept.id],
+                            concepts: [],  // [v28.2] 概念名をそのまま発話しないようにbootstrapModeへ
                             tone: {
                                 certainty: 0.3,
                                 hesitation: 0.6,
@@ -18775,7 +18775,7 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                 return {
                     intentVector: {
                         intent: '問いかけたい',
-                        concepts: ['思考'],
+                        concepts: [],  // [v28.2] 概念名をそのまま発話しないようにbootstrapModeへ
                         tone: {
                             certainty: 0.2,
                             hesitation: 0.7,
@@ -25593,6 +25593,23 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                         selected.preTensionState,
                         true
                     );
+
+                    // [v28.2] lastLanguageProcessを自律質問ルートの結果で更新
+                    // → パネルとチャットが同じルートを参照するようになる
+                    this.lastLanguageProcess = {
+                        type: 'output',
+                        source: 'autonomous',  // 自律質問であることを明示
+                        data: {
+                            candidates: dlResult.candidates,
+                            decisions: selected.decisions || [],
+                            selected: {
+                                index: 0,
+                                score: selected.decisions?.[0]?.score || 1.0,
+                                reasons: question.internal || '自律思考',
+                                expressionBias: 0
+                            }
+                        }
+                    };
                     
                     return {
                         text: selected.text,
@@ -29731,9 +29748,10 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                     const biasInfo = proc.data.selected.expressionBias !== 0 
                         ? ` バイアス:${proc.data.selected.expressionBias > 0 ? '+' : ''}${proc.data.selected.expressionBias.toFixed(2)}`
                         : '';
+                    const sourceLabel = proc.source === 'autonomous' ? ' [自律]' : '';
                     langDiv.innerHTML = `
                         <div class="language-layer">
-                            <strong>発話選択:</strong><br>
+                            <strong>発話選択${sourceLabel}:</strong><br>
                             生成候補: ${proc.data.candidates.length}個<br>
                             理由: ${proc.data.selected.reasons}${biasInfo}<br>
                             スコア: ${proc.data.selected.score.toFixed(2)}
