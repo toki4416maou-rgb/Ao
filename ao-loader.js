@@ -19,7 +19,7 @@
     const DB_NAME    = 'ao-cache';
     const DB_VERSION = 1;
     const STORE_NAME = 'files';
-    const BASE_URL   = 'https://toki4416maou-rgb.github.io/Ao-/';
+    const BASE_URL   = 'https://ao-entity.com/';
 
     // キャッシュするJSファイル一覧
     const JS_FILES = [
