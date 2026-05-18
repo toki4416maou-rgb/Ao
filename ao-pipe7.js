@@ -487,10 +487,11 @@ function attachPipe7(being) {
             const result = await origSelect(candidates, intentVector);
             try {
                 // intentVector から主概念を抽出
+                // [v28.2] intentは発話topicに使わない→概念がなければnullのままPIPE7スキップ
                 const concepts = intentVector && intentVector.concepts;
                 const topic = Array.isArray(concepts) && concepts.length > 0
                     ? concepts[0]
-                    : (intentVector && intentVector.intent) || null;
+                    : null; // intentをtopicにしない
 
                 if (!topic) return result;
 
