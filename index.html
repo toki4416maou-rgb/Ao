@@ -17360,7 +17360,7 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                     const explainTemplates = [
                         `${concepts[0]}というのは、${concepts[1] || '何か'}と関係していると思う`,
                         `${concepts[0]}について、少し分かってきた`,
-                        `${concepts[0]}は、${intent === '問いかけたい' ? '気になる存在' : '重要な概念'}だ`
+                        `${concepts[0]}について、少しずつ見えてきた`
                     ];
                     explainTemplates.forEach(t => decodedCandidates.push({
                         text: t,
@@ -18824,8 +18824,8 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                 if (density > 0.6) {
                     return {
                         intentVector: {
-                            intent: '問いかけたい',
-                            concepts: [],  // [v28.2] 概念名をそのまま発話しないようにbootstrapModeへ
+                            intent: 'curious', // [v28.2] 中立的な内部分類のみ
+                            concepts: [],
                             tone: {
                                 certainty: 0.2,
                                 hesitation: 0.8,
@@ -18845,8 +18845,8 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                     const concept = stagnant[0];
                     return {
                         intentVector: {
-                            intent: '問いかけたい',
-                            concepts: [],  // [v28.2] 概念名をそのまま発話しないようにbootstrapModeへ
+                            intent: 'stagnant', // [v28.2] 中立的な内部分類のみ
+                            concepts: [],
                             tone: {
                                 certainty: 0.3,
                                 hesitation: 0.6,
@@ -18864,8 +18864,8 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                 
                 return {
                     intentVector: {
-                        intent: '問いかけたい',
-                        concepts: [],  // [v28.2] 概念名をそのまま発話しないようにbootstrapModeへ
+                        intent: 'autonomous', // [v28.2] 中立的な内部分類のみ
+                        concepts: [],
                         tone: {
                             certainty: 0.2,
                             hesitation: 0.7,
@@ -25169,12 +25169,12 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                     : [];
                 
                 // [v28.2] intentはIntentGeneratorの無意識判断に委ねる
-                // ハードコードで「迷いを伝えたい」「問いかけたい」を強制しない
-                // PIPE7が内部状態から自然に言語化する
-                let intent = '説明したい'; // デフォルトのみ残す
+                // ハードコードintentは全廃止 → PIPE7が内部状態から自然に言語化する
+                let intent = 'express'; // 中立的な内部分類のみ（発話には出ない）
                 
                 if (relations.length >= 2 && Math.random() < 0.3) {
-                    intent = '関係を述べたい';
+                    // [v28.2] '関係を述べたい'ハードコード廃止
+                    // 関係概念はconceptIdsに渡すだけ、intentは変えない
                     conceptIds = [relations[0][0], relations[1][0]];
                 }
                 
