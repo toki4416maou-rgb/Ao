@@ -17309,8 +17309,92 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                 }));
 
                 const filtered = withScores.filter(c => c.meaningScore >= 0.05); // [v28.2] 学習文法が捨てられないよう閾値を緩和
-                const finalCandidates = filtered.length > 0 ? filtered : withScores.slice(0, 3);
-                
+                const baseCandidate = filtered.length > 0 ? filtered : withScores.slice(0, 3);
+
+                // ================================================================
+                // [v28.2] 複数Decoder並列実行（PIPE7後段）
+                // Pipe7が決めた意味核（concepts/intent/tone）を元に
+                // 複数スタイルのDecoderが候補を生成して競合させる
+                // ================================================================
+                const decodedCandidates = [];
+                const conceptStr2 = concepts.join('、');
+
+                // Decoder1: 感情化（emotional_weightが高いときに加点）
+                if (tone.emotional_weight > 0.4 && concepts.length > 0) {
+                    const emotionTemplates = [
+                        `${concepts[0]}のこと、なんか気になる`,
+                        `${concepts[0]}...不思議な感じがする`,
+                        `${concepts[0]}について、もっと知りたい`
+                    ];
+                    emotionTemplates.forEach(t => decodedCandidates.push({
+                        text: t,
+                        meaningScore: 0.6 + tone.emotional_weight * 0.3,
+                        expressionBias: this.expressionBias.get(t) || 0,
+                        decoder: 'emotional'
+                    }));
+                }
+
+                // Decoder2: 短文化（hesitationが高いときに加点）
+                if (tone.hesitation > 0.5 && concepts.length > 0) {
+                    const shortTemplates = [
+                        `${concepts[0]}...`,
+                        `${concepts[0]}、かな`,
+                        `${concepts[0]}？`
+                    ];
+                    shortTemplates.forEach(t => decodedCandidates.push({
+                        text: t,
+                        meaningScore: 0.4 + tone.hesitation * 0.2,
+                        expressionBias: this.expressionBias.get(t) || 0,
+                        decoder: 'short'
+                    }));
+                }
+
+                // Decoder3: 説明化（certaintyが高いときに加点）
+                if (tone.certainty > 0.5 && concepts.length > 0) {
+                    const explainTemplates = [
+                        `${concepts[0]}というのは、${concepts[1] || '何か'}と関係していると思う`,
+                        `${concepts[0]}について、少し分かってきた`,
+                        `${concepts[0]}は、${intent === '問いかけたい' ? '気になる存在' : '重要な概念'}だ`
+                    ];
+                    explainTemplates.forEach(t => decodedCandidates.push({
+                        text: t,
+                        meaningScore: 0.5 + tone.certainty * 0.3,
+                        expressionBias: this.expressionBias.get(t) || 0,
+                        decoder: 'explain'
+                    }));
+                }
+
+                // Decoder4: 比喩化（novelty優先・常時生成）
+                if (concepts.length >= 2) {
+                    decodedCandidates.push({
+                        text: `${concepts[0]}と${concepts[1]}、なんか似ている気がする`,
+                        meaningScore: 0.55,
+                        expressionBias: 0,
+                        decoder: 'metaphor'
+                    });
+                }
+
+                // 全候補を統合してnovelty・CIR整合性・感情で再スコアリング
+                const allCandidates = [...baseCandidate, ...decodedCandidates];
+
+                // novelty: expressionBiasが高い（使いすぎ）候補を減点
+                // CIR整合性: 意味スコアをそのまま使用
+                // entropy: 候補の多様性を確保（同Decoderからは1つだけ）
+                const seenDecoders = new Set();
+                const finalCandidates = allCandidates
+                    .filter(c => {
+                        if (!c.decoder) return true; // baseはそのまま通す
+                        if (seenDecoders.has(c.decoder)) return false;
+                        seenDecoders.add(c.decoder);
+                        return true;
+                    })
+                    .sort((a, b) => {
+                        const scoreA = a.meaningScore - Math.abs(a.expressionBias) * 0.2;
+                        const scoreB = b.meaningScore - Math.abs(b.expressionBias) * 0.2;
+                        return scoreB - scoreA;
+                    })
+                    .slice(0, 5); // 最大5候補
+
                 this.processing = false;
 
                 // Aoが発話候補を生成した時点で、その発話とtoneの共起をmorphVariantLearnerに記録
@@ -30293,7 +30377,7 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                     : null;
                 
                 addMessage('ao', question.text, question.internal, langInfo);
-                updateUI();
+                updateUI(); // [v28.2] updateUI内でlastLanguageProcessを参照→パネルに自律ルートの結果が反映される
                 
                 // 自律的な思考後も保存をマーク
                 if (saveManager) {
