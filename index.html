@@ -17318,6 +17318,34 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                 const baseCandidate = filtered.length > 0 ? filtered : withScores.slice(0, 3);
 
                 // ================================================================
+                // ================================================================
+                // [v28.2] internalState → PIPE7 → 自然文生成
+                // 内部状態変数をそのままPIPE7に渡してtopicに変換して言語化
+                // PIPE7の文法が育っていなければテンプレートにフォールバック
+                // ================================================================
+                if (intentVector.internalState) {
+                    const st = intentVector.internalState;
+                    // 内部状態変数から最も顕著な状態をtopicに変換
+                    let pipe7Topic = null;
+                    if (st.density > 0.6)        pipe7Topic = being.uninterpreted?.getTopUninterpreted?.() || null;
+                    else if (st.curiosity > 0.6) pipe7Topic = being.concepts?.getMostActive?.() || null;
+                    else if (st.tension > 0.6)   pipe7Topic = being.concepts?.getMostRecent?.() || null;
+
+                    if (pipe7Topic && being.speak) {
+                        const spoken = being.speak({ topic: pipe7Topic, mood: st });
+                        if (spoken && spoken.text && spoken.confidence > 0.1) {
+                            // PIPE7が言語化できた → candidatesに追加
+                            candidates.unshift({
+                                text: spoken.text,
+                                meaningScore: 0.7 + spoken.confidence * 0.3,
+                                expressionBias: 0,
+                                source: 'pipe7'
+                            });
+                        }
+                        // PIPE7が言語化できなかった → そのままテンプレートにフォールバック
+                    }
+                }
+
                 // [v28.2] 複数Decoder並列実行（PIPE7後段）
                 // Pipe7が決めた意味核（concepts/intent/tone）を元に
                 // 複数スタイルのDecoderが候補を生成して競合させる
@@ -25168,9 +25196,15 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                         .slice(0, 2)
                     : [];
                 
-                // [v28.2] intentはIntentGeneratorの無意識判断に委ねる
-                // ハードコードintentは全廃止 → PIPE7が内部状態から自然に言語化する
-                let intent = 'express'; // 中立的な内部分類のみ（発話には出ない）
+                // [v28.2] intentは内部状態変数をそのままPIPE7へ渡す
+                // 英語コード・日本語ハードコード全廃止
+                const internalState = {
+                    curiosity:  this.state.curiosity  || 0,
+                    tension:    this.state.tension    || 0,
+                    joy:        this.state.joy        || 0,
+                    density:    this.uninterpreted?.getDensity?.() || 0
+                };
+                let intent = 'express'; // intentVectorのフィールド（発話には出ない）
                 
                 if (relations.length >= 2 && Math.random() < 0.3) {
                     // [v28.2] '関係を述べたい'ハードコード廃止
