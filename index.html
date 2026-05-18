@@ -25065,7 +25065,9 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
             
             buildIntentVector(conceptIds, integrated) {
                 if (conceptIds.length === 0) {
-                    conceptIds = ['対話'];
+                    // [v28.2] 「対話」をデフォルト概念にするとそのまま発話に出てしまうため
+                    // 概念なしモード（bootstrapMode）で処理させる
+                    conceptIds = [];
                 }
                 
                 const primaryConcept = this.concepts.getOrCreate(conceptIds[0]);
