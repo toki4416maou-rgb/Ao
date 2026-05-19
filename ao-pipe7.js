@@ -479,15 +479,19 @@ function attachPipe7(being) {
     //   統計未成熟期 → テンプレート
     //   語彙・因果が育ってきたら → pipe7の文
     // ─────────────────────────────────────────────────────────────────
+    // [v28.2] PIPE7はcandidatesに意味核テキストを追加するだけ
+    // selectUtteranceのresult.textを直接書き換えない
+    // 全てlanguageOutputDL → selectUtterance → チャットの単一ルートを通る
+    // Levelごとの処理はlanguageOutputDL側に委ねる
+
     const PIPE7_THRESHOLD = 0.25;
 
-    const origSelect = being.selectUtterance && being.selectUtterance.bind(being);
-    if (origSelect) {
-        being.selectUtterance = async function(candidates, intentVector) {
-            const result = await origSelect(candidates, intentVector);
+    // being.languageOutputDLのgenerateをフックしてPIPE7候補を注入する
+    const origGenerate = being.languageOutputDL && being.languageOutputDL.generate.bind(being.languageOutputDL);
+    if (origGenerate) {
+        being.languageOutputDL.generate = async function(intentVector, beingRef) {
+            const result = await origGenerate(intentVector, beingRef);
             try {
-                // intentVector から主概念を抽出
-                // [v28.2] intentは発話topicに使わない→概念がなければnullのままPIPE7スキップ
                 const concepts = intentVector && intentVector.concepts;
                 const topic = Array.isArray(concepts) && concepts.length > 0
                     ? concepts[0]
@@ -498,27 +502,31 @@ function attachPipe7(being) {
                 const spoken = being.speak({ topic, mood: being.state || {} });
 
                 if (spoken.text && spoken.confidence >= PIPE7_THRESHOLD) {
-                    // 閾値超え → pipe7の文でチャットへ
-                    result.text         = spoken.text;
-                    result._pipe7Text   = spoken.text;
-                    result._pipe7Conf   = spoken.confidence;
-                    result._pipe7Tokens = spoken.tokens;
+                    // PIPE7候補をcandidatesの先頭に追加（selectUtteranceが最終選択）
+                    result.candidates.unshift({
+                        text: spoken.text,
+                        meaningScore: 0.5 + spoken.confidence * 0.5,
+                        expressionBias: 0,
+                        source: 'pipe7',
+                        _pipe7Conf: spoken.confidence,
+                        _pipe7Tokens: spoken.tokens
+                    });
                     being.addLog && being.addLog(
-                        `[PIPE7→CHAT] "${spoken.text}" conf=${(spoken.confidence*100).toFixed(0)}% tokens=[${spoken.tokens.join(',')}]`
+                        `[PIPE7→DL] "${spoken.text}" conf=${(spoken.confidence*100).toFixed(0)}% → candidates追加`
                     );
                 } else {
                     being.addLog && being.addLog(
-                        `[PIPE7] conf低(${(spoken.confidence*100).toFixed(0)}%) → テンプレート維持: "${result.text}"`
+                        `[PIPE7] conf低(${spoken.confidence ? (spoken.confidence*100).toFixed(0) : 0}%) → テンプレートにフォールバック`
                     );
                 }
             } catch(e) {
-                console.warn('[PIPE7] selectUtterance hook error:', e);
+                console.warn('[PIPE7] generate hook error:', e);
             }
             return result;
         };
-        being.addLog && being.addLog('[PIPE7] selectUtterance → チャット接続完了');
+        being.addLog && being.addLog('[PIPE7] languageOutputDL.generate → チャット接続完了');
     } else {
-        console.warn('[PIPE7] selectUtterance 未定義 - チャット接続スキップ（pipe2-3完了後にリトライ）');
+        console.warn('[PIPE7] languageOutputDL 未定義 - 接続スキップ');
     }
 
     // ── ⑥ being.process() フック ────────────────────────────────────
