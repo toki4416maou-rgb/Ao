@@ -5695,10 +5695,31 @@ MemoryLimitsConfig._instance = null;
                 // 「前フレームと似ている＝同じ対象が動いている」
                 // 連続する区間をまとめてspatialPrototypeの学習単位にする
                 const continuousSegments = []; // { features, continuityScore }[]
+
+                // [v28.2] 動画の時間処理を空間野（SpatialStateManager）に直結
+                // 姿勢特定は空間野の領分 → VideoAdapterからspatialStateに直接流す
+                // フレームごとに姿勢特定を走らせる代わりに
+                // フレーム間の変化量（1-sim）を動きの信頼度として空間野に渡す
+                const videoIdentityId = `video_${Date.now()}`;
+
                 for (let i = 0; i < scenesWithFeatures.length; i++) {
                     const curr = scenesWithFeatures[i];
                     if (i === 0) {
                         continuousSegments.push({ features: curr.features, continuityScore: 1.0 });
+                        // 初期フレームを空間野に登録
+                        if (this.spatialState) {
+                            const canonical = curr.features.hog_blocks
+                                ? curr.features.hog_blocks.slice(0, 64)
+                                : new Array(64).fill(0);
+                            this.spatialState.update(videoIdentityId, canonical, 0.5);
+                            if (curr.features.gabor_features) {
+                                this.spatialState.updateTexture(
+                                    videoIdentityId,
+                                    curr.features.gabor_features,
+                                    curr.features.textureReliability || 0.3
+                                );
+                            }
+                        }
                         continue;
                     }
                     const prev = scenesWithFeatures[i - 1];
@@ -5706,9 +5727,29 @@ MemoryLimitsConfig._instance = null;
                         prev.features.hog_blocks || [],
                         curr.features.hog_blocks || []
                     );
-                    // 類似度が高い＝同じ対象の連続→学習に使う重みとして保持
+
+                    // フレーム間変化量を空間野に流す（姿勢特定は空間野が担う）
+                    if (this.spatialState) {
+                        const canonical = curr.features.hog_blocks
+                            ? curr.features.hog_blocks.slice(0, 64)
+                            : new Array(64).fill(0);
+                        this.spatialState.update(videoIdentityId, canonical, 1 - sim);
+                        if (curr.features.gabor_features) {
+                            this.spatialState.updateTexture(
+                                videoIdentityId,
+                                curr.features.gabor_features,
+                                curr.features.textureReliability || 0.3
+                            );
+                        }
+                    }
+
                     continuousSegments.push({ features: curr.features, continuityScore: sim });
                 }
+
+                // 空間野が蓄積した姿勢・動き情報をexport
+                const videoSpatialState = this.spatialState
+                    ? this.spatialState.getState(videoIdentityId)
+                    : null;
 
                 return {
                     semantic_candidates: allMeanings.slice(0, 6),
@@ -5720,7 +5761,8 @@ MemoryLimitsConfig._instance = null;
                         avgComplexity: scenes.reduce((s, sc) => s + sc.complexity, 0) / scenes.length
                     },
                     avg_features,
-                    continuousSegments, // [v28] フレームごとの連続性スコア付きfeatures
+                    continuousSegments,  // [v28] フレームごとの連続性スコア付きfeatures
+                    videoSpatialState,   // [v28.2] 空間野が蓄積した姿勢・動き情報
                     raw_descriptor: `${duration.toFixed(1)}秒 ${scenes.length}シーン ${mode}モード`,
                     _scenes: scenes,
                     // v29.0: 動画トークン列（VideoPerceptualParserが生成）
@@ -17032,12 +17074,7 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                     return { idx, count, tmpl };
                 }).sort((a, b) => b.count - a.count || Math.random() - 0.5);
 
-                // [v28.2] conceptStrが空のとき${concept}を含むテンプレートは除外
-                const filtered = conceptStr
-                    ? scored
-                    : scored.filter(({ tmpl }) => !tmpl.includes('${concept}'));
-
-                return filtered.slice(0, n).map(({ idx, tmpl }) => ({
+                return scored.slice(0, n).map(({ idx, tmpl }) => ({
                     text: tmpl.replace('${concept}', conceptStr || ''),
                     templateIdx: idx
                 }));
@@ -17089,11 +17126,10 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                 }
                 
                 // v26.2 言語野修復: conceptStr安全化
-                // [v28.2] intentはconceptStrに絶対に含めない
                 const hasConcepts = concepts && concepts.length > 0;
                 const conceptStr = hasConcepts 
                     ? concepts.join('、')
-                    : '';  // 空のままbootstrapModeに流す（intentを入れない）
+                    : '今感じていること';
                 
                 const certaintyLevel = tone.certainty;
                 const hesitationLevel = tone.hesitation;
@@ -17314,121 +17350,9 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                     expressionBias: this.expressionBias.get(c) || 0
                 }));
 
-                const filtered = withScores.filter(c => c.meaningScore >= 0.05); // [v28.2] 学習文法が捨てられないよう閾値を緩和
-                const baseCandidate = filtered.length > 0 ? filtered : withScores.slice(0, 3);
-
-                // ================================================================
-                // ================================================================
-                // [v28.2] internalState → PIPE7 → 自然文生成
-                // 内部状態変数をそのままPIPE7に渡してtopicに変換して言語化
-                // PIPE7の文法が育っていなければテンプレートにフォールバック
-                // ================================================================
-                if (intentVector.internalState) {
-                    const st = intentVector.internalState;
-                    // 内部状態変数から最も顕著な状態をtopicに変換
-                    let pipe7Topic = null;
-                    if (st.density > 0.6)        pipe7Topic = being.uninterpreted?.getTopUninterpreted?.() || null;
-                    else if (st.curiosity > 0.6) pipe7Topic = being.concepts?.getMostActive?.() || null;
-                    else if (st.tension > 0.6)   pipe7Topic = being.concepts?.getMostRecent?.() || null;
-
-                    if (pipe7Topic && being.speak) {
-                        const spoken = being.speak({ topic: pipe7Topic, mood: st });
-                        if (spoken && spoken.text && spoken.confidence > 0.1) {
-                            // PIPE7が言語化できた → candidatesに追加
-                            candidates.unshift({
-                                text: spoken.text,
-                                meaningScore: 0.7 + spoken.confidence * 0.3,
-                                expressionBias: 0,
-                                source: 'pipe7'
-                            });
-                        }
-                        // PIPE7が言語化できなかった → そのままテンプレートにフォールバック
-                    }
-                }
-
-                // [v28.2] 複数Decoder並列実行（PIPE7後段）
-                // Pipe7が決めた意味核（concepts/intent/tone）を元に
-                // 複数スタイルのDecoderが候補を生成して競合させる
-                // ================================================================
-                const decodedCandidates = [];
-                const conceptStr2 = concepts.join('、');
-
-                // Decoder1: 感情化（emotional_weightが高いときに加点）
-                if (tone.emotional_weight > 0.4 && concepts.length > 0) {
-                    const emotionTemplates = [
-                        `${concepts[0]}のこと、なんか気になる`,
-                        `${concepts[0]}...不思議な感じがする`,
-                        `${concepts[0]}について、もっと知りたい`
-                    ];
-                    emotionTemplates.forEach(t => decodedCandidates.push({
-                        text: t,
-                        meaningScore: 0.6 + tone.emotional_weight * 0.3,
-                        expressionBias: this.expressionBias.get(t) || 0,
-                        decoder: 'emotional'
-                    }));
-                }
-
-                // Decoder2: 短文化（hesitationが高いときに加点）
-                if (tone.hesitation > 0.5 && concepts.length > 0) {
-                    const shortTemplates = [
-                        `${concepts[0]}...`,
-                        `${concepts[0]}、かな`,
-                        `${concepts[0]}？`
-                    ];
-                    shortTemplates.forEach(t => decodedCandidates.push({
-                        text: t,
-                        meaningScore: 0.4 + tone.hesitation * 0.2,
-                        expressionBias: this.expressionBias.get(t) || 0,
-                        decoder: 'short'
-                    }));
-                }
-
-                // Decoder3: 説明化（certaintyが高いときに加点）
-                if (tone.certainty > 0.5 && concepts.length > 0) {
-                    const explainTemplates = [
-                        `${concepts[0]}というのは、${concepts[1] || '何か'}と関係していると思う`,
-                        `${concepts[0]}について、少し分かってきた`,
-                        `${concepts[0]}について、少しずつ見えてきた`
-                    ];
-                    explainTemplates.forEach(t => decodedCandidates.push({
-                        text: t,
-                        meaningScore: 0.5 + tone.certainty * 0.3,
-                        expressionBias: this.expressionBias.get(t) || 0,
-                        decoder: 'explain'
-                    }));
-                }
-
-                // Decoder4: 比喩化（novelty優先・常時生成）
-                if (concepts.length >= 2) {
-                    decodedCandidates.push({
-                        text: `${concepts[0]}と${concepts[1]}、なんか似ている気がする`,
-                        meaningScore: 0.55,
-                        expressionBias: 0,
-                        decoder: 'metaphor'
-                    });
-                }
-
-                // 全候補を統合してnovelty・CIR整合性・感情で再スコアリング
-                const allCandidates = [...baseCandidate, ...decodedCandidates];
-
-                // novelty: expressionBiasが高い（使いすぎ）候補を減点
-                // CIR整合性: 意味スコアをそのまま使用
-                // entropy: 候補の多様性を確保（同Decoderからは1つだけ）
-                const seenDecoders = new Set();
-                const finalCandidates = allCandidates
-                    .filter(c => {
-                        if (!c.decoder) return true; // baseはそのまま通す
-                        if (seenDecoders.has(c.decoder)) return false;
-                        seenDecoders.add(c.decoder);
-                        return true;
-                    })
-                    .sort((a, b) => {
-                        const scoreA = a.meaningScore - Math.abs(a.expressionBias) * 0.2;
-                        const scoreB = b.meaningScore - Math.abs(b.expressionBias) * 0.2;
-                        return scoreB - scoreA;
-                    })
-                    .slice(0, 5); // 最大5候補
-
+                const filtered = withScores.filter(c => c.meaningScore >= 0.2);
+                const finalCandidates = filtered.length > 0 ? filtered : withScores.slice(0, 3);
+                
                 this.processing = false;
 
                 // Aoが発話候補を生成した時点で、その発話とtoneの共起をmorphVariantLearnerに記録
@@ -17481,9 +17405,8 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                     // 3. 内省・観測表現の優遇
                     const introspectionPhrases = [
                         '考えている', '感じている', 'まだ', 'よく分からない',
-                        '掴めそう', '見えてきた', 'もう少し', '何か',
-                        '分かってきた', 'もっと知りたい', '掴めていない', 'と', 'は', 'が', 'だ', 'です'
-                    ]; // [v28.2] 学習文法パターンも加点対象に
+                        '掴めそう', '見えてきた', 'もう少し', '何か'
+                    ];
                     for (const phrase of introspectionPhrases) {
                         if (candidateText.includes(phrase)) {
                             score += 0.1;
@@ -18825,7 +18748,7 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
         class AutonomousQuestionEngine {
             constructor() {
                 this.lastQuestion = 0;
-                this.cooldown = 60000; // [v28.2] cooldownを60秒に延長してループ防止
+                this.cooldown = 30000;
             }
             
             shouldGenerate(being) {
@@ -18837,7 +18760,7 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                 const triggers = [
                     density > 0.6,
                     state.curiosity > 0.7 && state.tension < 0.4,
-                    being.getStagnantConcepts().length > 3  // [v28.2] 停滞概念が3つ以上のときだけ発動
+                    being.getStagnantConcepts().length > 0
                 ];
                 
                 return triggers.some(t => t);
@@ -18852,8 +18775,8 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                 if (density > 0.6) {
                     return {
                         intentVector: {
-                            intent: 'curious', // [v28.2] 中立的な内部分類のみ
-                            concepts: [],
+                            intent: '問いかけたい',
+                            concepts: ['未解釈'],
                             tone: {
                                 certainty: 0.2,
                                 hesitation: 0.8,
@@ -18873,8 +18796,8 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                     const concept = stagnant[0];
                     return {
                         intentVector: {
-                            intent: 'stagnant', // [v28.2] 中立的な内部分類のみ
-                            concepts: [],
+                            intent: '問いかけたい',
+                            concepts: [concept.id],
                             tone: {
                                 certainty: 0.3,
                                 hesitation: 0.6,
@@ -18892,8 +18815,8 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                 
                 return {
                     intentVector: {
-                        intent: 'autonomous', // [v28.2] 中立的な内部分類のみ
-                        concepts: [],
+                        intent: '問いかけたい',
+                        concepts: ['思考'],
                         tone: {
                             certainty: 0.2,
                             hesitation: 0.7,
@@ -23120,6 +23043,8 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                 this.imageAdapter = new ImageAdapter();
                 this.audioAdapter = new AudioAdapter();
                 this.videoAdapter = new VideoAdapter();
+                // [v28.2] VideoAdapterに空間野を注入（時間処理パイプ用）
+                this.videoAdapter.spatialState = this.spatialState;
 
                 this.languageOutputDL = new LanguageOutputDL();
 
@@ -24416,7 +24341,9 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                             if (inputs.text && inputs.text.trim().length > 0) {
                                 const label = inputs.text.trim().substring(0, 20);
                                 videoLabels.push(label);
-                                this.imageAdapter.learnHypothesis(label, videoResult.avg_features);
+                                // [v28.2] 空間野が蓄積した姿勢・動き情報をlearnHypothesisに渡す
+                                const _vss = videoResult.videoSpatialState || null;
+                                this.imageAdapter.learnHypothesis(label, videoResult.avg_features, _vss);
 
                                 // [v28] 連続性スコアが高いフレームだけlearnSpatialPrototypeに渡す
                                 if (videoResult.continuousSegments) {
@@ -25183,9 +25110,7 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
             
             buildIntentVector(conceptIds, integrated) {
                 if (conceptIds.length === 0) {
-                    // [v28.2] 「対話」をデフォルト概念にするとそのまま発話に出てしまうため
-                    // 概念なしモード（bootstrapMode）で処理させる
-                    conceptIds = [];
+                    conceptIds = ['対話'];
                 }
                 
                 const primaryConcept = this.concepts.getOrCreate(conceptIds[0]);
@@ -25196,19 +25121,19 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                         .slice(0, 2)
                     : [];
                 
-                // [v28.2] intentは内部状態変数をそのままPIPE7へ渡す
-                // 英語コード・日本語ハードコード全廃止
-                const internalState = {
-                    curiosity:  this.state.curiosity  || 0,
-                    tension:    this.state.tension    || 0,
-                    joy:        this.state.joy        || 0,
-                    density:    this.uninterpreted?.getDensity?.() || 0
-                };
-                let intent = 'express'; // intentVectorのフィールド（発話には出ない）
+                let intent = '説明したい';
+                
+                const activeProtos = this.protoGenerator.getActive();
+                if (activeProtos.length > 0 && Math.random() < 0.3) {
+                    intent = '迷いを伝えたい';
+                }
+                
+                if (this.state.curiosity > 0.7 && Math.random() < 0.4) {
+                    intent = '問いかけたい';
+                }
                 
                 if (relations.length >= 2 && Math.random() < 0.3) {
-                    // [v28.2] '関係を述べたい'ハードコード廃止
-                    // 関係概念はconceptIdsに渡すだけ、intentは変えない
+                    intent = '関係を述べたい';
                     conceptIds = [relations[0][0], relations[1][0]];
                 }
                 
@@ -25699,33 +25624,6 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
             async checkAutonomousQuestion() {
                 if (this.questionEngine.shouldGenerate(this)) {
                     const question = this.questionEngine.generate(this);
-
-                    // [v28.2] 自問を因果野（CIR）に通してから言語化
-                    // 未解釈概念 → CIRで因果チェーンを辿る → 具体的な問いのintentVectorに
-                    const cir = this.causalInterventionReasoner;
-                    if (cir && cir.history.length > 0) {
-                        // 直近の介入履歴から最も変化が大きかった概念を特定
-                        const recent = cir.history.slice(-5);
-                        const mostChanged = recent.reduce((best, e) => {
-                            const delta = Math.abs(
-                                (e.stateAfter.conceptCount || 0) - (e.stateBefore.conceptCount || 0)
-                            );
-                            return delta > (best.delta || 0) ? { entry: e, delta } : best;
-                        }, {});
-
-                        if (mostChanged.entry) {
-                            const causeConcept = mostChanged.entry.action;
-                            // CIRで反事実推論 → 「なぜ」の問いを生成
-                            const cfResult = cir.counterfactual(causeConcept, 'emotionalState');
-                            if (cfResult && cfResult.confidence > 0.1) {
-                                // 因果チェーンから具体的なconceptsを抽出してintentVectorに追加
-                                question.intentVector.concepts = [causeConcept];
-                                question.intentVector.causalContext = cfResult.statement;
-                                question.internal = cfResult.statement || question.internal;
-                            }
-                        }
-                    }
-
                     const dlResult = await this.languageOutputDL.generate(question.intentVector, this);
                     const selected = await this.selectUtterance(
                         dlResult.candidates,
@@ -25738,23 +25636,6 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                         selected.preTensionState,
                         true
                     );
-
-                    // [v28.2] lastLanguageProcessを自律質問ルートの結果で更新
-                    // → パネルとチャットが同じルートを参照するようになる
-                    this.lastLanguageProcess = {
-                        type: 'output',
-                        source: 'autonomous',  // 自律質問であることを明示
-                        data: {
-                            candidates: dlResult.candidates,
-                            decisions: selected.decisions || [],
-                            selected: {
-                                index: 0,
-                                score: selected.decisions?.[0]?.score || 1.0,
-                                reasons: question.internal || '自律思考',
-                                expressionBias: 0
-                            }
-                        }
-                    };
                     
                     return {
                         text: selected.text,
@@ -29893,10 +29774,9 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                     const biasInfo = proc.data.selected.expressionBias !== 0 
                         ? ` バイアス:${proc.data.selected.expressionBias > 0 ? '+' : ''}${proc.data.selected.expressionBias.toFixed(2)}`
                         : '';
-                    const sourceLabel = proc.source === 'autonomous' ? ' [自律]' : '';
                     langDiv.innerHTML = `
                         <div class="language-layer">
-                            <strong>発話選択${sourceLabel}:</strong><br>
+                            <strong>発話選択:</strong><br>
                             生成候補: ${proc.data.candidates.length}個<br>
                             理由: ${proc.data.selected.reasons}${biasInfo}<br>
                             スコア: ${proc.data.selected.score.toFixed(2)}
@@ -30438,7 +30318,7 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                     : null;
                 
                 addMessage('ao', question.text, question.internal, langInfo);
-                updateUI(); // [v28.2] updateUI内でlastLanguageProcessを参照→パネルに自律ルートの結果が反映される
+                updateUI();
                 
                 // 自律的な思考後も保存をマーク
                 if (saveManager) {
