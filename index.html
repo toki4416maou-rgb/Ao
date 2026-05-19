@@ -25699,6 +25699,33 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
             async checkAutonomousQuestion() {
                 if (this.questionEngine.shouldGenerate(this)) {
                     const question = this.questionEngine.generate(this);
+
+                    // [v28.2] 自問を因果野（CIR）に通してから言語化
+                    // 未解釈概念 → CIRで因果チェーンを辿る → 具体的な問いのintentVectorに
+                    const cir = this.causalInterventionReasoner;
+                    if (cir && cir.history.length > 0) {
+                        // 直近の介入履歴から最も変化が大きかった概念を特定
+                        const recent = cir.history.slice(-5);
+                        const mostChanged = recent.reduce((best, e) => {
+                            const delta = Math.abs(
+                                (e.stateAfter.conceptCount || 0) - (e.stateBefore.conceptCount || 0)
+                            );
+                            return delta > (best.delta || 0) ? { entry: e, delta } : best;
+                        }, {});
+
+                        if (mostChanged.entry) {
+                            const causeConcept = mostChanged.entry.action;
+                            // CIRで反事実推論 → 「なぜ」の問いを生成
+                            const cfResult = cir.counterfactual(causeConcept, 'emotionalState');
+                            if (cfResult && cfResult.confidence > 0.1) {
+                                // 因果チェーンから具体的なconceptsを抽出してintentVectorに追加
+                                question.intentVector.concepts = [causeConcept];
+                                question.intentVector.causalContext = cfResult.statement;
+                                question.internal = cfResult.statement || question.internal;
+                            }
+                        }
+                    }
+
                     const dlResult = await this.languageOutputDL.generate(question.intentVector, this);
                     const selected = await this.selectUtterance(
                         dlResult.candidates,
