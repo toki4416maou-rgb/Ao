@@ -8222,6 +8222,41 @@ MemoryLimitsConfig._instance = null;
                     ] : [0, 0, 0, 0, 0, 0];
 
                     this.hypothesisTable.observe(label, hueHist, brightnessGrid, [...spatialVec, ...poseVec]);
+
+                    // [v28.2] 視覚野と言語野を分離して空間野→因果野で統合
+                    // 視覚特徴量を概念のgroundingに「visual」由来として保存
+                    // 言語野が同じ概念IDにアクセスしたとき因果野が「同じものを指している」と推論できる
+                    if (this.being && this.being.concepts) {
+                        const tokens = label.split(/[　、。\s,.!?！？]+/).filter(t => t.length > 0 && t.length <= 15);
+                        for (const token of tokens) {
+                            const concept = this.being.concepts.getOrCreate(token);
+                            if (concept) {
+                                // 視覚特徴量の要約をgroundingに保存
+                                const visualSummary = {
+                                    hue_peak: hueHist ? hueHist.indexOf(Math.max(...hueHist)) : 0,
+                                    brightness_mean: brightnessGrid
+                                        ? brightnessGrid.reduce((a, b) => a + b, 0) / brightnessGrid.length
+                                        : 0,
+                                    pose_yaw:   spatialState?.pose?.yaw   || 0,
+                                    pose_pitch: spatialState?.pose?.pitch  || 0,
+                                    motionType: spatialState?.motionType   || 'still',
+                                    textureReliability: spatialState?.textureReliability || 0
+                                };
+                                concept.ground(visualSummary, this.being.state || {}, 'visual');
+                                concept.encounter(this.being.state || {}, 'visual');
+
+                                // 空間野の情報も概念に紐付け
+                                if (spatialState) {
+                                    concept.spatialBinding = {
+                                        shape_latent:       spatialState.shape_latent   || [],
+                                        texture_latent:     spatialState.texture_latent || [],
+                                        poseDiversity:      spatialState.poseDiversity  || 0,
+                                        textureReliability: spatialState.textureReliability || 0
+                                    };
+                                }
+                            }
+                        }
+                    }
                 } catch (e) {
                     console.error('[ImageAdapter] learnHypothesis error:', e);
                 }
@@ -9222,6 +9257,26 @@ MemoryLimitsConfig._instance = null;
                 try {
                     if (!percept) return;
                     this.hypothesisTable.observe(label, percept);
+
+                    // [v28.2] 音声野と言語野を分離して因果野で統合
+                    // 音声特徴量を概念のgroundingに「audio」由来として保存
+                    const being = window.ao;
+                    if (being && being.concepts) {
+                        const tokens = label.split(/[　、。\s,.!?！？]+/).filter(t => t.length > 0 && t.length <= 15);
+                        for (const token of tokens) {
+                            const concept = being.concepts.getOrCreate(token);
+                            if (concept) {
+                                const audioSummary = {
+                                    pitch_mean:    percept.pitch_mean    || 0,
+                                    energy_mean:   percept.energy_mean   || 0,
+                                    tempo:         percept.tempo         || 0,
+                                    brightness:    percept.brightness    || 0
+                                };
+                                concept.ground(audioSummary, being.state || {}, 'audio');
+                                concept.encounter(being.state || {}, 'audio');
+                            }
+                        }
+                    }
                 } catch (e) {
                     console.error('[AudioGenerator] learnHypothesis error:', e);
                 }
@@ -9589,6 +9644,25 @@ MemoryLimitsConfig._instance = null;
             learnHypothesis(label, percept) {
                 if (this.hypothesisTable && percept) {
                     this.hypothesisTable.observe(label, percept);
+
+                    // [v28.2] 音声野と言語野を分離して因果野で統合
+                    const being = window.ao;
+                    if (being && being.concepts) {
+                        const tokens = label.split(/[　、。\s,.!?！？]+/).filter(t => t.length > 0 && t.length <= 15);
+                        for (const token of tokens) {
+                            const concept = being.concepts.getOrCreate(token);
+                            if (concept) {
+                                const audioSummary = {
+                                    pitch_mean:  percept.pitch_mean  || 0,
+                                    energy_mean: percept.energy_mean || 0,
+                                    tempo:       percept.tempo       || 0,
+                                    brightness:  percept.brightness  || 0
+                                };
+                                concept.ground(audioSummary, being.state || {}, 'audio');
+                                concept.encounter(being.state || {}, 'audio');
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -23045,6 +23119,8 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                 this.videoAdapter = new VideoAdapter();
                 // [v28.2] VideoAdapterに空間野を注入（時間処理パイプ用）
                 this.videoAdapter.spatialState = this.spatialState;
+                // [v28.2] ImageAdapterにbeing参照を注入（視覚×言語統合用）
+                this.imageAdapter.being = this;
 
                 this.languageOutputDL = new LanguageOutputDL();
 
@@ -24225,6 +24301,27 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                             this.addLog(`視覚野: 共起学習 [${activeLabels.join('∧')}]`);
                         }
 
+                        // [v28.2] 視覚野×言語野の統合推論（因果野へ）
+                        // 同じ概念IDに視覚grounding+言語groundingが両方ある → CIRに「同一指示」として記録
+                        if (this.concepts && this.causalInterventionReasoner) {
+                            const visualGroundedConcepts = activeLabels.filter(label => {
+                                const c = this.concepts.getOrCreate(label);
+                                return c && c.grounding && c.grounding.some(g => g.modality === 'visual')
+                                         && c.grounding.some(g => g.modality === 'language');
+                            });
+                            for (const label of visualGroundedConcepts) {
+                                const c = this.concepts.getOrCreate(label);
+                                const stateBefore = { ...this.state };
+                                const stateAfter  = { ...this.state, conceptGrounded: true };
+                                this.causalInterventionReasoner.record(
+                                    `視覚×言語統合:${label}`,
+                                    stateBefore,
+                                    stateAfter
+                                );
+                                this.addLog(`[CIR] 視覚×言語統合: 「${label}」が同一指示として因果野に記録`);
+                            }
+                        }
+
                         // [v27.1] 複合概念マッチング → semantic_candidatesに追加
                         if (imageResult.features) {
                             const coMatches = this.imageAdapter.matchCoOccurrence(imageResult.features);
@@ -24268,6 +24365,27 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                         if (audioLabels.length >= 2 && audioResult.percept) {
                             this.audioAdapter.learnCoOccurrence(audioLabels, audioResult.percept);
                             this.addLog(`聴覚野: 共起学習 [${audioLabels.join('∧')}]`);
+                        }
+
+                        // [v28.2] 音声×言語統合推論（因果野へ）
+                        // 同じ概念IDに音声grounding+言語groundingが両方ある → CIRに記録
+                        if (this.concepts && this.causalInterventionReasoner && audioLabels.length > 0) {
+                            const audioGroundedConcepts = audioLabels.filter(label => {
+                                const c = this.concepts.getOrCreate(label);
+                                return c && c.grounding
+                                    && c.grounding.some(g => g.modality === 'audio')
+                                    && c.grounding.some(g => g.modality === 'language');
+                            });
+                            for (const label of audioGroundedConcepts) {
+                                const stateBefore = { ...this.state };
+                                const stateAfter  = { ...this.state, conceptGrounded: true };
+                                this.causalInterventionReasoner.record(
+                                    `音声×言語統合:${label}`,
+                                    stateBefore,
+                                    stateAfter
+                                );
+                                this.addLog(`[CIR] 音声×言語統合: 「${label}」が同一指示として因果野に記録`);
+                            }
                         }
 
                         // [v27.1] 音声複合概念マッチング
