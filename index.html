@@ -5553,6 +5553,236 @@ MemoryLimitsConfig._instance = null;
             }
         }
 
+
+        // ================================================================
+        // AcousticPerceptualParser（音声トークナイザ）v28.2
+        // VideoPerceptualParserと対称的な設計
+        //
+        // 時間軸の階層：
+        //   L0: 個別の音（音素・短い音のフレーム）
+        //   L1: 音の節（音節・単語レベルのまとまり）
+        //   L2: 音の繋がり（フレーズ・文レベル）
+        //   L3: 全体（発話・楽曲全体）
+        //
+        // VideoPerceptualParserがHOGクラスタで視覚トークン化するのと同様に
+        // AcousticPerceptualParserはピッチ/エネルギー/テンポで音声トークン化する
+        // ================================================================
+        class AcousticPerceptualParser {
+            constructor() {
+                // フレームペア間のPMI統計（VideoPerceptualParserと対称）
+                this.pairFreq      = new Map(); // "clusterA:clusterB" → count
+                this.totalPairs    = 0;
+                this.clusterFreq   = new Map();
+                this.totalClusters = 0;
+
+                // 境界判定閾値
+                this.BOUNDARY_THRESHOLD  = 0.3;
+                this.MIN_PAIRS_FOR_STATS = 20;
+
+                // 音声クラスタリング（8クラスタ）
+                // ピッチ/エネルギー/テンポ/輝度の4次元ベクトルをクラスタ化
+                this.N_CLUSTERS       = 8;
+                this.clusterCentroids = []; // 学習で更新される重心
+            }
+
+            // ── 音声フレームを4次元ベクトルに変換 ──────────────────
+            _toVector(frame) {
+                return [
+                    frame.pitch_mean    || 0,
+                    frame.energy_mean   || 0,
+                    frame.tempo         || 0,
+                    frame.brightness    || 0
+                ];
+            }
+
+            // ── 4次元ベクトルを最近傍クラスタIDに量子化 ─────────────
+            _quantize(vec) {
+                if (this.clusterCentroids.length === 0) {
+                    // 初期化前: エネルギーとピッチの合計で8分割
+                    const sum = vec.reduce((s, v) => s + Math.abs(v), 0);
+                    return Math.min(this.N_CLUSTERS - 1, Math.floor(sum * this.N_CLUSTERS));
+                }
+                let best = 0, bestDist = Infinity;
+                for (let i = 0; i < this.clusterCentroids.length; i++) {
+                    const c = this.clusterCentroids[i];
+                    let dist = 0;
+                    for (let j = 0; j < Math.min(vec.length, c.length); j++) {
+                        dist += (vec[j] - c[j]) ** 2;
+                    }
+                    if (dist < bestDist) { bestDist = dist; best = i; }
+                }
+                return best;
+            }
+
+            // ── 重心をオンライン更新（移動平均）──────────────────────
+            _updateCentroid(clusterId, vec) {
+                if (!this.clusterCentroids[clusterId]) {
+                    this.clusterCentroids[clusterId] = new Array(vec.length).fill(0);
+                }
+                const c  = this.clusterCentroids[clusterId];
+                const lr = 0.05;
+                for (let i = 0; i < Math.min(vec.length, c.length); i++) {
+                    c[i] = (1 - lr) * c[i] + lr * vec[i];
+                }
+            }
+
+            // ── PMI相当 ──────────────────────────────────────────────
+            _calcPMI(clA, clB) {
+                if (this.totalPairs === 0) return 0;
+                const key = `${clA}:${clB}`;
+                const pAB = (this.pairFreq.get(key) || 0) / this.totalPairs;
+                const pA  = (this.clusterFreq.get(clA) || 0) / this.totalClusters;
+                const pB  = (this.clusterFreq.get(clB) || 0) / this.totalClusters;
+                if (pAB === 0 || pA === 0 || pB === 0) return 0;
+                const pmi    = Math.log2(pAB / (pA * pB));
+                const maxPMI = -Math.log2(pAB);
+                return maxPMI > 0 ? Math.max(-1, Math.min(1, pmi / maxPMI)) : 0;
+            }
+
+            // ── 分岐エントロピー相当 ──────────────────────────────────
+            _calcBranchEntropy(clA) {
+                const freq = this.clusterFreq.get(clA) || 0;
+                if (freq === 0) return 0;
+                let entropy = 0;
+                for (const [key, count] of this.pairFreq) {
+                    const [a] = key.split(':');
+                    if (parseInt(a) !== clA) continue;
+                    const p = count / freq;
+                    if (p > 0) entropy -= p * Math.log2(p);
+                }
+                const maxH = Math.log2(Math.max(1, this.N_CLUSTERS));
+                return maxH > 0 ? Math.min(1, entropy / maxH) : 0;
+            }
+
+            // ── 統計更新 ──────────────────────────────────────────────
+            _updateStats(clusterIds) {
+                for (let i = 0; i < clusterIds.length; i++) {
+                    const cl = clusterIds[i];
+                    this.clusterFreq.set(cl, (this.clusterFreq.get(cl) || 0) + 1);
+                    this.totalClusters++;
+                    if (i < clusterIds.length - 1) {
+                        const key = `${cl}:${clusterIds[i + 1]}`;
+                        this.pairFreq.set(key, (this.pairFreq.get(key) || 0) + 1);
+                        this.totalPairs++;
+                    }
+                }
+            }
+
+            // ── メインエントリ: frames[] → AcousticToken[] ───────────
+            // frames: 時間軸に並んだ音声フレームの配列
+            // 各frameは { time, pitch_mean, energy_mean, tempo, brightness, concepts[] } を持つ
+            //
+            // 階層構造：
+            //   L0: 個別フレーム（量子化されたクラスタID）
+            //   L1: 境界で区切られたセグメント（音の節）← parse()が返すもの
+            //   L2: L1トークンのPMIで再帰的に区切る（音の繋がり）← HierarchicalChunkerが担当
+            //   L3: 全体（発話・楽曲）← HierarchicalChunkerが担当
+            parse(frames) {
+                if (!frames || frames.length < 2) return [];
+
+                // Step1: 各フレームを4次元ベクトル → クラスタIDに量子化（L0）
+                const clusterIds = frames.map(frame => {
+                    const vec = this._toVector(frame);
+                    const cl  = this._quantize(vec);
+                    this._updateCentroid(cl, vec);
+                    return cl;
+                });
+
+                // Step2: 統計更新
+                this._updateStats(clusterIds);
+
+                // Step3: 境界検出（PMI + 分岐エントロピー）→ L1の境界
+                const boundaries = new Set();
+                boundaries.add(0);
+
+                for (let i = 1; i < clusterIds.length; i++) {
+                    if (this.totalPairs < this.MIN_PAIRS_FOR_STATS) {
+                        // コールドスタート: エネルギー変化が大きい＝境界
+                        const eA = frames[i-1].energy_mean || 0;
+                        const eB = frames[i].energy_mean   || 0;
+                        if (Math.abs(eA - eB) > 0.3) boundaries.add(i);
+                    } else {
+                        // 統計蓄積後: PMI + 分岐エントロピー
+                        const bond   = this._calcPMI(clusterIds[i-1], clusterIds[i]);
+                        const branch = this._calcBranchEntropy(clusterIds[i-1]);
+                        const score  = branch - bond;
+                        if (score > this.BOUNDARY_THRESHOLD) boundaries.add(i);
+                    }
+                }
+                boundaries.add(frames.length);
+
+                // Step4: 境界でセグメント化 → AcousticToken[]（L1）
+                const sortedBounds = Array.from(boundaries).sort((a, b) => a - b);
+                const tokens = [];
+                for (let b = 0; b < sortedBounds.length - 1; b++) {
+                    const start = sortedBounds[b];
+                    const end   = sortedBounds[b + 1];
+                    const seg   = frames.slice(start, end);
+                    if (seg.length === 0) continue;
+
+                    // セグメント内の代表概念（meaningsの多数決）
+                    const conceptCount = new Map();
+                    seg.forEach(frame => {
+                        (frame.concepts || []).forEach(c => {
+                            conceptCount.set(c, (conceptCount.get(c) || 0) + 1);
+                        });
+                    });
+                    const concepts = Array.from(conceptCount.entries())
+                        .sort((a, b) => b[1] - a[1])
+                        .slice(0, 3)
+                        .map(([c]) => c);
+
+                    // セグメントの代表クラスタ（最頻）
+                    const segClusters = clusterIds.slice(start, end);
+                    const clFreq = new Map();
+                    segClusters.forEach(cl => clFreq.set(cl, (clFreq.get(cl) || 0) + 1));
+                    const dominantCluster = [...clFreq.entries()].sort((a,b)=>b[1]-a[1])[0]?.[0] ?? 0;
+
+                    // セグメント内の平均特徴量
+                    const avgPitch    = seg.reduce((s, f) => s + (f.pitch_mean    || 0), 0) / seg.length;
+                    const avgEnergy   = seg.reduce((s, f) => s + (f.energy_mean   || 0), 0) / seg.length;
+                    const avgTempo    = seg.reduce((s, f) => s + (f.tempo         || 0), 0) / seg.length;
+                    const avgBright   = seg.reduce((s, f) => s + (f.brightness    || 0), 0) / seg.length;
+
+                    tokens.push({
+                        surface:        concepts.join('・') || `sound_${dominantCluster}`,
+                        concepts,
+                        cluster:        dominantCluster,
+                        timeStart:      seg[0].time,
+                        timeEnd:        seg[seg.length - 1].time,
+                        frameCount:     seg.length,
+                        avgPitch,
+                        avgEnergy,
+                        avgTempo,
+                        avgBrightness:  avgBright,
+                        level:          1,  // L1トークン
+                        position:       b
+                    });
+                }
+
+                return tokens;
+            }
+
+            exportState() {
+                return {
+                    pairFreq:         Array.from(this.pairFreq.entries()),
+                    clusterFreq:      Array.from(this.clusterFreq.entries()),
+                    totalPairs:       this.totalPairs,
+                    totalClusters:    this.totalClusters,
+                    clusterCentroids: this.clusterCentroids
+                };
+            }
+
+            importState(data) {
+                if (!data) return;
+                this.pairFreq         = new Map(data.pairFreq    || []);
+                this.clusterFreq      = new Map(data.clusterFreq || []);
+                this.totalPairs       = data.totalPairs    || 0;
+                this.totalClusters    = data.totalClusters || 0;
+                this.clusterCentroids = data.clusterCentroids || [];
+            }
+        }
+
         // ============ VideoAdapter (既存) ============
         class VideoAdapter {
             constructor() {
@@ -5561,6 +5791,8 @@ MemoryLimitsConfig._instance = null;
                 this.imageAdapter = null; // ao初期化後に ao.imageAdapter を注入する
                 // v29.0: VideoPerceptualParser（動画トークナイザ）
                 this.videoParser  = new VideoPerceptualParser();
+                // v28.2: AcousticPerceptualParser（音声トークナイザ）動画の音声トラック用
+                this.audioParser  = new AcousticPerceptualParser();
             }
 
             async extractMeaning(videoFile, mode = 'normal') {
@@ -5766,7 +5998,24 @@ MemoryLimitsConfig._instance = null;
                     raw_descriptor: `${duration.toFixed(1)}秒 ${scenes.length}シーン ${mode}モード`,
                     _scenes: scenes,
                     // v29.0: 動画トークン列（VideoPerceptualParserが生成）
-                    videoTokens: this.videoParser.parse(scenes)
+                    videoTokens: this.videoParser.parse(scenes),
+                    // [v28.2] 音声トークン列（AcousticPerceptualParserが生成）
+                    // scenesに音声情報があれば時間軸でトークン化
+                    audioTokens: (() => {
+                        const audioFrames = scenes
+                            .filter(s => s.percept && (s.percept.pitch_mean !== undefined || s.percept.energy_mean !== undefined))
+                            .map(s => ({
+                                time:         s.time || 0,
+                                pitch_mean:   s.percept.pitch_mean   || 0,
+                                energy_mean:  s.percept.energy_mean  || 0,
+                                tempo:        s.percept.tempo        || 0,
+                                brightness:   s.percept.brightness   || 0,
+                                concepts:     (s.meanings || []).map(m => m.concept || m)
+                            }));
+                        return audioFrames.length >= 2
+                            ? this.audioParser.parse(audioFrames)
+                            : [];
+                    })()
                 };
             }
 
@@ -9493,6 +9742,8 @@ MemoryLimitsConfig._instance = null;
                 this.hypothesisTable = null; // ao初期化後にaudioGenerator.hypothesisTableを注入
                 // v27.1: 音声共起テーブル
                 this.labelCoOccurrence = new Map();
+                // v28.2: AcousticPerceptualParser（音声トークナイザ）単体音声ファイル用
+                this.audioParser = new AcousticPerceptualParser();
             }
 
             // ---- [v27.1] 音声ラベル間の共起を記録 ----
@@ -23448,7 +23699,13 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                             // [v29.0] VideoPerceptualParserの統計
                             videoParserState: this.videoAdapter && this.videoAdapter.videoParser
                                 ? this.videoAdapter.videoParser.exportState()
-                                : null
+                                : null,
+                            // [v28.2] AcousticPerceptualParserの統計
+                            audioParserState: this.videoAdapter && this.videoAdapter.audioParser
+                                ? this.videoAdapter.audioParser.exportState()
+                                : (this.audioAdapter && this.audioAdapter.audioParser
+                                    ? this.audioAdapter.audioParser.exportState()
+                                    : null)
                         }
                     };
                     
@@ -23903,6 +24160,20 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                             this.addLog(`動画トークナイザ復元: ${this.videoAdapter.videoParser.totalPairs}ペア`);
                         } catch (e) {
                             globalLogManager.log(`videoParserState import failed: ${e.message}`, 'error');
+                        }
+                    }
+                    // [v28.2] AcousticPerceptualParser統計の復元
+                    if (core.audioParserState) {
+                        try {
+                            if (this.videoAdapter && this.videoAdapter.audioParser) {
+                                this.videoAdapter.audioParser.importState(core.audioParserState);
+                            }
+                            if (this.audioAdapter && this.audioAdapter.audioParser) {
+                                this.audioAdapter.audioParser.importState(core.audioParserState);
+                            }
+                            this.addLog(`音声トークナイザ復元完了`);
+                        } catch (e) {
+                            globalLogManager.log(`audioParserState import failed: ${e.message}`, 'error');
                         }
                     }
                     
@@ -24568,6 +24839,30 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                                     }
                                 }
                                 this.addLog(`[VideoParser] ${videoResult.videoTokens.length}トークン → 言語パイプ学習`);
+                            }
+                        }
+
+                        // [v28.2] 音声トークン列をPIPE6に流す
+                        if (videoResult.audioTokens && videoResult.audioTokens.length > 0) {
+                            this.addLog(`[AudioParser] ${videoResult.audioTokens.length}音声トークン → 言語パイプ学習`);
+                            for (const token of videoResult.audioTokens) {
+                                for (const concept of (token.concepts || [])) {
+                                    if (concept && !conceptIds.includes(concept)) {
+                                        conceptIds.push(concept);
+                                    }
+                                }
+                                // 音声トークンをlearnHypothesisに流す（音声×言語統合）
+                                if (token.concepts.length > 0 && this.audioAdapter) {
+                                    const percept = {
+                                        pitch_mean:  token.avgPitch,
+                                        energy_mean: token.avgEnergy,
+                                        tempo:       token.avgTempo,
+                                        brightness:  token.avgBrightness
+                                    };
+                                    for (const concept of token.concepts) {
+                                        this.audioAdapter.learnHypothesis(concept, percept);
+                                    }
+                                }
                             }
                         }
 
