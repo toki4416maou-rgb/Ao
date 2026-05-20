@@ -27347,14 +27347,17 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
             
             addClip(asset, track = 'video', inPoint = 0, outPoint = null) {
                 try {
+                    const assetDuration = (asset.duration != null && !isNaN(asset.duration))
+                        ? asset.duration : 5;
+                    const resolvedOut = outPoint != null ? outPoint : assetDuration;
                     const clip = {
                         id: `clip_${Date.now()}_${Math.random()}`,
                         asset: asset,
                         track: track,
                         inPoint: inPoint,
-                        outPoint: outPoint || asset.duration,
-                        duration: (outPoint || asset.duration) - inPoint,
-                        position: this.tracks[track].reduce((sum, c) => sum + c.duration, 0)
+                        outPoint: resolvedOut,
+                        duration: resolvedOut - inPoint,
+                        position: this.tracks[track].reduce((sum, c) => sum + (c.duration || 0), 0)
                     };
                     
                     this.tracks[track].push(clip);
@@ -27777,9 +27780,9 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
 
                         let sceneResult = null;
 
-                        if (creator && creator.contentCreator && creator.contentCreator.generateSyncedContent) {
+                        if (creator && creator.generateSyncedContent) {
                             // generateSyncedContentで映像×音声同時生成
-                            sceneResult = await creator.contentCreator.generateSyncedContent(sceneConcepts);
+                            sceneResult = await creator.generateSyncedContent(sceneConcepts);
                         }
 
                         if (sceneResult && sceneResult.content && sceneResult.content.frames) {
@@ -28624,6 +28627,8 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                         : mood;
                     const hints    = blendedMood._imageHints || [];
                     const hasHints = hints.length > 0;
+                    // emotionToColor は {joy} を期待するが InternalState は {mood} で持つため変換
+                    const moodForColor = { ...blendedMood, joy: blendedMood.joy ?? blendedMood.mood ?? 0 };
 
                     for (let i = 0; i < totalFrames; i++) {
                         const progress     = i / totalFrames;
@@ -28638,7 +28643,7 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
 
                         // ── 映像フレーム生成 ──────────────────────────────
                         // 感情状態 × 学習済みプロトタイプ × 現在概念でフレームを描画
-                        const bgColor = being.videoGenerator.emotionToColor(blendedMood, progress);
+                        const bgColor = being.videoGenerator.emotionToColor(moodForColor, progress);
                         ctx.fillStyle = bgColor;
                         ctx.fillRect(0, 0, canvas.width, canvas.height);
 
