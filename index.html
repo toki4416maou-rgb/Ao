@@ -1354,34 +1354,9 @@ async function aoActivateAfterPaypal() {
             <div class="panel"><div class="panel-title">自己認識</div><div class="identity" id="identity">初期化中...</div></div>
             <div class="panel"><div class="panel-title">内部ログ</div><div class="log" id="log"></div></div>
             
-            <!-- v18.0 Editor Integration パネル -->
-            <div class="panel">
-                <div class="panel-title">編集統合 <span class="editor-mode-indicator" id="editorMode">モードA</span></div>
-                <div class="metric"><span>現在のエディタ</span><span id="currentEditor">未選択</span></div>
-                <div class="metric"><span>実行履歴</span><span id="executionCount">0</span></div>
-                <div class="editor-controls">
-                    <button class="editor-btn" onclick="switchEditorMode('editor')">モードA: 連携</button>
-                    <button class="editor-btn" onclick="switchEditorMode('simple')">モードB: 簡易生成</button>
-                </div>
-            </div>
+
             
-            <div class="panel collapsible-panel">
-                <div class="panel-title" onclick="togglePanel('editorPanel')" style="cursor: pointer;">
-                    ✂️ 編集統合 <span id="editorPanelToggle" style="float: right;">▼</span>
-                </div>
-                <div id="editorPanel" style="display: none;">
-                    <select id="editorType" class="editor-select">
-                        <option value="video">動画編集</option>
-                        <option value="code">コード編集</option>
-                        <option value="document">文章編集</option>
-                        <option value="audio">音声編集</option>
-                        <option value="slide">スライド編集</option>
-                    </select>
-                    <input type="text" id="editorTask" class="editor-input" placeholder="編集タスクを入力...">
-                    <button class="editor-btn-execute" onclick="executeEditorTask()">実行</button>
-                    <div id="editorResults" class="editor-results" style="margin-top: 0.5rem;"></div>
-                </div>
-            </div>
+
             
             <!-- v19.0 Video Editing - Modal Trigger -->
             <div class="panel">
@@ -27669,62 +27644,220 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                     if (this.isProcessing) {
                         return { success: false, error: 'Already processing' };
                     }
-                    
+
                     this.isProcessing = true;
                     this.cognition.setIntent(intent);
-                    
-                    // 1. 素材読み込み
+                    const being = this.being;
+
+                    // ================================================================
+                    // [v28.2] 空間野・因果推論・動画生成を通る新しいパイプライン
+                    //
+                    // 流れ：
+                    //   1. フォルダ内ファイル読み込み
+                    //   2. CIR（因果推論）で要望を推測
+                    //   3. 空間野で全体像を決定
+                    //   4. HierarchicalChunkerで多重トークン分け
+                    //   5. トークンごとにgenerateSyncedContent()
+                    //   6. 完成した動画をプロジェクトファイルに出力
+                    // ================================================================
+
+                    // ── STEP1: フォルダ内ファイル読み込み ──────────────────────
                     const loadResult = await this.assetManager.loadAssets(folderPath);
                     if (!loadResult.success) {
                         this.isProcessing = false;
                         return { success: false, error: 'Failed to load assets' };
                     }
-                    
-                    // 2. 素材選択
-                    const selectResult = this.assetManager.selectByTheme(intent);
-                    if (!selectResult.success) {
-                        this.isProcessing = false;
-                        return { success: false, error: 'Failed to select assets' };
+
+                    being && being.addLog(`[動画編集] ${loadResult.count}素材読み込み完了`);
+
+                    // ── STEP2: CIR（因果推論）で要望を推測 ────────────────────
+                    // ファイル名・種類・数からCIRが「どんな動画を作りたいか」を推論
+                    const cir = being && being.causalInterventionReasoner;
+                    let inferredIntent = intent;
+                    let intentConcepts = intent ? intent.split(/[\s　、。]+/).filter(t => t.length > 0) : [];
+
+                    if (cir && cir.history.length > 0 && being.concepts) {
+                        // 素材ファイル名から概念を抽出
+                        const assetConcepts = (loadResult.assets || [])
+                            .map(a => a.name || a.filename || '')
+                            .join(' ')
+                            .split(/[\s_\-\.]+/)
+                            .filter(t => t.length > 1 && t.length <= 15);
+
+                        // CIRで素材概念と過去の因果履歴を照合して要望を推測
+                        for (const concept of assetConcepts.slice(0, 5)) {
+                            const cfResult = cir.counterfactual(concept, 'emotionalState');
+                            if (cfResult && cfResult.confidence > 0.15) {
+                                intentConcepts.push(concept);
+                                being.addLog(`[CIR] 要望推測: 「${concept}」(conf:${(cfResult.confidence*100).toFixed(0)}%)`);
+                            }
+                        }
+
+                        // 重複除去
+                        intentConcepts = [...new Set(intentConcepts)];
+                        inferredIntent = intentConcepts.join('・') || intent;
                     }
-                    
-                    // 3. 操作計画
+
+                    being && being.addLog(`[動画編集] 推測された要望: ${inferredIntent}`);
+
+                    // ── STEP3: 空間野で全体像を決定 ───────────────────────────
+                    // intentConceptsを空間野のshape_latentと照合して
+                    // 動画の全体的な「見た目・動き・感触」を決定する
+                    const spatialState = being && being.spatialState;
+                    let videoMood = being ? { ...being.state } : { joy: 0.5, curiosity: 0.5, tension: 0.3 };
+
+                    if (spatialState && intentConcepts.length > 0) {
+                        // 各概念の空間野の状態を取得して感情状態にブレンド
+                        for (const concept of intentConcepts.slice(0, 3)) {
+                            const ss = spatialState.getState(concept);
+                            if (ss) {
+                                // 動きの速さ → tension
+                                const motionMap = { still: 0.1, slow: 0.2, walking: 0.4, fast: 0.7, rotating: 0.9 };
+                                videoMood.tension = (videoMood.tension || 0) * 0.5
+                                    + (motionMap[ss.motionType] || 0.3) * 0.5;
+                                // 姿勢多様性 → curiosity
+                                videoMood.curiosity = Math.min(1,
+                                    (videoMood.curiosity || 0.5) + ss.poseDiversity * 0.3);
+                                being.addLog(`[空間野] ${concept}: motion=${ss.motionType} diversity=${ss.poseDiversity.toFixed(2)}`);
+                            }
+                        }
+                    }
+
+                    being && being.addLog(`[動画編集] 全体像決定: tension=${videoMood.tension?.toFixed(2)} curiosity=${videoMood.curiosity?.toFixed(2)}`);
+
+                    // ── STEP4: HierarchicalChunkerで多重トークン分け ───────────
+                    // intentConceptsをL3→L2→L1→L0に階層的に分割
+                    // L3: 動画全体のテーマ（1個）
+                    // L2: シーン単位（2〜4個）
+                    // L1: カット単位（各シーン2〜4カット）
+                    // L0: フレーム単位（generateSyncedContentが担当）
+
+                    const chunker = being && being.episodeManager && being.episodeManager.hierarchicalChunker;
+                    let sceneTokens = [];
+
+                    if (chunker && intentConcepts.length > 0) {
+                        // L2チャンク（シーン単位）を生成
+                        const l2chunks = chunker.chunkL1toL2
+                            ? chunker.chunkL1toL2(intentConcepts.map(c => ({ surface: c, concepts: [c] })))
+                            : null;
+
+                        if (l2chunks && l2chunks.length > 0) {
+                            sceneTokens = l2chunks.map(chunk => chunk.concepts || [chunk.surface]);
+                            being.addLog(`[Chunker] L2シーン: ${sceneTokens.length}シーン`);
+                        }
+                    }
+
+                    // chunkが得られなければintentConceptsを均等分割
+                    if (sceneTokens.length === 0) {
+                        const sceneCount = Math.max(2, Math.min(6, intentConcepts.length));
+                        const chunkSize  = Math.ceil(intentConcepts.length / sceneCount);
+                        for (let i = 0; i < intentConcepts.length; i += Math.max(1, chunkSize)) {
+                            sceneTokens.push(intentConcepts.slice(i, i + chunkSize));
+                        }
+                        if (sceneTokens.length === 0) sceneTokens = [[inferredIntent || 'scene']];
+                    }
+
+                    being && being.addLog(`[動画編集] ${sceneTokens.length}シーンに分割`);
+
+                    // ── STEP5: シーンごとにgenerateSyncedContent() ─────────────
+                    // 各シーントークンを映像×音声で生成して全フレームを結合
+                    const allFrames        = [];
+                    const allAudioTimeline = [];
+                    const fps              = 6;
+                    let   timeOffset       = 0;
+
+                    const creator = being && being.autonomousCreator;
+
+                    for (let si = 0; si < sceneTokens.length; si++) {
+                        const sceneConcepts = sceneTokens[si];
+                        being && being.addLog(`[動画編集] シーン${si+1}/${sceneTokens.length}: ${sceneConcepts.join('・')}`);
+
+                        let sceneResult = null;
+
+                        if (creator && creator.contentCreator && creator.contentCreator.generateSyncedContent) {
+                            // generateSyncedContentで映像×音声同時生成
+                            sceneResult = await creator.contentCreator.generateSyncedContent(sceneConcepts);
+                        }
+
+                        if (sceneResult && sceneResult.content && sceneResult.content.frames) {
+                            allFrames.push(...sceneResult.content.frames);
+                            // 音声タイムラインのtimeをシーンのオフセットで補正
+                            if (sceneResult.content.audioTimeline) {
+                                sceneResult.content.audioTimeline.forEach(a => {
+                                    allAudioTimeline.push({ ...a, time: a.time + timeOffset });
+                                });
+                            }
+                            timeOffset += sceneResult.content.duration || 5;
+                        }
+                    }
+
+                    being && being.addLog(`[動画編集] 生成完了: ${allFrames.length}フレーム 合計${timeOffset.toFixed(1)}秒`);
+
+                    // ── STEP6: 完成した動画をプロジェクトファイルに出力 ─────────
+                    // タイムラインにフレームを登録してプロジェクトXMLを生成
+                    const syntheticAssets = allFrames.map((frame, i) => ({
+                        name:     `frame_${String(i).padStart(4,'0')}.jpg`,
+                        type:     'image',
+                        dataUrl:  frame,
+                        duration: 1 / fps,
+                        time:     i / fps
+                    }));
+
+                    // 素材もタイムラインに追加
                     const selectedAssets = this.assetManager.getSelected();
-                    const planResult = this.cognition.planOperations(selectedAssets.assets, intent);
-                    
-                    // 4. タイムライン構築
-                    selectedAssets.assets.forEach((asset, index) => {
+                    const planResult     = this.cognition.planOperations(
+                        selectedAssets.assets, inferredIntent
+                    );
+
+                    syntheticAssets.forEach(asset => {
                         this.timelineBuilder.addClip(asset, 'video');
                     });
-                    
-                    // 5. プロジェクト生成
+                    selectedAssets.assets.forEach(asset => {
+                        this.timelineBuilder.addClip(asset, 'video');
+                    });
+
                     const timeline = this.timelineBuilder.getTimeline();
                     let projectResult;
-                    
+
                     if (format === 'premiere') {
                         projectResult = this.projectGenerator.generatePremiereProject(
-                            timeline,
-                            selectedAssets.assets,
-                            projectName
+                            timeline, syntheticAssets, projectName
                         );
                     } else if (format === 'resolve') {
                         projectResult = this.projectGenerator.generateResolveProject(
-                            timeline,
-                            selectedAssets.assets,
-                            projectName
+                            timeline, syntheticAssets, projectName
+                        );
+                    } else {
+                        projectResult = this.projectGenerator.generatePremiereProject(
+                            timeline, syntheticAssets, projectName
                         );
                     }
-                    
+
+                    // 音声タイムラインもプロジェクトに付加
+                    if (projectResult) {
+                        projectResult.audioTimeline = allAudioTimeline;
+                        projectResult.allFrames     = allFrames;
+                        projectResult.fps           = fps;
+                        projectResult.duration      = timeOffset;
+                        projectResult.inferredIntent = inferredIntent;
+                    }
+
                     this.currentProject = projectResult;
-                    this.isProcessing = false;
-                    
+                    this.isProcessing   = false;
+
                     return {
                         success: true,
                         project: projectResult,
+                        // チャット欄表示用
+                        frames:  allFrames,
+                        fps,
+                        audioTimeline: allAudioTimeline,
                         stats: {
-                            assetsLoaded: loadResult.count,
-                            assetsSelected: selectResult.selected,
-                            timelineDuration: timeline.duration,
-                            clipCount: timeline.clipCount
+                            assetsLoaded:      loadResult.count,
+                            scenesGenerated:   sceneTokens.length,
+                            framesGenerated:   allFrames.length,
+                            timelineDuration:  timeOffset,
+                            inferredIntent
                         }
                     };
                 } catch (error) {
@@ -28559,7 +28692,9 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                             duration,
                             concepts,
                             audioTimeline, // 映像と同期した音声特徴タイムライン
-                            description:  `${concepts.slice(0,3).join('・')}を映像×音声で生成 (${duration.toFixed(1)}秒)`
+                            description:  concepts.length > 0
+                                ? `${concepts.slice(0,3).join('・')}を映像×音声で生成 (${duration.toFixed(1)}秒)`
+                                : `今の気持ちを映像×音声で表現 (${duration.toFixed(1)}秒)`
                         },
                         timestamp: Date.now()
                     };
@@ -28618,6 +28753,16 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                                 type: 'video',
                                 frames: this.currentContent.content.frames,
                                 fps: this.currentContent.content.fps
+                            };
+                            break;
+
+                        case 'synced_video': // [v28.2] 映像×音声同期生成
+                            displayText = `[自発] ${this.currentContent.content.description}を創った`;
+                            mediaElement = {
+                                type: 'video',
+                                frames: this.currentContent.content.frames,
+                                fps:    this.currentContent.content.fps,
+                                audioTimeline: this.currentContent.content.audioTimeline
                             };
                             break;
                             
@@ -31208,30 +31353,7 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
             }
         });
                 
-        // ============ Editor Integration Functions (v18.0) ============
-        
-        function switchEditorMode(mode) {
-            try {
-                if (!ao || !ao.editorIntegration) {
-                    console.error('Editor integration not available');
-                    return;
-                }
-                
-                const result = ao.editorIntegration.setMode(mode);
-                
-                if (result.success) {
-                    const modeIndicator = document.getElementById('editorMode');
-                    if (modeIndicator) {
-                        modeIndicator.textContent = mode === 'editor' ? 'モードA' : 'モードB';
-                    }
-                    ao.addLog(`編集モード切替: ${mode === 'editor' ? 'モードA (連携)' : 'モードB (簡易生成)'}`);
-                } else {
-                    console.error('Mode switch failed:', result.error);
-                }
-            } catch (error) {
-                console.error('switchEditorMode failed:', error);
-            }
-        }
+
         
         async function executeEditorTask() {
             try {
@@ -31377,8 +31499,22 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                 displayVideoResult(result);
                 
                 if (result.success) {
-                    ao.addLog(`プロジェクト作成完了: ${result.stats.clipCount}クリップ`);
-                    
+                    ao.addLog(`プロジェクト作成完了: ${result.stats?.scenesGenerated || 0}シーン ${result.stats?.framesGenerated || 0}フレーム`);
+
+                    // [v28.2] 生成した動画フレームをチャット欄に表示
+                    if (result.frames && result.frames.length > 0) {
+                        const mediaElement = {
+                            type:          'video',
+                            frames:        result.frames,
+                            fps:           result.fps || 6,
+                            audioTimeline: result.audioTimeline || []
+                        };
+                        const desc = `動画生成完了: ${result.stats?.scenesGenerated}シーン ${result.stats?.framesGenerated}フレーム (${result.stats?.timelineDuration?.toFixed(1)}秒) 推測要望:「${result.stats?.inferredIntent}」`;
+                        if (typeof addMessage === 'function') {
+                            addMessage('ao', desc, false, mediaElement);
+                        }
+                    }
+
                     // エクスポートボタンを表示
                     const exportBtn = document.getElementById('exportBtn');
                     if (exportBtn) {
@@ -32183,9 +32319,7 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
 
         // ── HTMLのonclickから呼べるようにグローバル露出 ──────────────
         // _aoDoStartApp内のローカル関数はそのままではonclickから見えないため
-        window.switchEditorMode              = switchEditorMode;
         window.togglePanel                   = togglePanel;
-        window.executeEditorTask             = executeEditorTask;
         window.openVideoModal                = openVideoModal;
         window.closeVideoModal               = closeVideoModal;
         window.createVideoProjectFromModal   = createVideoProjectFromModal;
