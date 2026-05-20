@@ -5807,6 +5807,78 @@ MemoryLimitsConfig._instance = null;
                     video.onerror = reject;
                 });
 
+                // ================================================================
+                // [v28.2] 音声トラックの事前分析
+                // Web Audio APIで動画の音声トラックをデコードして
+                // フレームごとのpitch/energy/tempo/brightnessを計算しておく
+                // これをscene.perceptに入れることで映像と音声の時間同期を保証する
+                // ================================================================
+                let audioFrameMap = new Map(); // time → percept
+
+                try {
+                    const arrayBuffer = await videoFile.arrayBuffer();
+                    const audioCtx    = new (window.AudioContext || window.webkitAudioContext)();
+                    const audioBuffer = await audioCtx.decodeAudioData(arrayBuffer);
+                    const channelData = audioBuffer.getChannelData(0); // モノラル化
+                    const sampleRate  = audioBuffer.sampleRate;
+                    const duration    = audioBuffer.duration;
+                    const frameInterval = mode === 'fast' ? 5 : (mode === 'focused' ? 1 : 3);
+
+                    // フレームごとに音声特徴量を計算
+                    for (let t = 0; t < duration; t += frameInterval) {
+                        const startSample = Math.floor(t * sampleRate);
+                        const endSample   = Math.min(
+                            Math.floor((t + frameInterval) * sampleRate),
+                            channelData.length
+                        );
+                        if (startSample >= endSample) continue;
+
+                        const segment = channelData.slice(startSample, endSample);
+
+                        // エネルギー（RMS）
+                        let sumSq = 0;
+                        for (let s = 0; s < segment.length; s++) sumSq += segment[s] ** 2;
+                        const energy = Math.sqrt(sumSq / segment.length);
+
+                        // ゼロ交差率（ピッチ推定の簡易版）
+                        let zeroCrossings = 0;
+                        for (let s = 1; s < segment.length; s++) {
+                            if ((segment[s] >= 0) !== (segment[s-1] >= 0)) zeroCrossings++;
+                        }
+                        const zcr = zeroCrossings / segment.length;
+                        const pitchEstimate = Math.min(1, zcr * 2); // 0〜1に正規化
+
+                        // スペクトル輝度（高周波エネルギーの割合）
+                        const halfLen = Math.floor(segment.length / 2);
+                        let highFreqEnergy = 0, totalEnergy = 0;
+                        for (let s = 0; s < segment.length; s++) {
+                            totalEnergy += Math.abs(segment[s]);
+                            if (s > halfLen) highFreqEnergy += Math.abs(segment[s]);
+                        }
+                        const brightness = totalEnergy > 0 ? highFreqEnergy / totalEnergy : 0;
+
+                        // テンポ推定（エネルギーの変動係数）
+                        const mean = segment.reduce((a, b) => a + Math.abs(b), 0) / segment.length;
+                        let variance = 0;
+                        for (let s = 0; s < segment.length; s++) {
+                            variance += (Math.abs(segment[s]) - mean) ** 2;
+                        }
+                        const tempo = mean > 0 ? Math.sqrt(variance / segment.length) / mean : 0;
+
+                        audioFrameMap.set(Math.round(t * 10) / 10, {
+                            pitch_mean:  pitchEstimate,
+                            energy_mean: Math.min(1, energy * 10),
+                            tempo:       Math.min(1, tempo),
+                            brightness:  brightness
+                        });
+                    }
+
+                    await audioCtx.close();
+                } catch(e) {
+                    // 音声トラックなし or デコード失敗 → 音声なしで続行
+                    console.warn('[VideoAdapter] 音声トラック分析失敗（音声なし動画の可能性）:', e.message);
+                }
+
                 const duration      = video.duration;
                 const frameInterval = mode === 'fast' ? 5 : (mode === 'focused' ? 1 : 3);
                 const totalFrames   = Math.floor(duration / frameInterval);
@@ -5844,6 +5916,12 @@ MemoryLimitsConfig._instance = null;
                             ? Math.min(1, hogBlocks.reduce((s, v) => s + v, 0) / hogBlocks.length * 4)
                             : 0.3;
 
+                        // [v28.2] 音声perceptを同じtime軸で紐付け（映像と音声の乖離防止）
+                        const timeKey    = Math.round(time * 10) / 10;
+                        const audioPt    = audioFrameMap.get(timeKey)
+                                        || audioFrameMap.get(Math.round((time - 0.1) * 10) / 10)
+                                        || null;
+
                         scene = {
                             time,
                             brightness:    avgBrightness,
@@ -5851,7 +5929,8 @@ MemoryLimitsConfig._instance = null;
                             complexity,
                             meanings:      imageResult.semantic_candidates || [],
                             visual_vector: imageResult.visual_vector,   // 2320次元ベクトル（v4: 256x256）
-                            features:      imageResult.features          // 仮説学習に使う
+                            features:      imageResult.features,         // 仮説学習に使う
+                            percept:       audioPt                        // [v28.2] 音声特徴量（時間同期済み）
                         };
 
                     } else {
@@ -28350,43 +28429,159 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                     if (!this.being || !this.being.videoGenerator) {
                         return this.generateTextContent(concepts);
                     }
-                    
-                    // v26.6.0: 気分 × 学習概念で動画生成（ConceptBridge）
-                    const mood = this.internalState.getState();
-                    const videoImageHints = this.being.imageAdapter ? extractImageConceptHints(this.being.imageAdapter) : [];
-                    if (videoImageHints.length > 0) {
-                        this.being.addLog('[創作] 動画: 気分 x 概念[' + videoImageHints.slice(0,2).map(h=>h.label).join('・') + ']');
-                    }
-                    const videoResult = await this.being.videoGenerator.generateFromMood(mood, 5, videoImageHints);
-                    
-                    return {
-                        type: 'video',
-                        content: videoResult,
-                        timestamp: Date.now()
-                    };
+                    // 映像と音声を同時生成するgenerateSyncedContentに委譲
+                    return await this.generateSyncedContent(concepts);
                 } catch (error) {
                     console.error('Video generation failed:', error);
                     return this.generateTextContent(concepts);
                 }
             }
-            
+
+            // ================================================================
+            // [v28.2] generateSyncedContent
+            // 映像と音声を同じトークン・同じタイムラインで同時生成
+            //
+            // 流れ：
+            //   全体構成（concepts/causalChain）
+            //   ↓
+            //   トークンごとに映像フレーム + 音声特徴を同時生成
+            //   ↓
+            //   { time, frame, audioFeatures } として束ねる
+            //   ↓
+            //   frames[] + audioTimeline[] が同じtimeで同期
+            // ================================================================
+            async generateSyncedContent(concepts) {
+                try {
+                    const being       = this.being;
+                    const mood        = this.internalState.getState();
+                    const fps         = 6;
+                    const tokenDuration = 2; // トークン1個あたりの秒数
+                    const duration    = Math.max(5, concepts.length * tokenDuration);
+                    const totalFrames = Math.floor(duration * fps);
+
+                    // 映像ヒント（学習済みプロトタイプ）
+                    const videoImageHints = being.imageAdapter
+                        ? extractImageConceptHints(being.imageAdapter)
+                        : [];
+                    // 音声ヒント（学習済みプロトタイプ）
+                    const audioHints = being.audioGenerator
+                        ? extractAudioConceptHints(being.audioGenerator)
+                        : [];
+
+                    if (videoImageHints.length > 0 || audioHints.length > 0) {
+                        being.addLog('[創作] 映像×音声同時生成: ' + concepts.slice(0,3).join('・'));
+                    }
+
+                    // canvas準備（映像用）
+                    const canvas = document.createElement('canvas');
+                    canvas.width  = 1280;
+                    canvas.height = 720;
+                    const ctx = canvas.getContext('2d');
+
+                    const frames        = [];  // 映像フレーム（DataURL[]）
+                    const audioTimeline = [];  // 音声特徴タイムライン
+
+                    // 学習済み視覚統計を一度だけ取り出す
+                    const blendedMood = videoImageHints.length > 0
+                        ? blendHintsIntoMood({ ...mood }, videoImageHints, null)
+                        : mood;
+                    const hints    = blendedMood._imageHints || [];
+                    const hasHints = hints.length > 0;
+
+                    for (let i = 0; i < totalFrames; i++) {
+                        const progress     = i / totalFrames;
+                        const time         = i / fps;
+
+                        // 現在のトークン（概念）を特定
+                        const tokenIdx     = Math.min(
+                            Math.floor(progress * concepts.length),
+                            concepts.length - 1
+                        );
+                        const concept      = concepts[tokenIdx];
+
+                        // ── 映像フレーム生成 ──────────────────────────────
+                        // 感情状態 × 学習済みプロトタイプ × 現在概念でフレームを描画
+                        const bgColor = being.videoGenerator.emotionToColor(blendedMood, progress);
+                        ctx.fillStyle = bgColor;
+                        ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+                        if (hasHints && hints[0] && hints[0].spatialHints) {
+                            // 学習済み視覚パターンで描画
+                            const sp = hints[0].spatialHints;
+                            being.videoGenerator._drawFromSpatialHints &&
+                                being.videoGenerator._drawFromSpatialHints(ctx, sp, canvas.width, canvas.height, progress);
+                        } else {
+                            // フォールバック：概念ベースの図形
+                            const visualEl = being.videoGenerator.conceptToVisual(concept, blendedMood, progress);
+                            being.videoGenerator.drawVisualElement(ctx, visualEl, canvas.width, canvas.height);
+                        }
+
+                        // 概念テキストを描画
+                        ctx.fillStyle = 'rgba(255,255,255,0.85)';
+                        ctx.font      = '42px sans-serif';
+                        ctx.textAlign = 'center';
+                        ctx.fillText(concept, canvas.width / 2, canvas.height - 80);
+
+                        frames.push(canvas.toDataURL('image/jpeg', 0.8));
+
+                        // ── 音声特徴生成（同じtime・同じconcept）────────────
+                        // 学習済み音声プロトタイプ × 感情状態 × 現在概念
+                        const audioHint = audioHints.find(h => h.label === concept)
+                                       || audioHints[tokenIdx % Math.max(1, audioHints.length)]
+                                       || null;
+
+                        const pitchBase   = audioHint ? (audioHint.percept?.pitch_mean    || 0.5) : 0.5;
+                        const energyBase  = audioHint ? (audioHint.percept?.energy_mean   || 0.3) : 0.3;
+                        const tempoBase   = audioHint ? (audioHint.percept?.tempo         || 0.4) : 0.4;
+
+                        // 感情状態でモジュレーション
+                        const pitchMod  = pitchBase  + (mood.joy      || 0) * 0.2 - (mood.tension || 0) * 0.1;
+                        const energyMod = energyBase + (mood.tension  || 0) * 0.3 + (mood.joy     || 0) * 0.1;
+                        const tempoMod  = tempoBase  + (mood.curiosity|| 0) * 0.2;
+
+                        audioTimeline.push({
+                            time,
+                            concept,
+                            pitch_mean:  Math.max(0, Math.min(1, pitchMod)),
+                            energy_mean: Math.max(0, Math.min(1, energyMod)),
+                            tempo:       Math.max(0, Math.min(1, tempoMod)),
+                            brightness:  Math.max(0, Math.min(1, mood.curiosity || 0.3))
+                        });
+                    }
+
+                    being.addLog(`[創作] 映像×音声同期生成完了: ${frames.length}フレーム ${audioTimeline.length}音声ポイント`);
+
+                    return {
+                        type:          'synced_video',
+                        content: {
+                            frames,
+                            fps,
+                            duration,
+                            concepts,
+                            audioTimeline, // 映像と同期した音声特徴タイムライン
+                            description:  `${concepts.slice(0,3).join('・')}を映像×音声で生成 (${duration.toFixed(1)}秒)`
+                        },
+                        timestamp: Date.now()
+                    };
+                } catch (error) {
+                    console.error('generateSyncedContent failed:', error);
+                    return this.generateTextContent(concepts);
+                }
+            }
+
             async generateAudioContent(concepts) {
                 try {
                     if (!this.being || !this.being.audioGenerator) {
                         return this.generateTextContent(concepts);
                     }
-                    
-                    // v26.6.0: 気分 × 学習概念で音声生成（ConceptBridge）
-                    const mood = this.internalState.getState();
-                    const audioHints = extractAudioConceptHints(this.being.audioGenerator);
-                    if (audioHints.length > 0) {
-                        this.being.addLog('[創作] 音声: 気分 x 概念[' + audioHints.slice(0,2).map(h=>h.label).join('・') + ']');
-                    }
-                    const audioResult = await this.being.audioGenerator.generateFromMood(mood, audioHints);
-                    
+                    // 音声単体の場合もgenerateSyncedContentを使う（映像なし版）
+                    const result = await this.generateSyncedContent(concepts);
                     return {
                         type: 'audio',
-                        content: audioResult,
+                        content: {
+                            ...result.content,
+                            audioTimeline: result.content?.audioTimeline || []
+                        },
                         timestamp: Date.now()
                     };
                 } catch (error) {
