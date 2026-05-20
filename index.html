@@ -27522,6 +27522,9 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                 <out>${clip.outPoint}</out>
                 <start>${clip.position}</start>
                 <end>${clip.position + clip.duration}</end>
+                <file>
+                  <pathurl>${clip.asset.path || clip.asset.name}</pathurl>
+                </file>
               </clipitem>
             </track>
             `).join('')}
@@ -27804,6 +27807,7 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                     }));
 
                     // 素材もタイムラインに追加
+                    this.assetManager.selectByTheme(inferredIntent);
                     const selectedAssets = this.assetManager.getSelected();
                     const planResult     = this.cognition.planOperations(
                         selectedAssets.assets, inferredIntent
@@ -36416,9 +36420,16 @@ window.VideoRenderer   = VideoRenderer;
         // ──────────────────────────────────────────────────────
         _snapshot(state) {
             if (!state) return {};
+            const esRaw = state.emotionalState;
+            const esNum = typeof esRaw === 'number' ? esRaw
+                        : esRaw === 'positive'  ? 1.0
+                        : esRaw === 'neutral'   ? 0.5
+                        : esRaw === 'negative'  ? 0.0
+                        : typeof state.joy === 'number' ? state.joy
+                        : 0.5;
             return {
                 conceptCount:   state.conceptCount  || (state.concepts && state.concepts.size) || 0,
-                emotionalState: state.emotionalState || state.joy || 0,
+                emotionalState: esNum,
                 tension:        state.tension || 0,
                 timestamp:      Date.now()
             };
