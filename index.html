@@ -27278,14 +27278,14 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                                 file: file
                             }))
                             .filter(a => a.type !== 'unknown');
-                        return { success: true, count: this.assets.length };
+                        return { success: true, count: this.assets.length, assets: this.assets };
                     }
                     // フォルダパス文字列（シミュレーション fallback）
                     const pcOps = new PCOperationLayer();
                     const result = await pcOps.listFiles(folderPathOrFiles);
                     if (result.success) {
                         this.assets = result.files;
-                        return { success: true, count: this.assets.length };
+                        return { success: true, count: this.assets.length, assets: this.assets };
                     }
                     return { success: false, error: result.error };
                 } catch (error) {
@@ -27653,6 +27653,8 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
 
                     this.isProcessing = true;
                     this.cognition.setIntent(intent);
+                    this.timelineBuilder = new TimelineBuilder();
+                    this.assetManager   = new AssetManager();
                     const being = this.being;
 
                     // ================================================================
@@ -27896,14 +27898,30 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                     if (!this.currentProject) {
                         return { success: false, error: 'No project to export' };
                     }
-                    
-                    // プロジェクトデータをJSON形式で返す
-                    const exportData = JSON.stringify(this.currentProject, null, 2);
-                    
+
+                    const fmt = this.currentProject.project?.format
+                               || this.currentProject.format
+                               || 'premiere';
+
+                    if (fmt === 'premiere' && this.currentProject.xml) {
+                        // Premiere: xml フィールドをそのまま .xml として出力
+                        return {
+                            success: true,
+                            data: this.currentProject.xml,
+                            filename: this.currentProject.filename,
+                            mimeType: 'application/xml'
+                        };
+                    }
+
+                    // Resolve / その他: JSON として出力（フレームは除外してサイズ削減）
+                    const exportable = { ...this.currentProject };
+                    delete exportable.allFrames;
+                    const exportData = JSON.stringify(exportable, null, 2);
                     return {
                         success: true,
                         data: exportData,
-                        filename: this.currentProject.filename
+                        filename: this.currentProject.filename,
+                        mimeType: 'application/json'
                     };
                 } catch (error) {
                     console.error('VideoEditingIntegration.exportProject failed:', error);
@@ -31562,7 +31580,7 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                 
                 if (result.success) {
                     // ダウンロードリンクを作成
-                    const blob = new Blob([result.data], { type: 'application/json' });
+                    const blob = new Blob([result.data], { type: result.mimeType || 'application/json' });
                     const url = URL.createObjectURL(blob);
                     const a = document.createElement('a');
                     a.href = url;
@@ -32085,7 +32103,7 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                 if (modalResults) {
                     if (result.success) {
                         // ② 実際にファイルをダウンロードする処理
-                        const blob = new Blob([result.data], { type: 'application/json' });
+                        const blob = new Blob([result.data], { type: result.mimeType || 'application/json' });
                         const url = URL.createObjectURL(blob);
                         const a = document.createElement('a');
                         a.href = url;
