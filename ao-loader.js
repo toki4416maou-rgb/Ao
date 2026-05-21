@@ -29,6 +29,7 @@
         'ao-pipe1.js',
         'ao-pipe2-3.js',
         'ao-pipe4.js',
+        'ao-pipe5.js',
         'ao-pipe6.js',
         'ao-pipe7.js',
         'ao-optimizer.js',
