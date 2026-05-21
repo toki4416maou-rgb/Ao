@@ -27819,9 +27819,9 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
 
                         let sceneResult = null;
 
-                        if (creator && creator.contentCreator && creator.contentCreator.generateSyncedContent) {
+                        if (creator && creator.generateSyncedContent) {
                             // generateSyncedContentで映像×音声同時生成
-                            sceneResult = await creator.contentCreator.generateSyncedContent(sceneConcepts);
+                            sceneResult = await creator.generateSyncedContent(sceneConcepts);
                         }
 
                         if (sceneResult && sceneResult.content && sceneResult.content.frames) {
