@@ -27278,14 +27278,14 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                                 file: file
                             }))
                             .filter(a => a.type !== 'unknown');
-                        return { success: true, count: this.assets.length, assets: this.assets };
+                        return { success: true, count: this.assets.length };
                     }
                     // フォルダパス文字列（シミュレーション fallback）
                     const pcOps = new PCOperationLayer();
                     const result = await pcOps.listFiles(folderPathOrFiles);
                     if (result.success) {
                         this.assets = result.files;
-                        return { success: true, count: this.assets.length, assets: this.assets };
+                        return { success: true, count: this.assets.length };
                     }
                     return { success: false, error: result.error };
                 } catch (error) {
@@ -27347,17 +27347,14 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
             
             addClip(asset, track = 'video', inPoint = 0, outPoint = null) {
                 try {
-                    const assetDuration = (asset.duration != null && !isNaN(asset.duration))
-                        ? asset.duration : 5;
-                    const resolvedOut = outPoint != null ? outPoint : assetDuration;
                     const clip = {
                         id: `clip_${Date.now()}_${Math.random()}`,
                         asset: asset,
                         track: track,
                         inPoint: inPoint,
-                        outPoint: resolvedOut,
-                        duration: resolvedOut - inPoint,
-                        position: this.tracks[track].reduce((sum, c) => sum + (c.duration || 0), 0)
+                        outPoint: outPoint || asset.duration,
+                        duration: (outPoint || asset.duration) - inPoint,
+                        position: this.tracks[track].reduce((sum, c) => sum + c.duration, 0)
                     };
                     
                     this.tracks[track].push(clip);
@@ -27525,9 +27522,6 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                 <out>${clip.outPoint}</out>
                 <start>${clip.position}</start>
                 <end>${clip.position + clip.duration}</end>
-                <file>
-                  <pathurl>${clip.asset.path || clip.asset.name}</pathurl>
-                </file>
               </clipitem>
             </track>
             `).join('')}
@@ -27653,8 +27647,6 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
 
                     this.isProcessing = true;
                     this.cognition.setIntent(intent);
-                    this.timelineBuilder = new TimelineBuilder();
-                    this.assetManager   = new AssetManager();
                     const being = this.being;
 
                     // ================================================================
@@ -27679,25 +27671,70 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                     being && being.addLog(`[動画編集] ${loadResult.count}素材読み込み完了`);
 
                     // ── STEP2: CIR（因果推論）で要望を推測 ────────────────────
-                    // ファイル名・種類・数からCIRが「どんな動画を作りたいか」を推論
+                    // [v28.2] PIPE5がCIRに記録した感覚データを直接引き出して使う
+                    // ファイル名からではなく感覚値（joy/tension/curiosity/視覚特徴）から推論
                     const cir = being && being.causalInterventionReasoner;
                     let inferredIntent = intent;
                     let intentConcepts = intent ? intent.split(/[\s　、。]+/).filter(t => t.length > 0) : [];
 
-                    if (cir && cir.history.length > 0 && being.concepts) {
-                        // 素材ファイル名から概念を抽出
-                        const assetConcepts = (loadResult.assets || [])
-                            .map(a => a.name || a.filename || '')
-                            .join(' ')
-                            .split(/[\s_\-\.]+/)
-                            .filter(t => t.length > 1 && t.length <= 15);
+                    if (cir && cir.history.length > 0) {
+                        // CIR履歴から「感覚[*]::」で始まるPIPE5の感覚エントリを抽出
+                        const sensoryEntries = cir.history.filter(e =>
+                            e.action && e.action.startsWith('感覚[')
+                        );
 
-                        // CIRで素材概念と過去の因果履歴を照合して要望を推測
-                        for (const concept of assetConcepts.slice(0, 5)) {
-                            const cfResult = cir.counterfactual(concept, 'emotionalState');
-                            if (cfResult && cfResult.confidence > 0.15) {
-                                intentConcepts.push(concept);
-                                being.addLog(`[CIR] 要望推測: 「${concept}」(conf:${(cfResult.confidence*100).toFixed(0)}%)`);
+                        if (sensoryEntries.length > 0) {
+                            // 感覚値の平均を計算して動画の「方向性」を決める
+                            let avgJoy  = 0, avgTension = 0, avgCuriosity = 0;
+                            const fileNames = [];
+
+                            for (const entry of sensoryEntries) {
+                                const sa = entry.stateAfter || {};
+                                avgJoy       += sa.joy       || 0;
+                                avgTension   += sa.tension   || 0;
+                                avgCuriosity += sa.curiosity || 0;
+                                if (sa.fileName) fileNames.push(sa.fileName);
+                            }
+
+                            avgJoy       /= sensoryEntries.length;
+                            avgTension   /= sensoryEntries.length;
+                            avgCuriosity /= sensoryEntries.length;
+
+                            being.addLog(`[PIPE5→CIR] 感覚平均: joy=${avgJoy.toFixed(2)} tension=${avgTension.toFixed(2)} curiosity=${avgCuriosity.toFixed(2)}`);
+
+                            // 感覚値から動画の方向性を概念として抽出
+                            if (avgJoy > 0.6)       intentConcepts.push('明るい');
+                            if (avgTension > 0.6)   intentConcepts.push('緊張感');
+                            if (avgCuriosity > 0.6) intentConcepts.push('探索的');
+                            if (avgJoy < 0.3)       intentConcepts.push('落ち着いた');
+                            if (avgTension < 0.3)   intentConcepts.push('穏やか');
+
+                            // ファイル名からも補助的に概念を抽出（感覚値が優先）
+                            const nameConcepts = fileNames
+                                .map(n => n.replace(/\.[^.]+$/, '')) // 拡張子除去
+                                .flatMap(n => n.split(/[\s_\-\.]+/))
+                                .filter(t => t.length > 1 && t.length <= 15 && /[^\x00-]/.test(t)); // 日本語のみ
+
+                            for (const concept of nameConcepts.slice(0, 5)) {
+                                if (!intentConcepts.includes(concept)) {
+                                    intentConcepts.push(concept);
+                                    being.addLog(`[CIR] ファイル名概念: 「${concept}」`);
+                                }
+                            }
+
+                            // 空間野の感覚データも活用
+                            const bridge = being.sensoryAssetBridge;
+                            if (bridge && bridge._cache) {
+                                for (const [name, summary] of bridge._cache) {
+                                    const cfResult = cir.counterfactual(`感覚[${summary.fileType || 'image'}]::${name}`, 'emotionalState');
+                                    if (cfResult && cfResult.confidence > 0.15) {
+                                        const concept = name.replace(/\.[^.]+$/, '');
+                                        if (!intentConcepts.includes(concept)) {
+                                            intentConcepts.push(concept);
+                                            being.addLog(`[CIR] 感覚推測: 「${concept}」(conf:${(cfResult.confidence*100).toFixed(0)}%)`);
+                                        }
+                                    }
+                                }
                             }
                         }
 
@@ -27782,9 +27819,9 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
 
                         let sceneResult = null;
 
-                        if (creator && creator.generateSyncedContent) {
+                        if (creator && creator.contentCreator && creator.contentCreator.generateSyncedContent) {
                             // generateSyncedContentで映像×音声同時生成
-                            sceneResult = await creator.generateSyncedContent(sceneConcepts);
+                            sceneResult = await creator.contentCreator.generateSyncedContent(sceneConcepts);
                         }
 
                         if (sceneResult && sceneResult.content && sceneResult.content.frames) {
@@ -27812,7 +27849,6 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                     }));
 
                     // 素材もタイムラインに追加
-                    this.assetManager.selectByTheme(inferredIntent);
                     const selectedAssets = this.assetManager.getSelected();
                     const planResult     = this.cognition.planOperations(
                         selectedAssets.assets, inferredIntent
@@ -27898,30 +27934,14 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                     if (!this.currentProject) {
                         return { success: false, error: 'No project to export' };
                     }
-
-                    const fmt = this.currentProject.project?.format
-                               || this.currentProject.format
-                               || 'premiere';
-
-                    if (fmt === 'premiere' && this.currentProject.xml) {
-                        // Premiere: xml フィールドをそのまま .xml として出力
-                        return {
-                            success: true,
-                            data: this.currentProject.xml,
-                            filename: this.currentProject.filename,
-                            mimeType: 'application/xml'
-                        };
-                    }
-
-                    // Resolve / その他: JSON として出力（フレームは除外してサイズ削減）
-                    const exportable = { ...this.currentProject };
-                    delete exportable.allFrames;
-                    const exportData = JSON.stringify(exportable, null, 2);
+                    
+                    // プロジェクトデータをJSON形式で返す
+                    const exportData = JSON.stringify(this.currentProject, null, 2);
+                    
                     return {
                         success: true,
                         data: exportData,
-                        filename: this.currentProject.filename,
-                        mimeType: 'application/json'
+                        filename: this.currentProject.filename
                     };
                 } catch (error) {
                     console.error('VideoEditingIntegration.exportProject failed:', error);
@@ -28645,8 +28665,6 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                         : mood;
                     const hints    = blendedMood._imageHints || [];
                     const hasHints = hints.length > 0;
-                    // emotionToColor は {joy} を期待するが InternalState は {mood} で持つため変換
-                    const moodForColor = { ...blendedMood, joy: blendedMood.joy ?? blendedMood.mood ?? 0 };
 
                     for (let i = 0; i < totalFrames; i++) {
                         const progress     = i / totalFrames;
@@ -28661,7 +28679,7 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
 
                         // ── 映像フレーム生成 ──────────────────────────────
                         // 感情状態 × 学習済みプロトタイプ × 現在概念でフレームを描画
-                        const bgColor = being.videoGenerator.emotionToColor(moodForColor, progress);
+                        const bgColor = being.videoGenerator.emotionToColor(blendedMood, progress);
                         ctx.fillStyle = bgColor;
                         ctx.fillRect(0, 0, canvas.width, canvas.height);
 
@@ -31580,7 +31598,7 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                 
                 if (result.success) {
                     // ダウンロードリンクを作成
-                    const blob = new Blob([result.data], { type: result.mimeType || 'application/json' });
+                    const blob = new Blob([result.data], { type: 'application/json' });
                     const url = URL.createObjectURL(blob);
                     const a = document.createElement('a');
                     a.href = url;
@@ -32103,7 +32121,7 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                 if (modalResults) {
                     if (result.success) {
                         // ② 実際にファイルをダウンロードする処理
-                        const blob = new Blob([result.data], { type: result.mimeType || 'application/json' });
+                        const blob = new Blob([result.data], { type: 'application/json' });
                         const url = URL.createObjectURL(blob);
                         const a = document.createElement('a');
                         a.href = url;
@@ -36443,16 +36461,9 @@ window.VideoRenderer   = VideoRenderer;
         // ──────────────────────────────────────────────────────
         _snapshot(state) {
             if (!state) return {};
-            const esRaw = state.emotionalState;
-            const esNum = typeof esRaw === 'number' ? esRaw
-                        : esRaw === 'positive'  ? 1.0
-                        : esRaw === 'neutral'   ? 0.5
-                        : esRaw === 'negative'  ? 0.0
-                        : typeof state.joy === 'number' ? state.joy
-                        : 0.5;
             return {
                 conceptCount:   state.conceptCount  || (state.concepts && state.concepts.size) || 0,
-                emotionalState: esNum,
+                emotionalState: state.emotionalState || state.joy || 0,
                 tension:        state.tension || 0,
                 timestamp:      Date.now()
             };
