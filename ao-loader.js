@@ -32,6 +32,7 @@
         'ao-pipe5.js',
         'ao-pipe6.js',
         'ao-pipe7.js',
+        'ao-pipe-orchestrator.js',
         'ao-optimizer.js',
         'ao-loader.js',  // 自己保存
     ];

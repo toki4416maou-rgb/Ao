@@ -1826,7 +1826,7 @@ async function _triggerAudioFromDesign(being, design) {
         && being.audioGenerator) {
         setTimeout(() => {
             try { attachPipe6(being); } catch(e) { console.error('[PIPE6] error:', e); }
-        }, 3500);
+        }, 0); // ao-pipe-orchestrator.js が順序を管理するためdelayなし
     } else {
         setTimeout(pollForPipe6, 1000);
     }

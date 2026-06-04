@@ -334,7 +334,7 @@ function _posVariance(token, corpus, avgPos) {
     if (being && statTok) {
         setTimeout(() => {
             try { attachPipe4(being); } catch(e) { console.error('[PIPE4] error:', e); }
-        }, 2500);
+        }, 0); // ao-pipe-orchestrator.js が順序を管理するためdelayなし
     } else {
         setTimeout(pollForPipe4, 1000);
     }

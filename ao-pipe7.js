@@ -585,7 +585,7 @@ function attachPipe7(being) {
             } catch(e) {
                 console.error('[PIPE7] attachPipe7 error:', e);
             }
-        }, 3500); // pipe6(3000ms想定)の後
+        }, 0); // ao-pipe-orchestrator.js が順序を管理するためdelayなし
 
     } else {
         setTimeout(pollForPipe7, 1000);

@@ -552,7 +552,7 @@ function _hookSaveManager(being, conceptGraph) {
             } catch(e) {
                 console.error('[PIPE2/3] attach error:', e);
             }
-        }, 2000); // pipe1(1500ms)の後
+        }, 0); // ao-pipe-orchestrator.js が順序を管理するためdelayなし
 
     } else {
         setTimeout(pollForPipe2and3, 1000);
