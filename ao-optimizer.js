@@ -276,98 +276,21 @@
     window.AoIdleGC = IdleGC;
 
     // ─── 6. チャット競合防止パッチ ─────────────────────────────
-    // handleInput の前後で Scheduler を一時停止し
-    // updateUI などとの競合を防ぐ
+    // Aoのprocess()（チャット処理）の前後でSchedulerを一時停止
     function patchChatProcess(being) {
-        // window.handleInput は index.html 側でグローバル公開済み
-        if (typeof window.handleInput !== 'function') {
-            OPT.log('handleInput が未公開のためパッチをスキップ');
-            return;
-        }
-        if (window.handleInput._optimizerPatched) return;
+        if (!being || !being.process || being._optimizerPatched) return;
 
-        const origHandleInput = window.handleInput;
-        window.handleInput = async function(...args) {
+        const origProcess = being.process.bind(being);
+        being.process = async function(...args) {
             Scheduler.pause();
             try {
-                return await origHandleInput(...args);
+                return await origProcess(...args);
             } finally {
                 Scheduler.resume();
             }
         };
-        window.handleInput._optimizerPatched = true;
-        OPT.log('handleInput 競合防止パッチ適用完了');
-    }
-
-    // ─── 7. TokenClusterEngine._clusterCentroid キャッシュパッチ ──
-    // 毎回全メンバーの共起ベクトルを再計算しているのをキャッシュで回避
-    // メンバーセットが変わったときだけ再計算する
-    function patchClusterCentroid(being) {
-        const tce = being &&
-            being.languageOutputDL &&
-            being.languageOutputDL.languageAcquisition &&
-            being.languageOutputDL.languageAcquisition.tokenClusterEngine;
-        if (!tce) {
-            OPT.log('TokenClusterEngine が未初期化のためcentroidパッチをスキップ');
-            return;
-        }
-        if (tce._centroidCachePatched) return;
-
-        // clusterID → { memberSnapshot: string, centroid: Map }
-        tce._centroidCache = new Map();
-
-        const origClusterCentroid = tce._clusterCentroid.bind(tce);
-        tce._clusterCentroid = function(members) {
-            // メンバーの文字列スナップショットをキーにする
-            // Setの中身が変わっていれば再計算、変わってなければキャッシュを返す
-            const snapshot = Array.from(members).sort().join('\x00');
-            const cached = this._centroidCache.get(snapshot);
-            if (cached) {
-                OPT.stats.memoHits++;
-                return cached;
-            }
-            const centroid = origClusterCentroid(members);
-            // キャッシュサイズ上限（クラスタ数上限100に合わせて200）
-            if (this._centroidCache.size >= 200) {
-                const firstKey = this._centroidCache.keys().next().value;
-                this._centroidCache.delete(firstKey);
-            }
-            this._centroidCache.set(snapshot, centroid);
-            return centroid;
-        };
-
-        // observe() でクラスタが変化したとき該当キャッシュを無効化する
-        // _addCooccur でメンバーが増えうるので、_assignCluster/_reassignCluster をフック
-        const invalidate = (cid) => {
-            if (!cid) return;
-            const members = tce.clusters.get(cid);
-            if (!members) return;
-            const snapshot = Array.from(members).sort().join('\x00');
-            tce._centroidCache.delete(snapshot);
-        };
-
-        const origAssign = tce._assignCluster.bind(tce);
-        tce._assignCluster = function(token) {
-            // 割り当て前の旧クラスタを無効化
-            const oldCid = this.tokenToCluster.get(token);
-            invalidate(oldCid);
-            origAssign(token);
-            // 割り当て後の新クラスタも無効化
-            const newCid = this.tokenToCluster.get(token);
-            invalidate(newCid);
-        };
-
-        const origReassign = tce._reassignCluster.bind(tce);
-        tce._reassignCluster = function(token) {
-            const oldCid = this.tokenToCluster.get(token);
-            invalidate(oldCid);
-            origReassign(token);
-            const newCid = this.tokenToCluster.get(token);
-            invalidate(newCid);
-        };
-
-        tce._centroidCachePatched = true;
-        OPT.log('TokenClusterEngine._clusterCentroid キャッシュパッチ適用完了');
+        being._optimizerPatched = true;
+        OPT.log('チャット競合防止パッチ適用完了');
     }
 
     // ─── 7. Aoへのアタッチ ─────────────────────────────────────
@@ -375,60 +298,17 @@
     function attachOptimizer(being) {
         OPT.log(`v${OPT.version} アタッチ開始`);
 
-        // --- 元のsetIntervalを殺す（二重実行防止）---
-        const toKill = [
-            '_aoIntervalUpdateUI',
-            '_aoIntervalIdentityUI',
-            '_aoIntervalDrift',
-            '_aoIntervalAutonomousThought',
-        ];
-        toKill.forEach(key => {
-            if (window[key]) {
-                clearInterval(window[key]);
-                window[key] = null;
-                OPT.log(`元のsetInterval[${key}]を停止`);
-            }
-        });
-
         // --- Scheduler に既存の500ms処理を登録 ---
         // updateUI（window スコープに存在する）
-        // RAF でラップして DOM 更新をフレームに同期させる
         if (typeof updateUI === 'function') {
-            let _uiRafId = null;
-            Scheduler.register('updateUI', () => {
-                if (_uiRafId) return; // 前フレームの描画が終わってなければスキップ
-                _uiRafId = requestAnimationFrame(() => {
-                    _uiRafId = null;
-                    try { updateUI(); } catch(e) {}
-                });
-            });
-            OPT.log('updateUI → Scheduler + RAF に統合');
+            Scheduler.register('updateUI', updateUI);
+            OPT.log('updateUI → Schedulerに統合');
         }
 
         // _updateIdentityUI
         if (typeof _updateIdentityUI === 'function') {
             Scheduler.register('updateIdentityUI', _updateIdentityUI);
             OPT.log('_updateIdentityUI → Schedulerに統合');
-        }
-
-        // drift（5秒ごと → Schedulerで10tickに1回実行）
-        if (typeof drift === 'function') {
-            let _driftTick = 0;
-            Scheduler.register('drift', () => {
-                _driftTick++;
-                if (_driftTick % 10 === 0) drift(); // 500ms×10 = 5秒相当
-            });
-            OPT.log('drift → Schedulerに統合');
-        }
-
-        // checkAutonomousThought（20秒ごと → 40tickに1回）
-        if (typeof checkAutonomousThought === 'function') {
-            let _autonomousTick = 0;
-            Scheduler.register('autonomousThought', () => {
-                _autonomousTick++;
-                if (_autonomousTick % 40 === 0) checkAutonomousThought(); // 500ms×40 = 20秒相当
-            });
-            OPT.log('checkAutonomousThought → Schedulerに統合');
         }
 
         // SpatialInteractionModel の update
@@ -485,40 +365,10 @@
         // --- チャット競合防止 ---
         patchChatProcess(being);
 
-        // --- _clusterCentroid キャッシュ ---
-        patchClusterCentroid(being);
-
         // --- IdleGC にAoの大きなMapを登録 ---
         if (being.concepts)       IdleGC.register(being.concepts,       ['_map', 'cache']);
         if (being.episodicMemory) IdleGC.register(being.episodicMemory, ['episodes']);
         if (being.worldView)      IdleGC.register(being.worldView,      ['cache']);
-
-        // --- ao-worker.js との連携: 保存中は Scheduler を一時停止 ---
-        // Worker 保存が走っている間に updateUI が競合するのを防ぐ
-        function connectWorkerSavePause() {
-            const sm = being.saveManager;
-            if (!sm || sm._optimizerConnected) return false;
-            const origSave = sm.save.bind(sm);
-            sm.save = async function(...args) {
-                Scheduler.pause();
-                try {
-                    return await origSave(...args);
-                } finally {
-                    Scheduler.resume();
-                }
-            };
-            sm._optimizerConnected = true;
-            OPT.log('SaveManager ↔ Scheduler 連携パッチ適用（保存中は停止）');
-            return true;
-        }
-        // ao-worker.js のパッチ後（3秒後）に接続を試みる
-        setTimeout(() => {
-            if (!connectWorkerSavePause()) {
-                const pollSave = setInterval(() => {
-                    if (connectWorkerSavePause()) clearInterval(pollSave);
-                }, 1000);
-            }
-        }, 3000);
 
         // --- 起動 ---
         Scheduler.start();

@@ -1279,7 +1279,15 @@ async function aoActivateAfterPaypal() {
                 await sm.save();
             })()" style="padding:0.2rem 0.6rem;background:rgba(168,85,247,0.3);border:1px solid rgba(168,85,247,0.6);border-radius:9999px;color:#e9d5ff;font-size:0.7rem;cursor:pointer;white-space:nowrap;">💾 今すぐ保存</button>
             <div class="metabolism-indicator" id="metabolismStatus">代謝: 待機</div>
-            <div class="gpu-indicator" id="gpuStatus">感覚野: 待機中</div>
+            <div class="gpu-indicator" id="gpuStatus" style="cursor: pointer;" onclick="(function(){
+                const ao = window.ao;
+                if (!ao) return;
+                ao.activeVisionVersion = (ao.activeVisionVersion === 'v2') ? 'v1' : 'v2';
+                const btn = document.getElementById('gpuStatus');
+                const ok = !!(ao.activeVisionVersion === 'v2' ? window.aoGPU_v2 : window.aoGPU);
+                btn.textContent = `感覚野: ${ao.activeVisionVersion.toUpperCase()} ${ok ? 'ON' : 'OFF'}`;
+                console.log(`[VisionMode] Active vision version switched to: ${ao.activeVisionVersion}`);
+            })()">感覚野: V2 ON</div>
             <div class="turns-indicator" id="turnsStatus">対話: 0回</div>
             <div class="sage-indicator" id="sageStatus" style="background: rgba(167, 139, 250, 0.2); color: #a78bfa; border: 1px solid rgba(167, 139, 250, 0.3); padding: 0.25rem 0.75rem; border-radius: 9999px; font-size: 0.75rem; white-space: nowrap;">成長度: 0.0</div>
             <div class="status" id="status">存在中</div>
@@ -7760,16 +7768,16 @@ MemoryLimitsConfig._instance = null;
             }
 
             // テキストラベル + 画像チャンネルのペアを観測
-            observe(label, hueHist, brightnessGrid, spatialVec) {
+            observe(label, hueHist, brightnessGrid, spatialVec, confidence = 1.0) {
                 if (!label || label.length === 0) return;
                 // スペース・句読点で分割して各トークンを更新
                 const tokens = label.split(/[　、。\s,.!?！？]+/).filter(t => t.length > 0 && t.length <= 15);
                 for (const token of tokens) {
-                    this._updateToken(token, hueHist, brightnessGrid, spatialVec);
+                    this._updateToken(token, hueHist, brightnessGrid, spatialVec, confidence);
                 }
             }
 
-            _updateToken(token, hueHist, brightnessGrid, spatialVec) {
+            _updateToken(token, hueHist, brightnessGrid, spatialVec, confidence = 1.0) {
                 if (!this.hypotheses.has(token)) {
                     this.hypotheses.set(token, {
                         hue:        { sum: new Array(8).fill(0),    sumSq: new Array(8).fill(0),    samples: 0 },
@@ -7783,9 +7791,9 @@ MemoryLimitsConfig._instance = null;
                 }
 
                 const hyp = this.hypotheses.get(token);
-                this._accumulate(hyp.hue,        hueHist);
-                this._accumulate(hyp.brightness,  brightnessGrid);
-                this._accumulate(hyp.spatial,     spatialVec);
+                this._accumulate(hyp.hue,        hueHist, confidence);
+                this._accumulate(hyp.brightness,  brightnessGrid, confidence);
+                this._accumulate(hyp.spatial,     spatialVec, confidence);
 
                 // 最低サンプル数に達したら仮説を評価
                 if (hyp.hue.samples >= this.MIN_SAMPLES) {
@@ -7793,11 +7801,11 @@ MemoryLimitsConfig._instance = null;
                 }
             }
 
-            _accumulate(ch, vec) {
-                ch.samples++;
+            _accumulate(ch, vec, weight = 1.0) {
+                ch.samples += weight;
                 for (let i = 0; i < vec.length && i < ch.sum.length; i++) {
-                    ch.sum[i]   += vec[i];
-                    ch.sumSq[i] += vec[i] * vec[i];
+                    ch.sum[i]   += vec[i] * weight;
+                    ch.sumSq[i] += vec[i] * vec[i] * weight;
                 }
             }
 
@@ -8499,7 +8507,7 @@ MemoryLimitsConfig._instance = null;
             // ---- [v27.0新規] 仮説テーブル更新: featuresオブジェクトから3チャンネルを分離して観測 ----
             // これにより「赤」「明るい」「丸い」等を
             // どのチャンネル（色/明度/形状）に帰属するかをボトムアップに学習する
-            learnHypothesis(label, features, spatialState = null) {
+            learnHypothesis(label, features, spatialState = null, confidence = 1.0) {
                 try {
                     if (!features || !features.hue_hist) return;
                     const hueHist        = features.hue_hist;          //    8次元
@@ -8524,7 +8532,7 @@ MemoryLimitsConfig._instance = null;
                         Math.min(1.0, spatialState.textureReliability || 0)  // [v28.1] 質感信頼度
                     ] : [0, 0, 0, 0, 0, 0];
 
-                    this.hypothesisTable.observe(label, hueHist, brightnessGrid, [...spatialVec, ...poseVec]);
+                    this.hypothesisTable.observe(label, hueHist, brightnessGrid, [...spatialVec, ...poseVec], confidence);
 
                     // [v28.2] 視覚野と言語野を分離して空間野→因果野で統合
                     // 視覚特徴量を概念のgroundingに「visual」由来として保存
@@ -23426,6 +23434,7 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                 this.videoAdapter.spatialState = this.spatialState;
                 // [v28.2] ImageAdapterにbeing参照を注入（視覚×言語統合用）
                 this.imageAdapter.being = this;
+                this.activeVisionVersion = 'v2'; // デフォルトで V2 (幾何・レイヤー処理) を有効化
 
                 this.languageOutputDL = new LanguageOutputDL();
 
@@ -24600,7 +24609,8 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                             this.spatialState?.updateTexture?.(label,
                                 imageResult.features.gabor_features || [],
                                 imageResult.features.textureReliability || 0);
-                            this.imageAdapter.learnHypothesis(label, imageResult.features, _ps1);
+                            const v2Conf = imageResult.v2_spatial_eval ? imageResult.v2_spatial_eval.confidence : 1.0;
+                            this.imageAdapter.learnHypothesis(label, imageResult.features, _ps1, v2Conf);
                             activeLabels.push(label);
                             const hStats = this.imageAdapter.hypothesisTable.getStats();
                             this.addLog(`視覚野: 「${label}」仮説更新 [定義:${hStats.defined}/${hStats.total}]`);
@@ -24615,7 +24625,8 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                                 this.spatialState?.updateTexture?.(topConcept,
                                     imageResult.features.gabor_features || [],
                                     imageResult.features.textureReliability || 0);
-                                this.imageAdapter.learnHypothesis(topConcept, imageResult.features, _ps2);
+                                const v2Conf = imageResult.v2_spatial_eval ? imageResult.v2_spatial_eval.confidence : 1.0;
+                                this.imageAdapter.learnHypothesis(topConcept, imageResult.features, _ps2, v2Conf);
                             }
                             activeLabels.push(topConcept);
                         }
@@ -30773,13 +30784,14 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
             logDiv.scrollTop = logDiv.scrollHeight;
             
             const gpuStatus = document.getElementById('gpuStatus');
+            const version = (ao.activeVisionVersion || 'v1').toUpperCase();
             if (ao.languageInputDL.processing || ao.languageOutputDL.processing || 
                 ao.imageAdapter.processing || ao.audioAdapter.processing ||
                 ao.videoAdapter.processing || ao.videoGenerator.processing) {
-                gpuStatus.textContent = '感覚野: 処理中';
+                gpuStatus.textContent = `感覚野(${version}): 処理中`;
                 gpuStatus.style.background = 'rgba(59, 130, 246, 0.4)';
             } else {
-                gpuStatus.textContent = '感覚野: 待機中';
+                gpuStatus.textContent = `感覚野(${version}): 待機中`;
                 gpuStatus.style.background = 'rgba(59, 130, 246, 0.2)';
             }
             

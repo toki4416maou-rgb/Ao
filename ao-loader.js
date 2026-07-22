@@ -19,18 +19,21 @@
     const DB_NAME    = 'ao-cache';
     const DB_VERSION = 1;
     const STORE_NAME = 'files';
-    const BASE_URL   = 'https://ao-entity.com/';
+    const BASE_URL   = (location.hostname === 'localhost' || location.hostname === '127.0.0.1' || location.protocol === 'file:') ? './' : 'https://ao-entity.com/';
 
     // キャッシュするJSファイル一覧
     const JS_FILES = [
         'ao-gpu.js',
+        'ao-gpu-v2.js',
         'ao-worker.js',
         'ao-neural.js',
         'ao-pipe1.js',
         'ao-pipe2-3.js',
         'ao-pipe4.js',
         'ao-pipe5.js',
+        'ao-pipe5-v2.js',
         'ao-pipe6.js',
+        'ao-pipe6-v2.js',
         'ao-pipe7.js',
         'ao-pipe-orchestrator.js',
         'ao-optimizer.js',
