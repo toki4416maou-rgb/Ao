@@ -26,6 +26,7 @@
         'ao-gpu.js',
         'ao-gpu-v2.js',
         'ao-spatial-renderer.js',
+        'ao-output-exporter.js',
         'ao-memory-optimizer.js',
         'ao-worker.js',
         'ao-neural.js',

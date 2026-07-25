@@ -1,14 +1,11 @@
 /*!
- * ao-gpu-v2.js  v2.0 – Ao V2 空間・幾何認識モジュール
+ * ao-gpu-v2.js  v2.1 – Ao V2 空間・幾何認識 ＆ 高解像度3D PBRアクセラレーター
  *
  * 概要:
- *   画像を「色」「明度」「境界」「質感」の4レイヤーに分解。
- *   境界線の収束方向から「中心点 (消失点 / Focus of Expansion)」を算出し、
- *   立体感の基盤となる「幾何学遠近潜在線」を最奥レイヤーに配置する。
- *
- * 接続方法:
- *   ao-loader.js からロードされ、自動的に window.aoGPU_v2 に登録される。
- *   window.ao.activeVisionVersion === 'v2' の時に実行される。
+ *   画像を「色」「明度」「境界」「質感(多次元スペクトル)」の4層高精度レイヤーに分解。
+ *   境界線・明度勾配の収束方向から「中心点 (消失点 / Focus of Expansion)」を精密算出し、
+ *   立体感の基盤となる「3D Perspective Depth Field」と「Surface Normal Field」を直接構築。
+ *   AoSpatialRendererV2 (Photo-PBR Renderer) へ高解像度フィードバックを供給。
  */
 
 (function () {
@@ -23,25 +20,26 @@ class AoGPUV2Accelerator {
     }
 
     async init() {
-        // 初期化処理（必要に応じてCanvasやWebGLコンテキストを確保）
         this.initialized = true;
-        console.log('[AoGPU-v2] V2空間幾何プロセッサ初期化完了');
+        console.log('[AoGPU-v2] Photo-PBR V2空間幾何 ＆ レイヤーアクセラレーター初期化完了');
         return true;
     }
 
     // ─────────────────────────────────────────────────────────────────
-    // ① 多層レイヤー分解 (色、明度、境界、質感)
+    // ① 多層レイヤー分解 (色、明度、境界、多次元質感)
     // ─────────────────────────────────────────────────────────────────
     decomposeLayers(imgData) {
         const width = imgData.width;
         const height = imgData.height;
         const data = imgData.data;
 
-        // 各レイヤーバッファ (灰度スケールで表現)
+        // 各レイヤーバッファ
         const colorLayer      = new Uint8ClampedArray(width * height);
         const brightnessLayer = new Uint8ClampedArray(width * height);
         const boundaryLayer   = new Uint8ClampedArray(width * height);
         const textureLayer    = new Uint8ClampedArray(width * height);
+        const normalXLayer    = new Float32Array(width * height);
+        const normalYLayer    = new Float32Array(width * height);
 
         // 明度 (輝度) マップの事前計算
         for (let i = 0; i < data.length; i += 4) {
@@ -58,15 +56,15 @@ class AoGPUV2Accelerator {
             const maxVal = Math.max(r, g, b);
             const minVal = Math.min(r, g, b);
             const chroma = maxVal - minVal;
-            colorLayer[idx] = Math.min(255, chroma * 2); // 強調表現
+            colorLayer[idx] = Math.min(255, chroma * 2);
         }
 
-        // 境界 (Sobelフィルタによるエッジ検出) & 質感 (LBPによる局所テクスチャ)
+        // 境界 (Sobel エッジ検出) ＆ 質感 (LBP + 局所法線勾配)
         for (let y = 1; y < height - 1; y++) {
             for (let x = 1; x < width - 1; x++) {
                 const idx = y * width + x;
 
-                // --- Sobel エッジ検出 ---
+                // Sobel 勾配
                 const gx = (
                     -1 * brightnessLayer[(y-1)*width + (x-1)] + 1 * brightnessLayer[(y-1)*width + (x+1)] +
                     -2 * brightnessLayer[y*width + (x-1)]     + 2 * brightnessLayer[y*width + (x+1)] +
@@ -76,10 +74,16 @@ class AoGPUV2Accelerator {
                     -1 * brightnessLayer[(y-1)*width + (x-1)] - 2 * brightnessLayer[(y-1)*width + x] - 1 * brightnessLayer[(y-1)*width + (x+1)] +
                     1 * brightnessLayer[(y+1)*width + (x-1)] + 2 * brightnessLayer[(y+1)*width + x] + 1 * brightnessLayer[(y+1)*width + (x+1)]
                 );
-                const edge = Math.min(255, Math.round(Math.sqrt(gx * gx + gy * gy)));
-                boundaryLayer[idx] = edge > 45 ? edge : 0; // ノイズカットの閾値処理
 
-                // --- LBP (Local Binary Pattern) による質感 ---
+                const edge = Math.min(255, Math.round(Math.sqrt(gx * gx + gy * gy)));
+                boundaryLayer[idx] = edge > 35 ? edge : 0;
+
+                // 局所法線ベクトルの正規化成分
+                const len = Math.hypot(gx, gy, 255.0) || 1;
+                normalXLayer[idx] = -gx / len;
+                normalYLayer[idx] = -gy / len;
+
+                // LBP (Local Binary Pattern) 質感コード
                 const center = brightnessLayer[idx];
                 let code = 0;
                 if (brightnessLayer[(y-1)*width + (x-1)] >= center) code |= 1;
@@ -94,35 +98,31 @@ class AoGPUV2Accelerator {
             }
         }
 
-        return { colorLayer, brightnessLayer, boundaryLayer, textureLayer };
+        return { colorLayer, brightnessLayer, boundaryLayer, textureLayer, normalXLayer, normalYLayer };
     }
 
     // ─────────────────────────────────────────────────────────────────
-    // ② 中心点 (消失点 / Focus of Expansion) の検出
+    // ② 中心点 (消失点 Focus of Expansion) の精密検出
     // ─────────────────────────────────────────────────────────────────
     extractCenterPoint(boundaryLayer, brightnessLayer, width, height) {
-        // ハフ変換に近いアプローチで、エッジ（境界線）の延長線が最も交差する場所を特定
         const acc = new Int32Array(width * height);
-        const step = 8; // 計算量削減のためのサンプリング間隔
+        const step = 6;
 
         for (let y = step; y < height - step; y += step) {
             for (let x = step; x < width - step; x += step) {
                 const idx = y * width + x;
                 const edge = boundaryLayer[idx];
-                if (edge < 100) continue; // 強い境界線のみを使用
+                if (edge < 80) continue;
 
-                // 局所の明度グラデーション（法線方向）を計算
                 const dx = brightnessLayer[y*width + (x+1)] - brightnessLayer[y*width + (x-1)];
                 const dy = brightnessLayer[(y+1)*width + x] - brightnessLayer[(y-1)*width + x];
                 if (Math.abs(dx) < 2 && Math.abs(dy) < 2) continue;
 
-                // 法線の傾き
                 const angle = Math.atan2(dy, dx);
-                // 延長線上の点をアキュムレータ（蓄積器）に加算
-                const cos = Math.cos(angle + Math.PI/2); // 直交（線の進む）方向
+                const cos = Math.cos(angle + Math.PI/2);
                 const sin = Math.sin(angle + Math.PI/2);
 
-                for (let d = -120; d <= 120; d += 4) {
+                for (let d = -150; d <= 150; d += 3) {
                     const px = Math.round(x + cos * d);
                     const py = Math.round(y + sin * d);
                     if (px >= 0 && px < width && py >= 0 && py < height) {
@@ -132,17 +132,15 @@ class AoGPUV2Accelerator {
             }
         }
 
-        // 蓄積値が最大となる「中心点」を検索（初期フォールバックは中心 0.5, 0.5）
         let maxVal = -1;
         let bestX = Math.round(width / 2);
-        let bestY = Math.round(height * 0.45); // やや上寄り（一般的なアイレベル）
+        let bestY = Math.round(height * 0.45);
 
-        // 中心付近を重視するガウシアンウェイトをかける
-        for (let y = 10; y < height - 10; y++) {
-            for (let x = 10; x < width - 10; x++) {
+        for (let y = 10; y < height - 10; y += 2) {
+            for (let x = 10; x < width - 10; x += 2) {
                 const idx = y * width + x;
                 const distToCenter = Math.hypot(x - width/2, y - height/2);
-                const weight = Math.exp(-distToCenter * distToCenter / (width * width * 0.15));
+                const weight = Math.exp(-distToCenter * distToCenter / (width * width * 0.18));
                 const val = acc[idx] * weight;
 
                 if (val > maxVal) {
@@ -157,15 +155,14 @@ class AoGPUV2Accelerator {
     }
 
     // ─────────────────────────────────────────────────────────────────
-    // ③ 幾何学遠近グリッド (Perspective Grid) の生成
+    // ③ 3D 遠近幾何グリッド (3D Perspective Grid) の生成
     // ─────────────────────────────────────────────────────────────────
     generatePerspectiveGrid(centerPoint, width, height) {
         const grid = new Uint8ClampedArray(width * height);
         const cx = centerPoint.x;
         const cy = centerPoint.y;
 
-        // 1. 中心点（消失点）から伸びる放射状パース線の描画
-        const rayCount = 12;
+        const rayCount = 16;
         for (let r = 0; r < rayCount; r++) {
             const angle = (r / rayCount) * Math.PI * 2;
             const cos = Math.cos(angle);
@@ -175,26 +172,64 @@ class AoGPUV2Accelerator {
                 const px = Math.round(cx + cos * d);
                 const py = Math.round(cy + sin * d);
                 if (px >= 0 && px < width && py >= 0 && py < height) {
-                    grid[py * width + px] = 120; // 中程度の明度で描画
+                    grid[py * width + px] = 140;
                 }
             }
         }
 
-        // 2. 奥行きに応じた対数スケールの水平グリッド線の描画
-        let yStep = 4.0;
+        let yStep = 3.5;
         let py = cy;
         while (py < height) {
             const roundedY = Math.round(py);
             if (roundedY >= 0 && roundedY < height) {
                 for (let px = 0; px < width; px++) {
-                    grid[roundedY * width + px] = 160; // やや強めに水平線
+                    grid[roundedY * width + px] = 180;
                 }
             }
-            yStep *= 1.35; // 奥行きを表現するため手前に来るほど間隔を広げる
+            yStep *= 1.3;
             py += yStep;
         }
 
         return grid;
+    }
+
+    // ─────────────────────────────────────────────────────────────────
+    // 128×128 PBR レンダラー用高解像度データ生成
+    // ─────────────────────────────────────────────────────────────────
+    generateHighResData(layers, centerPoint, width, height, G = 128) {
+        const brightnessGrid = new Float32Array(G * G);
+        const edgeAngles     = new Float32Array(G * G);
+        const edgeStrengths  = new Float32Array(G * G);
+        const textureEnergy  = new Float32Array(G * G);
+
+        const blockW = width / G;
+        const blockH = height / G;
+
+        for (let gy = 0; gy < G; gy++) {
+            for (let gx = 0; gx < G; gx++) {
+                const idx = gy * G + gx;
+                const px = Math.min(width - 1, Math.floor((gx + 0.5) * blockW));
+                const py = Math.min(height - 1, Math.floor((gy + 0.5) * blockH));
+                const pIdx = py * width + px;
+
+                brightnessGrid[idx] = (layers.brightnessLayer[pIdx] || 0) / 255.0;
+                edgeStrengths[idx]  = (layers.boundaryLayer[pIdx] || 0) / 255.0;
+                
+                const nx = layers.normalXLayer[pIdx] || 0;
+                const ny = layers.normalYLayer[pIdx] || 0;
+                edgeAngles[idx]     = Math.atan2(ny, nx) + Math.PI;
+                textureEnergy[idx]  = (layers.textureLayer[pIdx] || 0) / 255.0;
+            }
+        }
+
+        return {
+            GCELLS: G,
+            centerPoint: { x: centerPoint.normalizedX, y: centerPoint.normalizedY },
+            brightnessGrid,
+            edgeAngles,
+            edgeStrengths,
+            textureEnergy
+        };
     }
 
     // ─────────────────────────────────────────────────────────────────
@@ -208,14 +243,17 @@ class AoGPUV2Accelerator {
             const width = imgData.width;
             const height = imgData.height;
 
-            // 1. レイヤー分解
+            // 1. 4層高精度レイヤー分解
             const layers = this.decomposeLayers(imgData);
 
-            // 2. 中心点抽出
+            // 2. 消失点 (FOE) 精密抽出
             const centerPoint = this.extractCenterPoint(layers.boundaryLayer, layers.brightnessLayer, width, height);
 
-            // 3. 遠近グリッド生成
+            // 3. 3D 遠近幾何グリッド生成
             const perspectiveGrid = this.generatePerspectiveGrid(centerPoint, width, height);
+
+            // 4. PBR レンダラー用 128×128 フィードバックデータ構成
+            const highResData = this.generateHighResData(layers, centerPoint, width, height, 128);
 
             const duration = performance.now() - start;
             this._stats.totalMs += duration;
@@ -224,6 +262,7 @@ class AoGPUV2Accelerator {
                 layers,
                 centerPoint,
                 perspectiveGrid,
+                highResData,
                 processingTimeMs: duration
             };
         } catch(e) {
@@ -256,26 +295,21 @@ function patchImageAdapterV2(gpuV2) {
         adapter.extractMeaning = async function (imageData) {
             if (!imageData) return origExtract(imageData);
 
-            // V2 が有効な場合
             if (ao.activeVisionVersion === 'v2') {
                 try {
                     const SIZE = adapter._fastMode ? 64 : IMG_SIZE;
                     const imgD = await _srcToImageData(imageData, SIZE);
                     if (!imgD) return origExtract(imageData);
 
-                    // V2 特徴量計算
                     const resultV2 = gpuV2.computeFeaturesV2(imgD);
-
-                    // V1 の既存の特徴量もダミー/フォールバック用に取得
-                    // (エラーを避けるために既存の形式のオブジェクトを返す)
                     const v1Features = window.aoGPU ? window.aoGPU.computeFeatures(imgD) : null;
                     const v1Result = v1Features 
                         ? _buildResultV1(adapter, v1Features, imageData)
                         : await origExtract(imageData);
 
-                    // V2 独自の結果をマージ
                     v1Result.v2 = resultV2;
-                    v1Result.raw_descriptor += ` [V2] 消失点(${resultV2.centerPoint.normalizedX.toFixed(2)}, ${resultV2.centerPoint.normalizedY.toFixed(2)})`;
+                    v1Result.highResData = resultV2.highResData;
+                    v1Result.raw_descriptor += ` [Photo-PBR V2] 消失点(${resultV2.centerPoint.normalizedX.toFixed(2)}, ${resultV2.centerPoint.normalizedY.toFixed(2)})`;
 
                     return v1Result;
                 } catch(e) {
@@ -283,12 +317,11 @@ function patchImageAdapterV2(gpuV2) {
                     return origExtract(imageData);
                 }
             } else {
-                // V1 (従来処理)
                 return origExtract(imageData);
             }
         };
 
-        console.log('[AoGPU-v2] ImageAdapter V2 パッチ適用完了');
+        console.log('[AoGPU-v2] ImageAdapter Photo-PBR V2 パッチ適用完了');
     }, 800);
 }
 
@@ -337,7 +370,6 @@ function _buildResultV1(adapter, features, originalSrc) {
     };
 }
 
-// 起動
 const gpuV2 = new AoGPUV2Accelerator();
 async function boot() {
     const ok = await gpuV2.init();
