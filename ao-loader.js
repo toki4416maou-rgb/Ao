@@ -25,6 +25,8 @@
     const JS_FILES = [
         'ao-gpu.js',
         'ao-gpu-v2.js',
+        'ao-spatial-renderer.js',
+        'ao-memory-optimizer.js',
         'ao-worker.js',
         'ao-neural.js',
         'ao-pipe1.js',
@@ -35,7 +37,6 @@
         'ao-pipe6.js',
         'ao-pipe6-v2.js',
         'ao-pipe7.js',
-        'ao-pipe-orchestrator.js',
         'ao-optimizer.js',
         'ao-loader.js',  // 自己保存
     ];

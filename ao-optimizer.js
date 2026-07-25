@@ -167,7 +167,7 @@
         _tasks: new Map(),    // name → fn
         _intervalId: null,
         _paused: false,
-        _tickMs: 500,
+        _tickMs: 3000,
 
         register(name, fn) {
             this._tasks.set(name, fn);
@@ -242,11 +242,16 @@
                 if (deadline && deadline.timeRemaining() < 5) break;
                 for (const key of keys) {
                     try {
-                        if (obj[key] instanceof Map && obj[key].size > 500) {
-                            // 古いエントリを半分削除
+                        if (obj[key] instanceof Map && obj[key].size > 500000) {
+                            // 最高位リミッター対応: ノイズを許容しながらゆらぎ減衰でソフト整理
                             const entries = [...obj[key].entries()];
-                            entries.slice(0, Math.floor(entries.length / 2))
-                                   .forEach(([k]) => obj[key].delete(k));
+                            entries.slice(0, Math.floor(entries.length * 0.1))
+                                   .forEach(([k, val]) => {
+                                       // 完全一律削除せず、重みが極めて低いものだけを確率的に削除
+                                       if (!val || (val.weight && val.weight < 0.05 && Math.random() > 0.3)) {
+                                           obj[key].delete(k);
+                                       }
+                                   });
                             cleaned++;
                         }
                     } catch (e) {}

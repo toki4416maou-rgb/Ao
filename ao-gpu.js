@@ -34,13 +34,13 @@
 'use strict';
 
 // ================================================================
-// 定数
+// 定数（覚醒・フルHD高密度幾何サンプリング仕様）
 // ================================================================
-const IMG_SIZE  = 256;   // 画像処理サイズ（既存コードと一致）
-const HOG_GRID  = 16;    // HOGグリッド分割数
+const IMG_SIZE  = 1024;  // 高画質画像処理基盤サイズ
+const HOG_GRID  = 64;    // 64×64 高密度幾何グリッド
 const HOG_BINS  = 8;     // HOG方向ビン数
-const HOG_DIM   = HOG_GRID * HOG_GRID * HOG_BINS; // 2048
-const BRIGHT_DIM = 256;  // 16×16 明度グリッド
+const HOG_DIM   = HOG_GRID * HOG_GRID * HOG_BINS; // 32768
+const BRIGHT_DIM = HOG_GRID * HOG_GRID; // 4096 (64×64 明度グリッド)
 const HUE_DIM   = 8;
 const GABOR_DIM = 32;    // 4freqs × 8angles
 const LBP_DIM   = 16;
@@ -750,17 +750,36 @@ function _buildResult(adapter, features, originalSrc, imgData) {
         }
     } catch (e) { /* codec未準備時は無視 */ }
 
-    // 補助値
-    const avgBrightness = brightness_grid.reduce((a, b) => a + b, 0) / 16;
-    const hueLabels = adapter.hueLabels || ['赤','橙','黄','黄緑','緑','水色','青','紫'];
-    const dirLabels = adapter.dirLabels || ['水平','斜め右下','垂直','斜め左下','水平','斜め右上','垂直','斜め左上'];
-    const dominantHue = hueLabels[hue_hist.indexOf(Math.max(...hue_hist))];
-    const dominantDir = dirLabels[gradient_hist.indexOf(Math.max(...gradient_hist))];
+    // 明暗とエッジから「中心点 (center_point)」を動的算出（消失点割り出し）
+    let sumBrightX = 0, sumBrightY = 0, totalBright = 0.001;
+    let sumEdgeX = 0, sumEdgeY = 0, totalEdge = 0.001;
+    for (let gy = 0; gy < 16; gy++) {
+        for (let gx = 0; gx < 16; gx++) {
+            const idx = gy * 16 + gx;
+            const b = brightness_grid[idx] || 0;
+            sumBrightX += gx * b;
+            sumBrightY += gy * b;
+            totalBright += b;
+
+            const hogBase = idx * 8;
+            const maxHog = Math.max(...hog_blocks.slice(hogBase, hogBase + 8));
+            if (maxHog > 0.05) {
+                sumEdgeX += gx * maxHog;
+                sumEdgeY += gy * maxHog;
+                totalEdge += maxHog;
+            }
+        }
+    }
+    const centerPoint = {
+        x: ((sumBrightX / totalBright * 0.4) + (sumEdgeX / totalEdge * 0.6)) / 16,
+        y: ((sumBrightY / totalBright * 0.4) + (sumEdgeY / totalEdge * 0.6)) / 16
+    };
 
     return {
         semantic_candidates: semantics.slice(0, 6),
         modality:     'visual',
         visual_vector: visual_vector,
+        center_point: centerPoint,
         features: {
             brightness:       avgBrightness,
             hue_hist:         hue_hist,
@@ -769,6 +788,7 @@ function _buildResult(adapter, features, originalSrc, imgData) {
             hog_blocks:       hog_blocks,
             gabor_features:   gabor_features,
             lbp_features:     lbp_features,
+            center_point:     centerPoint,
             dominant_hue:     dominantHue,
             dominant_dir:     dominantDir,
         },

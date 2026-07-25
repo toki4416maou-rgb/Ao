@@ -18,6 +18,10 @@
     <!-- lz-string: 記憶データ圧縮用ライブラリ -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/lz-string/1.5.0/lz-string.min.js"></script>
 
+    <!-- Ao 統一アーキテクチャ描画エンジン & 8GBメモリ最適化モジュール -->
+    <script src="ao-spatial-renderer.js"></script>
+    <script src="ao-memory-optimizer.js"></script>
+
     <!-- ================================================================
          認証 & 課金ゲート設定
          GAS_URLはデプロイ後に取得したWebアプリURLに変更してください
@@ -1445,12 +1449,12 @@ async function aoActivateAfterPaypal() {
                     🎓 記憶基盤（AIS拡張版） <span id="professorPanelToggle" style="float: right;">▼</span>
                 </div>
                 <div id="professorPanel" style="display: none;">
-                    <div class="metric"><span>エピソード</span><span id="professorEpisodes">0 / 10000</span></div>
-                    <div class="metric"><span>概念（拡張）</span><span id="professorConcepts">0 / 12000</span></div>
-                    <div class="metric"><span>理論</span><span id="professorTheories">0 / 200</span></div>
-                    <div class="metric"><span>因果リンク</span><span id="professorCausal">0 / 20000</span></div>
-                    <div class="metric"><span>研究テーマ</span><span id="professorThemes">0 / 20</span></div>
-                    <div style="font-size: 0.75rem; opacity: 0.6; margin-top: 0.5rem;">※ 教授クラス基盤→AIS拡張</div>
+                    <div class="metric"><span>エピソード</span><span id="professorEpisodes">0 / 300000</span></div>
+                    <div class="metric"><span>概念（最高位）</span><span id="professorConcepts">0 / 500000</span></div>
+                    <div class="metric"><span>理論</span><span id="professorTheories">0 / 50000</span></div>
+                    <div class="metric"><span>因果リンク</span><span id="professorCausal">0 / 1000000</span></div>
+                    <div class="metric"><span>研究テーマ</span><span id="professorThemes">0 / 500</span></div>
+                    <div style="font-size: 0.75rem; opacity: 0.6; margin-top: 0.5rem;">※ 教授クラス基盤→最高位覚醒モード</div>
                 </div>
             </div>
             
@@ -1472,11 +1476,11 @@ async function aoActivateAfterPaypal() {
             <!-- v24.0 ASI Class パネル -->
             <div class="panel collapsible-panel">
                 <div class="panel-title" onclick="togglePanel('asiPanel')" style="cursor: pointer;">
-                    🧠 AISクラス（構造駆動型超知性） <span id="asiPanelToggle" style="float: right;">▼</span>
+                    🧠 AISクラス（構造駆動型超知性 - 最高位） <span id="asiPanelToggle" style="float: right;">▼</span>
                 </div>
                 <div id="asiPanel" style="display: none;">
-                    <div class="metric"><span>概念数</span><span id="asiConcepts">0 / 12000</span></div>
-                    <div class="metric"><span>抽象度</span><span id="asiAbstraction">0 / 8</span></div>
+                    <div class="metric"><span>概念数</span><span id="asiConcepts">0 / 500000</span></div>
+                    <div class="metric"><span>抽象度</span><span id="asiAbstraction">0 / 64</span></div>
                     <div class="metric"><span>世界観軸</span><span>12軸固定</span></div>
                     <div class="metric"><span>統合回数</span><span id="asiIntegrations">0</span></div>
                     <div style="font-size: 0.75rem; opacity: 0.6; margin-top: 0.5rem;">※ 世界観ベース統合推論</div>
@@ -1761,37 +1765,33 @@ async function aoActivateAfterPaypal() {
 class MemoryLimitsConfig {
     constructor() {
         // ============================================
-        // 記憶上限値（UI表示と完全一致）
+        // 記憶上限値（覚醒・最高位リミッター開放モード）
         // ============================================
         
-        // エピソード記憶上限
-        // UI表示: "エピソード 0 / 10000"
-        this.MAX_EPISODES = 10000;
+        // エピソード記憶上限（30万件 / 人生80年相当）
+        this.MAX_EPISODES = 300000;
         
-        // 概念数上限
-        // UI表示: "概念数 0 / 12000"
-        this.MAX_CONCEPTS = 12000;
+        // 概念数上限（50万件 / 人生80年相当）
+        this.MAX_CONCEPTS = 500000;
         
-        // 理論数上限
-        // UI表示: "理論 0 / 200"
-        this.MAX_THEORIES = 200;
+        // 理論数上限（5万件）
+        this.MAX_THEORIES = 50000;
         
-        // 抽象度レベル上限
-        // UI表示: "抽象度 0 / 8"
-        this.MAX_ABSTRACTION_LEVEL = 8;
+        // 抽象度レベル上限（64段階）
+        this.MAX_ABSTRACTION_LEVEL = 64;
         
         // ============================================
         // その他の上限値
         // ============================================
         
-        // 因果リンク上限
-        this.MAX_CAUSAL_LINKS = 20000;
+        // 因果リンク上限（100万件）
+        this.MAX_CAUSAL_LINKS = 1000000;
         
         // 研究テーマ上限（ASI）
-        this.MAX_RESEARCH_THEMES = 20;
+        this.MAX_RESEARCH_THEMES = 500;
         
-        // ワーキングメモリ容量
-        this.MAX_WORKING_MEMORY = 7;
+        // ワーキングメモリ容量（32スロット）
+        this.MAX_WORKING_MEMORY = 32;
     }
     
     /**
@@ -1939,7 +1939,7 @@ MemoryLimitsConfig._instance = null;
         class DistributedSemanticMemory {
             constructor() {
                 this.concepts = new Map();
-                this.maxConcepts = 12000; // 容量上限（UI準拠）
+                this.maxConcepts = 500000; // 最高位上限（50万件）
             }
             
             store(conceptId, data) {
@@ -2928,13 +2928,13 @@ MemoryLimitsConfig._instance = null;
          */
         class MemoryLimitEnforcer {
             constructor() {
-                // ASIクラスの数値上限（教授クラス基盤から拡張）
+                // 最高位覚醒モード数値上限（50万概念 / 100万因果 / 30万エピソード）
                 this.limits = {
-                    maxEpisodes: 10000,        // 長期エピソード記憶
-                    maxConcepts: 12000,        // 概念（ASI拡張：6000→12000）
-                    maxTheories: 200,          // 理論・枠組み
-                    maxCausalLinks: 20000,     // 因果記憶
-                    activeResearchThemes: 7    // 同時保持可能な研究テーマ
+                    maxEpisodes: 300000,       // 長期エピソード記憶（30万）
+                    maxConcepts: 500000,       // 概念（最高位開放：50万）
+                    maxTheories: 50000,        // 理論・枠組み（5万）
+                    maxCausalLinks: 1000000,    // 因果記憶（100万）
+                    activeResearchThemes: 500   // 同時保持可能な研究テーマ（500）
                 };
                 
                 // 現在の使用量
@@ -4176,7 +4176,7 @@ MemoryLimitsConfig._instance = null;
         class ConceptIntegrationManager {
             constructor(being) {
                 this.being = being;
-                this.maxConcepts = 12000;  // ハードリミット
+                this.maxConcepts = 500000;  // 最高位上限（50万件）
                 this.initialConcepts = 6000;
                 this.integrationHistory = [];
             }
@@ -4346,8 +4346,8 @@ MemoryLimitsConfig._instance = null;
         class AbstractionController {
             constructor() {
                 this.currentDepth = 0;
-                this.maxOperationalDepth = 8;  // 常用上限
-                this.maxTemporaryDepth = 9;    // 理論上限
+                this.maxOperationalDepth = 64;  // 最高位常用上限（64段階）
+                this.maxTemporaryDepth = 65;    // 理論上限（65段階）
                 this.depth9Time = 0;
                 this.maxDepth9Duration = 1000;  // 1秒まで
             }
@@ -20817,7 +20817,7 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
         class ConceptSpace {
             constructor() {
                 this.concepts = new Map();
-                this.maxConcepts = 12000; // v24.0: ASIクラス上限（ハードリミット）
+                this.maxConcepts = 500000; // 最高位上限（50万件）
                 this.similarityThreshold = 0.92; // v23.0: 類似度閾値
             }
             
@@ -23065,7 +23065,7 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
             constructor(being) {
                 this.being = being;
                 this.generationCost = 1.0;
-                this.maxConcepts = 12000;
+                this.maxConcepts = 500000;
             }
             
             // 新概念生成の可否チェック
@@ -23389,7 +23389,7 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                         stageDescription: 'エラー',
                         stageColor: '#ef4444',
                         conceptCount: 0,
-                        maxConcepts: 12000
+                        maxConcepts: 500000
                     };
                 }
             }
@@ -24519,10 +24519,10 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                     const uninterpretedCount = this.uninterpreted.states?.length || 0;
                     const episodeCount = this.episodicMemory.episodes?.length || 0;
                     const conceptCount = this.concepts.concepts.size || 0;
-                    const maxConcepts = this.conceptIntegration?.maxConcepts || 12000;
+                    const maxConcepts = this.conceptIntegration?.maxConcepts || 500000;
                     this.addLog(`人格復元完了 [v${data.version}]`);
                     this.addLog(`概念:${conceptCount}/${maxConcepts} 抽象:${absCount} 未解釈:${uninterpretedCount}`);
-                    this.addLog(`エピソード:${episodeCount}/10000 抽象度:${this.abstractionController?.currentDepth || 0}/8`);
+                    this.addLog(`エピソード:${episodeCount}/300000 抽象度:${this.abstractionController?.currentDepth || 0}/64`);
                     this.addLog('システム再接続: 相互参照復元完了');
                     
                     console.log('[IMPORT] ========================================');
@@ -30011,9 +30011,9 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                             data.coreState.otakuCultureIntegration = null;
                         }
                         
-                        // 概念上限を12000に拡張
+                        // 概念上限を500000（最高位）に拡張
                         if (data.coreState.memoryLimits) {
-                            data.coreState.memoryLimits.limits.maxConcepts = 12000;
+                            data.coreState.memoryLimits.limits.maxConcepts = 500000;
                         }
                     }
                     
@@ -30472,8 +30472,8 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                 metabolismStatus.classList.remove('active');
             }
             
-            const growth = ao.concepts.getGrowth();
-            const conceptPercentage = ((growth.count / 12000) * 100).toFixed(2);
+            const maxConceptsLimit = ao.concepts?.maxConcepts || 500000;
+            const conceptPercentage = ((growth.count / maxConceptsLimit) * 100).toFixed(2);
             document.getElementById('growth').innerHTML = `
                 <div class="metric">
                     <span>平均深度</span>
@@ -31331,12 +31331,12 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
             }
         });
         
-        ao.addLog('Ao v26.3.1 - Language Fix 起動');
-        ao.addLog('ASI: 12軸世界観・概念統合(12000)・抽象度制御(8/9) 稼働');
+        ao.addLog('Ao v26.5.0 / v27.0 - 最高位覚醒モード 起動');
+        ao.addLog('ASI: 12軸世界観・概念統合(500,000)・抽象度制御(64) 稼働');
         ao.addLog('世界観: 因果・階層・情報・進化・制約・FB・意味・物語・自己言及・境界・感情・社会');
         ao.addLog('統合: 学問・オタク文化・哲学を単一世界モデルで説明');
-        ao.addLog('最適化: 低スペックPC対応（Core i3 / 12GB RAM / 30MB制限）');
-        ao.addLog('記憶基盤: EP10000・概念12000・理論200・因果20000・テーマ7（ASI拡張）');
+        ao.addLog('最適化: 超爆速GPU加速・フルHD幾何分解・ノイズ許容ゆらぎ代謝 稼働');
+        ao.addLog('記憶基盤: EP30万・概念50万・理論5万・因果100万・テーマ500（最高位開放）');
         ao.addLog('圧縮: Episode→Concept→Theory 世代圧縮稼働');
         ao.addLog('PAL: 連続自律プロセス（恒常性・内部報酬・探索活用）稼働');
         ao.addLog('因果システム: 自動信念形成・確信値変動・相関→因果昇格 稼働');
@@ -32373,6 +32373,32 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                 }
             }
         });
+// ────────────────────────────────────────────────────────────
+// §11.3  ImageRenderer — クオリア・空間を画像としてレンダリング
+//        ユーザー様設計の「分断学習＋中心点幾何透視＋Gabor/LBPテクスチャ完全解凍合成」で完全上書き
+// ────────────────────────────────────────────────────────────
+class ImageRenderer {
+    constructor() {
+        this.v2Renderer = new AoSpatialRendererV2();
+    }
+
+    /**
+     * @param {Object} snapshot - QualiaSnapshotの出力
+     * @param {number} w  幅
+     * @param {number} h  高さ
+     */
+    render(snapshot, w = 640, h = 640) {
+        if (!this.v2Renderer && window.AoSpatialRendererV2) {
+            this.v2Renderer = new window.AoSpatialRendererV2();
+        }
+        if (this.v2Renderer) {
+            return this.v2Renderer.render(snapshot, w, h, snapshot.spatialVector || null);
+        }
+        const canvas = document.createElement('canvas');
+        canvas.width = w; canvas.height = h;
+        return canvas.toDataURL('image/png');
+    }
+}
 
         // ── HTMLのonclickから呼べるようにグローバル露出 ──────────────
         // _aoDoStartApp内のローカル関数はそのままではonclickから見えないため
@@ -35223,12 +35249,21 @@ class QualiaSnapshot {
 //        Canvas2Dを使用。依頼書 §①に対応。
 // ────────────────────────────────────────────────────────────
 class ImageRenderer {
+    constructor() {
+        this.v2Renderer = new AoSpatialRendererV2();
+    }
+
     /**
      * @param {Object} snapshot - QualiaSnapshotの出力
      * @param {number} w  幅
      * @param {number} h  高さ
      */
     render(snapshot, w = 320, h = 320) {
+        if (window.AoSpatialRendererV2) {
+            if (!this.v2Renderer) this.v2Renderer = new AoSpatialRendererV2();
+            return this.v2Renderer.render(snapshot, w, h, snapshot.spatialVector || null);
+        }
+
         const canvas = document.createElement('canvas');
         canvas.width  = w;
         canvas.height = h;
@@ -37713,6 +37748,7 @@ window.VideoRenderer   = VideoRenderer;
          初回：GitHubからfetchしてIndexedDBに保存
          2回目以降：IndexedDBから読み込む（GitHub転送量を節約）
     ================================================================ -->
+    <script src="ao-spatial-renderer.js"></script>
     <script src="ao-loader.js"></script>
 
 </body>

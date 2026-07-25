@@ -14,7 +14,7 @@
 (function () {
 'use strict';
 
-const IMG_SIZE = 256;
+const IMG_SIZE = 1024; // 高解像度・高幾何パースペクティブ対応基盤
 
 class AoGPUV2Accelerator {
     constructor() {

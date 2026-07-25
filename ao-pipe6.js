@@ -1951,8 +1951,32 @@ async function _triggerVideoFromDesign(being, design, gpuBlender) {
     }
 }
 
-// spatialベクトルをcanvasに描画（ImageGeneratorと同じ方式）
+// spatialベクトルをcanvasに描画（ユーザー様設計：統一アーキテクチャエンジンで完全上書き描画）
 function _drawSpatialToCanvas(ctx, spatial, W, H, wave, alpha) {
+    if (window.AoSpatialRendererV2) {
+        if (!window._aoSpatialRendererV2Inst) {
+            window._aoSpatialRendererV2Inst = new window.AoSpatialRendererV2();
+        }
+        ctx.save();
+        ctx.globalAlpha = alpha;
+
+        const snap = {
+            spatial: { x: 0.5 + Math.sin(wave || 0) * 0.05, y: 0.45 + Math.cos(wave || 0) * 0.05 },
+            attributes: { hue: (spatial[0] || 0) * 45, saturation: 0.8, brightness: 0.6, roughness: 0.35 },
+            saliency: [{ concept: '空間焦点', saliency: 0.9 }],
+            intent: { purpose: 'pipe6_video_render', granularity: 'fine' }
+        };
+
+        const dataUrl = window._aoSpatialRendererV2Inst.render(snap, W, H, spatial);
+        const img = new Image();
+        img.onload = () => {
+            ctx.drawImage(img, 0, 0, W, H);
+            ctx.restore();
+        };
+        img.src = dataUrl;
+        return;
+    }
+
     const GCELLS = 16;
     const cw = W / GCELLS, ch = H / GCELLS;
     const hueHist        = spatial.slice(0, 8);

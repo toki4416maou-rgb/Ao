@@ -328,8 +328,7 @@ function _startStateLoop() {
                     saving: !!window._aoIsSaving   // ao-worker.js 側でセットするフラグ
                 }
             });
-        }, 100); // 100ms ごと（10fps で十分）
-
+        }, 500); // 500ms ごとに拡大して超軽量化
     }, 500);
 }
 
