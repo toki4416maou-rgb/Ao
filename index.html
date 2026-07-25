@@ -5345,6 +5345,7 @@ MemoryLimitsConfig._instance = null;
                 // HOGクラスタリング（量子化）: HOGベクトルを16クラスタに圧縮
                 this.N_CLUSTERS  = 16;
                 this.clusterCentroids = []; // 学習で更新される重心
+                this.clusterExemplars = new Map(); // ⭐ 【根本解決】特徴量を捨てる問題を解消するプロトタイプ/エグゼンプラー記憶
             }
 
             // ── HOGベクトルを最近傍クラスタIDに量子化 ──────────────
@@ -5365,8 +5366,8 @@ MemoryLimitsConfig._instance = null;
                 return best;
             }
 
-            // ── 重心をオンライン更新（移動平均） ─────────────────────
-            _updateCentroid(clusterId, hogVec) {
+            // ── 重心をオンライン更新（移動平均） ＆ エグゼンプラー記憶保持 ────
+            _updateCentroid(clusterId, hogVec, sceneData = null) {
                 if (!this.clusterCentroids[clusterId]) {
                     this.clusterCentroids[clusterId] = new Array(hogVec.length).fill(0);
                 }
@@ -5374,6 +5375,20 @@ MemoryLimitsConfig._instance = null;
                 const lr = 0.05; // 学習率
                 for (let i = 0; i < Math.min(hogVec.length, c.length); i++) {
                     c[i] = (1 - lr) * c[i] + lr * hogVec[i];
+                }
+
+                // ⭐ 【高次元記憶保持】ガベージコレクションで消える前に最高精度特徴をExemplarとして保存
+                if (sceneData || hogVec.length > 0) {
+                    const existing = this.clusterExemplars.get(clusterId);
+                    if (!existing || Math.random() < 0.2) {
+                        this.clusterExemplars.set(clusterId, {
+                            hog: [...hogVec],
+                            brightness: sceneData?.brightness || 0.5,
+                            complexity: sceneData?.complexity || 0.5,
+                            meanings: sceneData?.meanings || [],
+                            timestamp: Date.now()
+                        });
+                    }
                 }
             }
 
@@ -5420,8 +5435,6 @@ MemoryLimitsConfig._instance = null;
             }
 
             // ── メインエントリ: scenes[] → VideoToken[] ──────────────
-            // scenes: VideoAdapter._scenes から取得
-            // visIdentities: VisIdentityManager から取得（optional）
             parse(scenes, visIdentities = null) {
                 if (!scenes || scenes.length < 2) return [];
 
@@ -5429,7 +5442,7 @@ MemoryLimitsConfig._instance = null;
                 const clusterIds = scenes.map(sc => {
                     const hog = sc.features ? sc.features.hog_blocks || [] : [];
                     const cl  = this._quantize(hog);
-                    this._updateCentroid(cl, hog);
+                    this._updateCentroid(cl, hog, sc);
                     return cl;
                 });
 
@@ -5442,20 +5455,17 @@ MemoryLimitsConfig._instance = null;
 
                 for (let i = 1; i < clusterIds.length; i++) {
                     if (this.totalPairs < this.MIN_PAIRS_FOR_STATS) {
-                        // コールドスタート: HOG類似度が低い＝境界
                         const hogA = scenes[i-1].features ? scenes[i-1].features.hog_blocks || [] : [];
                         const hogB = scenes[i].features   ? scenes[i].features.hog_blocks   || [] : [];
                         const sim  = this._hogCosSim(hogA, hogB);
                         if (sim < 0.6) boundaries.add(i);
                     } else {
-                        // 統計蓄積後: PMI + 分岐エントロピー
                         const bond   = this._calcPMI(clusterIds[i-1], clusterIds[i]);
                         const branch = this._calcBranchEntropy(clusterIds[i-1]);
                         const score  = branch - bond;
                         if (score > this.BOUNDARY_THRESHOLD) boundaries.add(i);
                     }
 
-                    // identity変化も境界（分岐エントロピー相当の補強）
                     if (visIdentities) {
                         const idA = visIdentities[i-1];
                         const idB = visIdentities[i];
@@ -5473,7 +5483,6 @@ MemoryLimitsConfig._instance = null;
                     const seg   = scenes.slice(start, end);
                     if (seg.length === 0) continue;
 
-                    // セグメント内の代表概念（meaningsの多数決）
                     const conceptCount = new Map();
                     seg.forEach(sc => {
                         (sc.meanings || []).forEach(m => {
@@ -5485,16 +5494,19 @@ MemoryLimitsConfig._instance = null;
                         .slice(0, 3)
                         .map(([c]) => c);
 
-                    // セグメントの代表クラスタ（最頻）
                     const segClusters = clusterIds.slice(start, end);
                     const clFreq = new Map();
                     segClusters.forEach(cl => clFreq.set(cl, (clFreq.get(cl) || 0) + 1));
                     const dominantCluster = [...clFreq.entries()].sort((a,b)=>b[1]-a[1])[0]?.[0] ?? 0;
 
+                    // ⭐ 【記憶接続】トークンに失われないエグゼンプラー視覚特徴量を紐付け
+                    const exemplar = this.clusterExemplars.get(dominantCluster) || null;
+
                     tokens.push({
                         surface:         concepts.join('・') || `cluster_${dominantCluster}`,
                         concepts,
                         cluster:         dominantCluster,
+                        visualFeatures:  exemplar ? exemplar.hog : (this.clusterCentroids[dominantCluster] || []),
                         timeStart:       seg[0].time,
                         timeEnd:         seg[seg.length - 1].time,
                         frameCount:      seg.length,
@@ -5508,7 +5520,6 @@ MemoryLimitsConfig._instance = null;
                 return tokens;
             }
 
-            // ── HOGコサイン類似度（内部用）────────────────────────────
             _hogCosSim(a, b) {
                 if (!a.length || !b.length) return 0;
                 let dot=0, mA=0, mB=0;
@@ -5523,7 +5534,8 @@ MemoryLimitsConfig._instance = null;
                     clusterFreq: Array.from(this.clusterFreq.entries()),
                     totalPairs:  this.totalPairs,
                     totalClusters: this.totalClusters,
-                    clusterCentroids: this.clusterCentroids
+                    clusterCentroids: this.clusterCentroids,
+                    clusterExemplars: Array.from(this.clusterExemplars.entries()) // ⭐ 保存
                 };
             }
             importState(data) {
@@ -5533,6 +5545,7 @@ MemoryLimitsConfig._instance = null;
                 this.totalPairs    = data.totalPairs || 0;
                 this.totalClusters = data.totalClusters || 0;
                 this.clusterCentroids = data.clusterCentroids || [];
+                this.clusterExemplars = new Map(data.clusterExemplars || []); // ⭐ ロード
             }
         }
 
