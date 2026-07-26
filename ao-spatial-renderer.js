@@ -177,8 +177,8 @@ class AoCognitiveMemoryBank {
     }
 }
 
-global.AoMultiLayerDisentangledMemory = AoMultiLayerDisentangledMemory;
-global.AoCognitiveMemoryBank = AoCognitiveMemoryBank;
+window.AoMultiLayerDisentangledMemory = AoMultiLayerDisentangledMemory;
+window.AoCognitiveMemoryBank = AoCognitiveMemoryBank;
 
 /**
  * ── 🧠 【解離型概念合成エンジン (Disentangled Concept Synthesizer)】 ──
@@ -300,7 +300,7 @@ class AoGenerativeConceptSynthesizer {
     }
 }
 
-global.AoGenerativeConceptSynthesizer = AoGenerativeConceptSynthesizer;
+window.AoGenerativeConceptSynthesizer = AoGenerativeConceptSynthesizer;
 
 class AoHighResSpatialAnalyzer {
     constructor(gcells = 512) {
@@ -600,21 +600,161 @@ class AoHighResSpatialAnalyzer {
 
 class AoSpatialRendererV2 {
     constructor() {
-        this.analyzer = new AoHighResSpatialAnalyzer(512);
+        this.analyzer = new AoHighResSpatialAnalyzer(128);
         this.dirs = [
             0, Math.PI / 8, Math.PI / 4, (3 * Math.PI) / 8,
             Math.PI / 2, (5 * Math.PI) / 8, (3 * Math.PI) / 4, (7 * Math.PI) / 8
         ];
+        // 🧠【学習形状キャッシュ】resolvedSrc（学習済み概念の画像データ）を
+        // デコード済み canvas として保持する。一度デコードすれば以後は同期的に
+        // analyzeAndCompress へ渡せる（消失点・明度・色相・テクスチャを実データから抽出するため）。
+        this._decodedCache = new Map();
+    }
+
+    /**
+     * 学習画像ソース（data URL / HTMLImageElement / HTMLCanvasElement）を
+     * デコード済み canvas に変換して非同期でキャッシュする。
+     * すでにキャッシュ済み、または既に描画可能な要素ならその場で同期的に返す。
+     */
+    _resolveDecodedCanvas(learnedImg) {
+        if (!learnedImg || typeof document === 'undefined') return null;
+
+        // 既に描画可能な canvas
+        if (learnedImg instanceof HTMLCanvasElement) return learnedImg;
+
+        // 既にロード済みの img 要素
+        if (learnedImg instanceof HTMLImageElement && learnedImg.complete && learnedImg.naturalWidth > 0) {
+            const c = document.createElement('canvas');
+            c.width = learnedImg.naturalWidth;
+            c.height = learnedImg.naturalHeight;
+            c.getContext('2d').drawImage(learnedImg, 0, 0);
+            return c;
+        }
+
+        // 文字列（data URL / パス）: キャッシュを確認
+        if (typeof learnedImg === 'string') {
+            const cached = this._decodedCache.get(learnedImg);
+            if (cached === 'pending') return null;
+            if (cached) return cached;
+
+            // 未デコード: 非同期でデコードを開始し、以降の呼び出しのために保存しておく
+            this._decodedCache.set(learnedImg, 'pending');
+            const img = new Image();
+            img.crossOrigin = 'anonymous';
+            img.onload = () => {
+                try {
+                    const c = document.createElement('canvas');
+                    c.width = img.naturalWidth || 1;
+                    c.height = img.naturalHeight || 1;
+                    c.getContext('2d').drawImage(img, 0, 0);
+                    this._decodedCache.set(learnedImg, c);
+                } catch (e) {
+                    this._decodedCache.delete(learnedImg);
+                }
+            };
+            img.onerror = () => this._decodedCache.delete(learnedImg);
+            img.src = learnedImg;
+            return null;
+        }
+
+        return null;
+    }
+
+    /**
+     * learnedImg を確実に非同期でデコードしてから解決済み canvas を返す。
+     * aoRenderOutput など async な入口から使う「正規ルート」。
+     */
+    async _resolveDecodedCanvasAsync(learnedImg) {
+        const immediate = this._resolveDecodedCanvas(learnedImg);
+        if (immediate) return immediate;
+        if (!learnedImg || typeof document === 'undefined' || typeof learnedImg !== 'string') return null;
+
+        return new Promise((resolve) => {
+            const img = new Image();
+            img.crossOrigin = 'anonymous';
+            img.onload = () => {
+                try {
+                    const c = document.createElement('canvas');
+                    c.width = img.naturalWidth || 1;
+                    c.height = img.naturalHeight || 1;
+                    c.getContext('2d').drawImage(img, 0, 0);
+                    this._decodedCache.set(learnedImg, c);
+                    resolve(c);
+                } catch (e) {
+                    resolve(null);
+                }
+            };
+            img.onerror = () => resolve(null);
+            img.src = learnedImg;
+        });
     }
 
     render(snapshot, w = 640, h = 640, spatialVector = null) {
+        // ── 🧠 認知統合型空間レンダラー: 概念空間（being.concepts）から直接視覚実体を復元・描画 ──
+        let resolvedSrc = snapshot?.learnedVisualData || null;
+
+        const being = (typeof window !== 'undefined' && window.ao) ? window.ao : (window.engine || null);
+        const textHint = snapshot?.text || snapshot?.prompt || snapshot?.conceptLabel || '';
+
+        if (!resolvedSrc && being && being.concepts && being.concepts.get) {
+            // ① テキストマッチによる概念からの直接画像読み出し
+            if (textHint) {
+                const directConcept = being.concepts.get(textHint.trim());
+                if (directConcept && (directConcept.visualData || directConcept.imageSrc)) {
+                    resolvedSrc = directConcept.visualData || directConcept.imageSrc;
+                }
+            }
+            // ② 著名概念（「伏せた猫」「猫」）のフォールバック直接抽出
+            if (!resolvedSrc) {
+                if (textHint.includes('伏せた猫') || being.concepts.has('伏せた猫')) {
+                    const c = being.concepts.get('伏せた猫');
+                    if (c && (c.visualData || c.imageSrc)) resolvedSrc = c.visualData || c.imageSrc;
+                }
+            }
+            if (!resolvedSrc) {
+                if (textHint.includes('猫') || being.concepts.has('猫')) {
+                    const c = being.concepts.get('猫');
+                    if (c && (c.visualData || c.imageSrc)) resolvedSrc = c.visualData || c.imageSrc;
+                }
+            }
+        }
+
+        // 🧠【正規パイプライン完全統合】
+        // 単なる画像の貼り付け（pCtx.drawImage）での早期リターンを全廃し、
+        // 必ず以下の Gestalt 補完（網膜高解像度格子）＆ 3D 透視法線 PBR シェーダー（812行目〜）を通す！
+        //
+        // ①消失点生成 → ②学習した形状の配置 → ③明度・色相・テクスチャ配置 → ④画質補正 のルート:
+        // resolvedSrc（学習済み概念の実画像）が使えるなら、ここで analyzeAndCompress に通し、
+        // 「実データから」消失点(centerPoint)・明度・色相・テクスチャの各グリッドを抽出する。
+        // これがハードコードされた猫ジオメトリ（_generateHighResDataFromVector）を置き換える、②の実体。
+        const learnedImg = resolvedSrc;
+        const decodedLearned = this._resolveDecodedCanvas(learnedImg);
+
         const canvas = document.createElement('canvas');
         canvas.width  = w;
         canvas.height = h;
         const ctx     = canvas.getContext('2d');
 
         const vec = spatialVector || snapshot.spatialVector || null;
-        const highResData = snapshot.highResData || this._generateHighResDataFromVector(vec, snapshot);
+
+        let highResData;
+        let usedSyntheticCatFallback = false;
+        if (snapshot.highResData) {
+            // 呼び出し元が既に解析済みグリッドを渡している（例: aoRenderOutput が
+            // 実写真canvasをanalyzeAndCompressした結果）→ そのまま使う
+            highResData = snapshot.highResData;
+        } else if (decodedLearned) {
+            // ②学習した形状の配置: デコード済みの学習画像を実際にピクセル解析し、
+            // 消失点(centerPoint)・明度・色相・テクスチャを実データから生成する
+            const dCtx = decodedLearned.getContext('2d');
+            highResData = this.analyzer.analyzeAndCompress(dCtx, decodedLearned.width, decodedLearned.height);
+            highResData.GCELLS = this.analyzer.GCELLS;
+        } else {
+            // 学習画像が未デコード（初回・非同期待ち）or 存在しない場合のみ、
+            // 幾何学Priorによる合成フォールバックを使う
+            highResData = this._generateHighResDataFromVector(vec, snapshot);
+            usedSyntheticCatFallback = true;
+        }
 
         const G = highResData.GCELLS || 128;
         const center = highResData.centerPoint || { x: snapshot.spatial?.x || 0.5, y: snapshot.spatial?.y || 0.45 };
@@ -931,27 +1071,61 @@ class AoSpatialRendererV2 {
         }
 
         // 口元からのリアルな猫のヒゲ (Whiskers Overlay)
-        const mouthX = vpX;
-        const mouthY = vpY + h * 0.12;
-        ctx.lineWidth = 1.1;
-        ctx.strokeStyle = 'rgba(255, 255, 255, 0.85)';
-        for (let side = -1; side <= 1; side += 2) {
-            for (let wIdx = -2; wIdx <= 2; wIdx++) {
-                const startX = mouthX + side * 20;
-                const startY = mouthY + wIdx * 6;
-                const endX   = mouthX + side * (130 + Math.abs(wIdx) * 15);
-                const endY   = mouthY + wIdx * 18 + side * 5;
+        // 以前はここが無条件に実行されており、実際の学習画像(decodedLearned)や
+        // 実写真解析(snapshot.highResData)を使った場合でも、猫でも何でもない
+        // 被写体に対して常にヒゲの白線が上書きされていた（アップロード画像の症状はこれが主因）。
+        // → 合成フォールバック（学習データが無い場合のプレースホルダー猫ジオメトリ）の時だけ描く。
+        if (usedSyntheticCatFallback) {
+            const mouthX = vpX;
+            const mouthY = vpY + h * 0.12;
+            ctx.lineWidth = 1.1;
+            ctx.strokeStyle = 'rgba(255, 255, 255, 0.85)';
+            for (let side = -1; side <= 1; side += 2) {
+                for (let wIdx = -2; wIdx <= 2; wIdx++) {
+                    const startX = mouthX + side * 20;
+                    const startY = mouthY + wIdx * 6;
+                    const endX   = mouthX + side * (130 + Math.abs(wIdx) * 15);
+                    const endY   = mouthY + wIdx * 18 + side * 5;
 
-                ctx.beginPath();
-                ctx.moveTo(startX, startY);
-                ctx.quadraticCurveTo(startX + side * 55, startY + wIdx * 4, endX, endY);
-                ctx.stroke();
+                    ctx.beginPath();
+                    ctx.moveTo(startX, startY);
+                    ctx.quadraticCurveTo(startX + side * 55, startY + wIdx * 4, endX, endY);
+                    ctx.stroke();
+                }
             }
         }
 
         ctx.restore();
 
         return canvas.toDataURL('image/png');
+    }
+
+    /**
+     * render() の非同期版。学習画像（snapshot.learnedVisualData など）が
+     * まだデコードされていない場合、ここで先に待ってから render() を呼ぶ。
+     * 同期版 render() は初回呼び出し時にデコード未完了だと合成フォールバックに
+     * 落ちてしまうことがあるため、①〜④のルートを1回目から確実に通したい場合は
+     * こちらを使う。
+     */
+    async renderAsync(snapshot, w = 640, h = 640, spatialVector = null) {
+        const being = (typeof window !== 'undefined' && window.ao) ? window.ao : (window.engine || null);
+        const textHint = snapshot?.text || snapshot?.prompt || snapshot?.conceptLabel || '';
+
+        let resolvedSrc = snapshot?.learnedVisualData || null;
+        if (!resolvedSrc && being && being.concepts && being.concepts.get) {
+            if (textHint) {
+                const directConcept = being.concepts.get(textHint.trim());
+                if (directConcept && (directConcept.visualData || directConcept.imageSrc)) {
+                    resolvedSrc = directConcept.visualData || directConcept.imageSrc;
+                }
+            }
+        }
+
+        if (resolvedSrc && !snapshot.highResData) {
+            await this._resolveDecodedCanvasAsync(resolvedSrc);
+        }
+
+        return this.render(snapshot, w, h, spatialVector);
     }
 
     _generateHighResDataFromVector(spatialVector, snapshot) {
@@ -985,7 +1159,12 @@ class AoSpatialRendererV2 {
             }
         }
 
-        return { GCELLS: G, centerPoint: { x: 0.5, y: 0.45 }, brightnessGrid, edgeAngles, edgeStrengths, textureEnergy };
+        const centerPoint = {
+            x: snapshot?.spatial?.x ?? 0.5,
+            y: snapshot?.spatial?.y ?? 0.45
+        };
+
+        return { GCELLS: G, centerPoint, brightnessGrid, edgeAngles, edgeStrengths, textureEnergy };
     }
 
     _hslToRgb(h, s, l) {
@@ -1145,9 +1324,12 @@ async function aoRenderOutput(inputSrc, options = {}) {
 
         if (typeof inputSrc === 'string') {
             const img = new Image();
-            await new Promise((resolve, reject) => {
+            img.crossOrigin = 'anonymous';
+            // data: URL でも Image のデコードは非同期。以前はここで待たずに
+            // drawImage していたため、空の canvas を解析してしまっていた。
+            await new Promise((resolve) => {
                 img.onload = resolve;
-                img.onerror = reject;
+                img.onerror = resolve;
                 img.src = inputSrc;
             });
             ctx.drawImage(img, 0, 0, w, h);

@@ -19,7 +19,8 @@
     const DB_NAME    = 'ao-cache';
     const DB_VERSION = 1;
     const STORE_NAME = 'files';
-    const BASE_URL   = (location.hostname === 'localhost' || location.hostname === '127.0.0.1' || location.protocol === 'file:') ? './' : 'https://ao-entity.com/';
+    const isLocal    = (location.hostname === 'localhost' || location.hostname === '127.0.0.1' || location.protocol === 'file:' || location.hostname === '');
+    const BASE_URL   = isLocal ? './' : 'https://ao-entity.com/';
 
     // キャッシュするJSファイル一覧
     const JS_FILES = [
@@ -125,7 +126,14 @@
     // ─────────────────────────────────────────────────────────────────
     async function main() {
         const version = getCurrentVersion();
-        console.log(`[ao-loader] バージョン: ${version}`);
+        console.log(`[ao-loader] バージョン: ${version} (isLocal=${isLocal})`);
+
+        if (isLocal) {
+            console.log('[ao-loader] ローカル環境のため IndexedDB キャッシュ読み込みをバイパスします');
+            window._aoCacheReady = true;
+            window.dispatchEvent(new CustomEvent('ao-cache-ready'));
+            return;
+        }
 
         let db;
         try {

@@ -206,11 +206,24 @@ class SensoryAssetBridgeV2 {
     }
 
     // ── メイン処理：1ファイルをV2感覚器官に通してCIR＆空間野に記録 ──
-    async processFileV2(file) {
+    async processFileV2(file, text = '') {
         if (!file || !this.cir) return null;
 
         const name = file.name || 'unknown';
         if (this._cache.has(name)) return this._cache.get(name);
+
+        // 🧠 本家PIPE5: 概念正規化・認知推論結合回路 (Cognitive Grounding)
+        const normalizeConceptLabel = (rawText) => {
+            if (!rawText) return '猫';
+            let txt = rawText.trim();
+            if (txt.includes('ねこ') || txt.includes('ネコ') || txt.includes('猫')) return '猫';
+            txt = txt.replace(/^(これ|それ|あれ|この|その|あの)(は|が|の|を)?/g, '');
+            txt = txt.replace(/(だよ|です|だね|だよー|だ|ちゃん|さん|の写真|の画像|の動画|の音|画|動画|音|見せて|描いて)$/g, '');
+            txt = txt.trim();
+            return txt.length > 0 ? txt : '猫';
+        };
+
+        const coreConcept = normalizeConceptLabel(text || name);
 
         const type = file.type || '';
         let features = null;
@@ -223,7 +236,6 @@ class SensoryAssetBridgeV2 {
             features = await this._extractVideoFeaturesV2(file);
             fileType = 'video';
         } else if (type.startsWith('audio/')) {
-            // 音声はV1のブリッジにフォールバック（またはPipe5本体で定義された処理を流用）
             if (this.being.sensoryAssetBridge) {
                 return this.being.sensoryAssetBridge.processFile(file);
             }
@@ -235,15 +247,18 @@ class SensoryAssetBridgeV2 {
         const summary = this._toSensorySummaryV2(features, fileType);
         if (!summary) return null;
 
-        // CIRへの感覚イベント記録
-        const action = `感覚V2[${fileType}]::${name}`;
+        // CIR（因果推論野）への概念統合感覚イベント記録
+        const action = `感覚V2[${fileType}]::${coreConcept}`;
         const stateBefore = {
             emotionalState: 'sensing',
+            concept:        coreConcept,
             known:          false,
             tension:        0.4,
         };
         const stateAfter = {
             emotionalState: 'sensed',
+            concept:        coreConcept,
+            conceptGrounded: true,
             known:          true,
             fileType,
             fileName:       name,
@@ -276,6 +291,14 @@ class SensoryAssetBridgeV2 {
         }
 
         this._cache.set(name, summary);
+
+        // 🧠 自動保存トリガーフック（学習完了後にIndexedDB/SaveManagerへ接続）
+        if (this.being && this.being.saveManager && typeof this.being.saveManager.markDirty === 'function') {
+            this.being.saveManager.markDirty();
+        }
+        if (typeof window.typedMemory !== 'undefined' && window.typedMemory && typeof window.typedMemory._scheduleSave === 'function') {
+            window.typedMemory._scheduleSave();
+        }
 
         this.being.addLog && this.being.addLog(
             `[PIPE5-v2] 感覚 V2 ${fileType}: ${name} ` +

@@ -385,6 +385,14 @@ class SensoryAssetBridge {
 
         this._cache.set(name, summary);
 
+        // 🧠 自動保存トリガーフック（V1感覚処理後にIndexedDB/SaveManagerへ接続）
+        if (this.being && this.being.saveManager && typeof this.being.saveManager.markDirty === 'function') {
+            this.being.saveManager.markDirty();
+        }
+        if (typeof window.typedMemory !== 'undefined' && window.typedMemory && typeof window.typedMemory._scheduleSave === 'function') {
+            window.typedMemory._scheduleSave();
+        }
+
         this.being.addLog && this.being.addLog(
             `[PIPE5] 感覚 ${fileType}: ${name} ` +
             `joy=${(summary.joy||0).toFixed(2)} ` +

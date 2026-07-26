@@ -239,10 +239,27 @@ async function _chunkedExportAll (ao) {
 
     // ── 視覚・音声関連 ──
     try { cs.qualiaField           = ao.qualiaField?.exportState() ?? null; } catch(_){}
+    // ★修正: ロード側(index.html 24417-24418)は core.imageAdapter という
+    //   1つのキーに { prototypes, spatialPrototypes, labelCoOccurrence, hypothesisTable }
+    //   が全部まとまっている前提で importState() を呼ぶ。
+    //   以前はここで cs.visualHypothesisTable / cs.labelCoOccurrence という
+    //   別々のキーにバラして保存していたため、core.imageAdapter が存在せず
+    //   importState() 自体が呼ばれず、prototypes(＝「猫」に重なる視覚的本体)が
+    //   まるごと消えていた。ao.imageAdapter.exportState() をそのまま使うことで
+    //   本来の exportAll() と同じ形に揃える。
+    try { cs.imageAdapter = ao.imageAdapter?.exportState() ?? null; } catch(_){}
+    // PIPE2/3のConceptGraph(is-a階層・カテゴリ推論)。being.exportAllは
+    // pipe2-3.jsのフックで自動的に含まれるが、こちらは exportAll を経由しない
+    // 独自実装のためここでも明示的に含める。
+    try { cs.conceptGraph = ao.conceptGraph?.exportState() ?? null; } catch(_){}
+    // 旧キーも後方互換のため残しておく(実害はない)
     try { cs.visualHypothesisTable = ao.imageAdapter?.hypothesisTable.exportState() ?? null; } catch(_){}
     try { cs.labelCoOccurrence     = ao.imageAdapter ? Array.from(ao.imageAdapter.labelCoOccurrence.entries()) : []; } catch(_){}
     try { cs.audioLabelCoOccurrence = ao.audioAdapter?.exportCoOccurrence() ?? []; } catch(_){}
     try { cs.videoParserState      = ao.videoAdapter?.videoParser?.exportState() ?? null; } catch(_){}
+    // 画像の2368次元特徴ベクトル本体。専用IndexedDB(AoTypedVectorStorage)にも
+    // 別途自己保存されるが、メインのao_stateにも念のため二重に含めておく。
+    try { cs.typedMemory           = window.aoTypedMemory?.exportState() ?? null; } catch(_){}
     await yield_();
 
     // ── 残りのサブシステム（まとめて）──

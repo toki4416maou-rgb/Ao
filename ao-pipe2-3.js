@@ -468,70 +468,138 @@ function attachPipe3(being, conceptGraph) {
     // ── SaveManager 連携 ──────────────────────────────────────────────
     _hookSaveManager(being, conceptGraph);
 
+    // ★重要な追加修正: ao-pipe2-3.js は ao-loader.js 経由で非同期に読み込まれるため、
+    //   index.html 内の起動時ロード(saveManager.load() @ ~31736行目)は
+    //   このファイルが読み込まれて _hookSaveManager が importAll をパッチする
+    //   *前に* もう実行を終えてしまっている。
+    //   つまり「パッチする」だけでは起動直後の復元には間に合わない。
+    //   なので、パッチのタイミングに依存せず、ここで直接ストレージを読んで
+    //   conceptGraph を復元する。
+    _selfRestoreConceptGraph(being, conceptGraph);
+
     console.log('[PIPE3] 抽象概念Map → 12軸/空間野/CIR パイプ接続完了');
     being.addLog && being.addLog('[PIPE3] 抽象概念Map→12軸・空間野・因果推論野 パイプ3 接続完了');
+}
+
+// ───────────────────────────────────────────────────────────────────────
+// 起動タイミング競合対策: PersonaSaveManager の保存キーを直接読んで
+// ConceptGraph だけを先に復元する。
+// (being.importAll の完全な差し替えを待たずに済むので、
+//  ao-pipe2-3.js の読み込みが起動時ロードより遅れても復元できる)
+// ───────────────────────────────────────────────────────────────────────
+async function _selfRestoreConceptGraph(being, conceptGraph) {
+    try {
+        const sm = being.saveManager;
+
+        // PersonaSaveManager の保存キーと同じ優先順位で探す
+        const keys = sm && sm.saveKeys
+            ? [sm.saveKeys.current, 'ao_persona_current', 'ao_state', sm.saveKeys.prev, sm.saveKeys.backup]
+            : ['ao_persona_v24_0', 'ao_persona_current', 'ao_state', 'ao_persona_v24_0_prev', 'ao_persona_v24_0_backup'];
+
+        let raw = null;
+
+        // IndexedDB(AoPersonaDB) 優先
+        if (sm && sm.useIndexedDB && sm.indexedDB) {
+            for (const k of keys) {
+                try {
+                    raw = await sm.indexedDB.get(k);
+                    if (raw) break;
+                } catch (_) {}
+            }
+        }
+        // localStorage フォールバック
+        if (!raw) {
+            for (const k of keys) {
+                raw = localStorage.getItem(k);
+                if (raw) break;
+            }
+        }
+        if (!raw) {
+            console.log('[PIPE2/3] 起動時復元: 保存データなし(初回起動扱い)');
+            return;
+        }
+
+        const json = (typeof LZString !== 'undefined')
+            ? (LZString.decompressFromUTF16(raw) || raw)
+            : raw;
+        const data = JSON.parse(json);
+
+        if (data && data.coreState && data.coreState.conceptGraph) {
+            conceptGraph.importState(data.coreState.conceptGraph);
+            being.addLog && being.addLog(
+                `[PIPE2/3] 起動時ConceptGraph直接復元: ${conceptGraph.groups.size}カテゴリ`
+            );
+            console.log(`[PIPE2/3] ConceptGraph 直接復元完了 (${conceptGraph.groups.size}カテゴリ) — 起動タイミング競合対策`);
+        } else {
+            console.log('[PIPE2/3] 起動時復元: 保存データにconceptGraphが無い(初回保存前 or 旧データ)');
+        }
+    } catch (e) {
+        console.warn('[PIPE2/3] ConceptGraph 直接復元失敗:', e.message);
+    }
 }
 
 // ───────────────────────────────────────────────────────────────────────
 // SaveManager フック
 // ───────────────────────────────────────────────────────────────────────
 function _hookSaveManager(being, conceptGraph) {
-    function tryHook() {
-        const sm = being.saveManager;
-        if (!sm || sm._conceptGraphHooked) return;
-        sm._conceptGraphHooked = true;
+    // ★修正: 以前は being.saveManager(PersonaSaveManager) の
+    //   `_buildExportData` / `exportPersona` という存在しないメソッド名を
+    //   探していたため、if (origExport) が常にfalseになりフックが
+    //   一度も刺さっていなかった(ConceptGraphが毎回まっさらに戻る原因)。
+    //
+    //   実際に呼ばれているのは:
+    //     PersonaSaveManager.save() → being.exportAll()
+    //     PersonaSaveManager.load() → being.importAll(personaData)
+    //     AutoSaveManager._performAutoSave() → being.exportAll() (ネイティブ側)
+    //   なので saveManager ではなく being.exportAll / being.importAll 自体を
+    //   直接ラップする。saveManagerが後から生成される場合にも対応するため
+    //   ポーリングは残しつつ、実体は being 側をフックする。
+    if (being._conceptGraphPersistHooked) return;
+    being._conceptGraphPersistHooked = true;
 
-        // export フック
-        const exportMethod = sm._buildExportData ? '_buildExportData' : 'exportPersona';
-        const origExport = sm[exportMethod] && sm[exportMethod].bind(sm);
-        if (origExport) {
-            sm[exportMethod] = async function(...args) {
-                const data = await origExport(...args);
-                try {
-                    if (data && data.coreState) {
-                        data.coreState.conceptGraph = conceptGraph.exportState();
-                    }
-                } catch(e) { console.warn('[SAVE-HOOK] export error:', e); }
-                return data;
-            };
-        }
-
-        // import フック
-        const importMethod = sm._applyImportData ? '_applyImportData' : 'importPersona';
-        const origImport = sm[importMethod] && sm[importMethod].bind(sm);
-        if (origImport) {
-            sm[importMethod] = async function(data, ...args) {
-                const result = await origImport(data, ...args);
-                try {
-                    if (data && data.coreState && data.coreState.conceptGraph) {
-                        conceptGraph.importState(data.coreState.conceptGraph);
-                        being.addLog && being.addLog(
-                            `[SAVE-HOOK] ConceptGraph復元: ${conceptGraph.groups.size}カテゴリ`
-                        );
-                    }
-                } catch(e) { console.warn('[SAVE-HOOK] import error:', e); }
-                return result;
-            };
-        }
-
-        // ConceptGraph 更新時に自動 markDirty
-        const origAddRel = conceptGraph.addRelation.bind(conceptGraph);
-        conceptGraph.addRelation = function(...args) {
-            origAddRel(...args);
-            try { sm.markDirty && sm.markDirty(); } catch(_) {}
+    if (typeof being.exportAll === 'function') {
+        const origExportAll = being.exportAll.bind(being);
+        being.exportAll = function(...args) {
+            const data = origExportAll(...args);
+            try {
+                if (data && data.coreState) {
+                    data.coreState.conceptGraph = conceptGraph.exportState();
+                }
+            } catch (e) { console.warn('[SAVE-HOOK] export error:', e); }
+            return data;
         };
-
-        being.addLog && being.addLog('[SAVE-HOOK] ConceptGraph → SaveManager 永続化接続完了');
-        console.log('[SAVE-HOOK] SaveManager フック完了');
-    }
-
-    if (being.saveManager) {
-        tryHook();
     } else {
-        const interval = setInterval(() => {
-            if (being.saveManager) { clearInterval(interval); tryHook(); }
-        }, 1000);
+        console.warn('[SAVE-HOOK] being.exportAll が見つからずフックできませんでした');
     }
+
+    if (typeof being.importAll === 'function') {
+        const origImportAll = being.importAll.bind(being);
+        being.importAll = function(data, ...args) {
+            const result = origImportAll(data, ...args);
+            try {
+                if (data && data.coreState && data.coreState.conceptGraph) {
+                    conceptGraph.importState(data.coreState.conceptGraph);
+                    being.addLog && being.addLog(
+                        `[SAVE-HOOK] ConceptGraph復元: ${conceptGraph.groups.size}カテゴリ`
+                    );
+                }
+            } catch (e) { console.warn('[SAVE-HOOK] import error:', e); }
+            return result;
+        };
+    } else {
+        console.warn('[SAVE-HOOK] being.importAll が見つからずフックできませんでした');
+    }
+
+    being.addLog && being.addLog('[SAVE-HOOK] ConceptGraph → exportAll/importAll 永続化接続完了');
+    console.log('[SAVE-HOOK] exportAll/importAll フック完了(being直接パッチ版)');
+
+    // ConceptGraph 更新時に saveManager.markDirty() も呼ぶ(保存トリガー用)。
+    // saveManagerがまだ生成されていない場合があるのでポーリングして後付けする。
+    const origAddRel = conceptGraph.addRelation.bind(conceptGraph);
+    conceptGraph.addRelation = function(...args) {
+        origAddRel(...args);
+        try { being.saveManager && being.saveManager.markDirty && being.saveManager.markDirty(); } catch(_) {}
+    };
 }
 
 // ───────────────────────────────────────────────────────────────────────

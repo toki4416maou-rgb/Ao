@@ -139,13 +139,19 @@ class AoVideoExporter {
         const frameIntervalMs = 1000 / fps;
         for (let i = 0; i < frames.length; i++) {
             const img = new Image();
-            await new Promise((res) => {
-                img.onload = res;
-                img.onerror = res;
-                img.src = frames[i];
-            });
-            ctx.clearRect(0, 0, width, height);
-            ctx.drawImage(img, 0, 0, width, height);
+            img.crossOrigin = 'anonymous';
+            img.src = frames[i];
+            if (typeof frames[i] === 'string' && frames[i].startsWith('data:')) {
+                ctx.clearRect(0, 0, width, height);
+                ctx.drawImage(img, 0, 0, width, height);
+            } else {
+                await new Promise((res) => {
+                    img.onload = res;
+                    img.onerror = res;
+                });
+                ctx.clearRect(0, 0, width, height);
+                ctx.drawImage(img, 0, 0, width, height);
+            }
             await new Promise((res) => setTimeout(res, frameIntervalMs));
         }
 
@@ -202,7 +208,7 @@ class AoAudioExporter {
             utterance.volume = options.volume || 1.0;
 
             const voices = this.synth.getVoices();
-            const jaVoice = voices.find(v => v.lang.includes('ja') || v.lang.includes('JP'));
+            const jaVoice = voices.find(v => v.lang && (v.lang.includes('ja') || v.lang.includes('JP')));
             if (jaVoice) utterance.voice = jaVoice;
 
             this.synth.speak(utterance);

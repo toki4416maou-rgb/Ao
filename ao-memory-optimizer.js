@@ -23,6 +23,8 @@ class AoTypedMemoryBuffer {
 
         const VECTOR_DIM = 2368;
         const EMOTION_DIM = 30;
+        this.VECTOR_DIM = VECTOR_DIM;
+        this.EMOTION_DIM = EMOTION_DIM;
 
         // 初期RAM確保（約94.7MBの超軽量サイズで安全起動）
         this.vectorBuffer   = new Float32Array(initialConcepts * VECTOR_DIM);
@@ -34,7 +36,15 @@ class AoTypedMemoryBuffer {
         this.idPool = new Map();
         this.nextId = 0;
 
+        // ---- 追加分: 永続化まわりの状態 ----
+        this.db = null;
+        this._restored = false;   // IndexedDBからの復元が済んだか
+        this._dirty = false;      // 前回保存後に変更が入ったか
+        this._saveTimer = null;
+
         console.log(`[AoMemoryOptimizer] Chunked SoA Shared TypedArray Allocated (Initial ${initialConcepts} Concepts / ~94.7MB RAM)`);
+
+        this._initPersistence();
     }
 
     getOrRegisterId(conceptName) {
@@ -48,6 +58,7 @@ class AoTypedMemoryBuffer {
         this.idPool.set(conceptName, id);
         this.stringPool.set(id, conceptName);
         this.nextId++;
+        this._scheduleSave();
         return id;
     }
 
@@ -56,6 +67,7 @@ class AoTypedMemoryBuffer {
         const offset = (id % this.maxConcepts) * 2368;
         const len = Math.min(vector.length, 2368);
         this.vectorBuffer.set(vector.subarray(0, len), offset);
+        this._scheduleSave();
     }
 
     getVector(id) {
@@ -73,6 +85,7 @@ class AoTypedMemoryBuffer {
             this.relationWeights[baseOffset + count] = weight;
             count++;
         }
+        this._scheduleSave();
     }
 
     _evictOldest() {
@@ -85,6 +98,149 @@ class AoTypedMemoryBuffer {
                 this.stringPool.delete(oldId);
             }
         }
+    }
+
+    // ================================================================
+    // ここから追加分: vectorBuffer 等 TypedArray 一式を
+    // 専用IndexedDB(AoTypedVectorStorage)に保存/復元する。
+    //
+    // これまでは exportState/importState が存在せず、画像学習で得た
+    // 2368次元特徴ベクトルはRAM(Float32Array)にしか乗っていなかった
+    // → index.html を閉じる(=タブ/プロセス終了)とGCで消えて、
+    //   次回起動時にゼロから学習し直しになっていた。
+    //
+    // TypedArrayはIndexedDBの構造化クローンでそのまま保存できるので、
+    // JSON化やlocalStorage(数MB上限)を経由する必要がない。
+    // ================================================================
+
+    exportState() {
+        return {
+            maxConcepts: this.maxConcepts,
+            maxRelations: this.maxRelations,
+            nextId: this.nextId,
+            idPool: Array.from(this.idPool.entries()), // [[conceptName, id], ...]
+            vectorBuffer: this.vectorBuffer,
+            relationIds: this.relationIds,
+            relationWeights: this.relationWeights,
+            emotionBuffer: this.emotionBuffer,
+            savedAt: Date.now()
+        };
+    }
+
+    importState(data) {
+        if (!data) return false;
+        try {
+            // サイズ(次元数・上限概念数)が変わっていたら不整合復元を避けて何もしない
+            if (data.vectorBuffer && data.vectorBuffer.length === this.vectorBuffer.length) {
+                this.vectorBuffer.set(data.vectorBuffer);
+            }
+            if (data.relationIds && data.relationIds.length === this.relationIds.length) {
+                this.relationIds.set(data.relationIds);
+            }
+            if (data.relationWeights && data.relationWeights.length === this.relationWeights.length) {
+                this.relationWeights.set(data.relationWeights);
+            }
+            if (data.emotionBuffer && data.emotionBuffer.length === this.emotionBuffer.length) {
+                this.emotionBuffer.set(data.emotionBuffer);
+            }
+            if (Array.isArray(data.idPool)) {
+                this.idPool = new Map(data.idPool);
+                this.stringPool = new Map(data.idPool.map(([name, id]) => [id, name]));
+            }
+            if (typeof data.nextId === 'number') {
+                this.nextId = data.nextId;
+            }
+            console.log(`[AoMemoryOptimizer] TypedMemoryBuffer 復元完了 (concepts: ${this.idPool.size})`);
+            return true;
+        } catch (e) {
+            console.warn('[AoMemoryOptimizer] TypedMemoryBuffer importState失敗:', e.message);
+            return false;
+        }
+    }
+
+    _initPersistence() {
+        if (typeof indexedDB === 'undefined') return;
+        try {
+            const req = indexedDB.open('AoTypedVectorStorage', 1);
+            req.onupgradeneeded = (e) => {
+                const db = e.target.result;
+                if (!db.objectStoreNames.contains('snapshot')) {
+                    db.createObjectStore('snapshot', { keyPath: 'id' });
+                }
+            };
+            req.onsuccess = (e) => {
+                this.db = e.target.result;
+                console.log('[AoMemoryOptimizer] TypedVectorStorage (IndexedDB) Ready');
+                this._loadFromDB();
+            };
+            req.onerror = (e) => {
+                console.warn('[AoMemoryOptimizer] TypedVectorStorage open失敗:', e.target.error);
+                this._restored = true;
+            };
+        } catch (e) {
+            console.warn('[AoMemoryOptimizer] TypedVectorStorage 初期化失敗:', e.message);
+            this._restored = true;
+        }
+
+        // タブが隠れる/閉じられるタイミングで確実にフラッシュする
+        // (beforeunloadだけだと最近のブラウザでは信頼性が低いのでvisibilitychange/pagehideも併用)
+        if (typeof document !== 'undefined') {
+            document.addEventListener('visibilitychange', () => {
+                if (document.visibilityState === 'hidden') this._saveToDB();
+            });
+        }
+        if (typeof window !== 'undefined') {
+            window.addEventListener('pagehide', () => this._saveToDB());
+            window.addEventListener('beforeunload', () => this._saveToDB());
+        }
+
+        // 保険として30秒毎に、変更があった場合だけ保存
+        this._autoSaveInterval = setInterval(() => {
+            if (this._dirty) this._saveToDB();
+        }, 30000);
+    }
+
+    _loadFromDB() {
+        if (!this.db || this._restored) return;
+        try {
+            const tx = this.db.transaction('snapshot', 'readonly');
+            const store = tx.objectStore('snapshot');
+            const req = store.get('current');
+            req.onsuccess = () => {
+                // 復元完了より先にこのセッションで何か書き込みが始まっていた場合、
+                // 古いスナップショットで上書きして壊さないようスキップする
+                if (this.nextId === 0 && req.result && req.result.data) {
+                    this.importState(req.result.data);
+                }
+                this._restored = true;
+            };
+            req.onerror = () => { this._restored = true; };
+        } catch (e) {
+            this._restored = true;
+        }
+    }
+
+    _saveToDB() {
+        if (!this.db) return;
+        try {
+            const data = this.exportState();
+            const tx = this.db.transaction('snapshot', 'readwrite');
+            const store = tx.objectStore('snapshot');
+            store.put({ id: 'current', data, savedAt: Date.now() });
+            this._dirty = false;
+        } catch (e) {
+            console.warn('[AoMemoryOptimizer] TypedMemoryBuffer 保存失敗:', e.message);
+        }
+    }
+
+    _scheduleSave() {
+        this._dirty = true;
+        // 書き込みの度に即保存はしない(重くなるので)。3秒デバウンスでまとめて保存。
+        if (this._saveTimer) return;
+        this._saveTimer = setTimeout(() => {
+            this._saveTimer = null;
+            if (this._dirty) this._saveToDB();
+        }, 3000);
     }
 }
 

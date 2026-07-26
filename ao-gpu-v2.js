@@ -258,6 +258,14 @@ class AoGPUV2Accelerator {
             const duration = performance.now() - start;
             this._stats.totalMs += duration;
 
+            // 🧠 記憶バッファ・自動保存マネージャーへ即時フック接続
+            if (typeof window.typedMemory !== 'undefined' && window.typedMemory && typeof window.typedMemory._scheduleSave === 'function') {
+                window.typedMemory._scheduleSave();
+            }
+            if (typeof window.ao !== 'undefined' && window.ao && window.ao.saveManager && typeof window.ao.saveManager.markDirty === 'function') {
+                window.ao.saveManager.markDirty();
+            }
+
             return {
                 layers,
                 centerPoint,
