@@ -8870,7 +8870,7 @@ MemoryLimitsConfig._instance = null;
                 const img = new Image();
 
                 return new Promise((resolve) => {
-                    img.onload = () => {
+                    img.onload = async () => {
                         canvas.width = SIZE;
                         canvas.height = SIZE;
                         ctx.drawImage(img, 0, 0, SIZE, SIZE);
@@ -31071,6 +31071,7 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                 metabolismStatus.classList.remove('active');
             }
             
+            const growth = ao.concepts.getGrowth();
             const maxConceptsLimit = ao.concepts?.maxConcepts || 500000;
             const conceptPercentage = ((growth.count / maxConceptsLimit) * 100).toFixed(2);
             document.getElementById('growth').innerHTML = `
