@@ -1749,13 +1749,12 @@ async function _triggerImageFromDesign(being, design, gpuBlender) {
 
         // 🧠 本家PIPE6: 概念正規化・引き合わせ回路
         const normalizeConceptLabel = (rawText) => {
-            if (!rawText) return '猫';
+            if (!rawText) return '不明';
             let txt = rawText.trim();
-            if (txt.includes('ねこ') || txt.includes('ネコ') || txt.includes('猫')) return '猫';
             txt = txt.replace(/^(これ|それ|あれ|この|その|あの)(は|关|の|を)?/g, '');
             txt = txt.replace(/(だよ|です|だね|だよー|だ|ちゃん|さん|の写真|の画像|の動画|の音|画|動画|音|見せて|描いて)$/g, '');
             txt = txt.trim();
-            return txt.length > 0 ? txt : '猫';
+            return txt.length > 0 ? txt : '不明';
         };
 
         const coreConcept = normalizeConceptLabel(design.text);

@@ -42,8 +42,13 @@ class PrefrontalSpatialReasoningV2 {
         }
         const edgeDensity = edgeSum / len;
 
+        const geometricConfidence = Number.isFinite(centerPoint.confidence) ? centerPoint.confidence : null;
         let centerConfidence = 1.0;
-        if (isDefaultCenter && edgeDensity < 0.02) {
+        if (centerPoint.detected === false) {
+            centerConfidence = Math.max(0.15, geometricConfidence || 0.15);
+        } else if (geometricConfidence !== null) {
+            centerConfidence = geometricConfidence;
+        } else if (isDefaultCenter && edgeDensity < 0.02) {
             centerConfidence = 0.3; // 幾何線がほとんど検出できない
         } else if (isDefaultCenter) {
             centerConfidence = 0.6; // 平行投影、または消失点が外にある

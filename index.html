@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Ao v26.5.0 - Acoustic Perception Layer</title>
+    <title>Ao v26.5.2 - Acoustic Perception Layer</title>
     <link rel="icon" href="favicon.ico" type="image/x-icon">
     <link rel="shortcut icon" href="favicon.ico" type="image/x-icon">
     
@@ -6683,7 +6683,7 @@ MemoryLimitsConfig._instance = null;
                 canvas.height = 1024;
                 const ctx = canvas.getContext('2d');
                 
-                // 実写真素材の安全ロード (cat_real_frame1.jpg & cat_real_frame2.jpg)
+                // 学習済み写真素材の安全ロード
                 const ensureImageLoaded = async (src) => {
                     return new Promise((resolve) => {
                         const img = new Image();
@@ -6712,30 +6712,18 @@ MemoryLimitsConfig._instance = null;
                     });
                 };
 
-                let img1 = window._aoLastLearnedImg || (window.ao && window.ao.lastLearnedImg) || window._catRealImg1;
-                let img2 = window._catRealImg2 || img1;
+                // 学習済み画像を動的に取得（ハードコード素材ではなく学習結果を使用）
+                let img1 = window._aoLastLearnedImg || (window.ao && window.ao.lastLearnedImg);
+                let img2 = img1; // 2枚目は学習画像からのモーフィング用
 
                 if (!img1 || !img1.naturalWidth) {
                     if (window.ao && window.ao.lastLearnedImageSrc) {
                         img1 = await ensureImageLoaded(window.ao.lastLearnedImageSrc);
                     }
                 }
-                if (!img1 || !img1.naturalWidth) {
-                    img1 = await ensureImageLoaded('cat_real_frame1.jpg');
-                    if (img1) window._catRealImg1 = img1;
-                }
-                if (!img2 || !img2.naturalWidth) {
-                    img2 = await ensureImageLoaded('cat_real_frame2.jpg');
-                    if (img2) window._catRealImg2 = img2;
-                }
-
-                if (!img1) {
-                    img1 = new Image();
-                    img1.src = 'cat_real_frame1.jpg';
-                }
 
                 const frames = [];
-                const hasRealPhotos = true;
+                const hasRealPhotos = !!(img1 && img1.naturalWidth > 0);
                 
                 for (let i = 0; i < totalFrames; i++) {
                     const progress = i / Math.max(1, totalFrames - 1);
@@ -6775,10 +6763,10 @@ MemoryLimitsConfig._instance = null;
                             frames.push(canvas.toDataURL('image/jpeg', 0.92));
                         } catch (e) {
                             // Tainted Canvas 時は実写写真の URL または Base64 を直接セット
-                            frames.push(img1.src || 'cat_real_frame1.jpg');
+                            if (img1.src) frames.push(img1.src);
                         }
                     } else {
-                        // フォールバック背景
+                        // フォールバック: 概念ベースの抽象レンダリング
                         const bgColor = this.emotionToColor(emotionState, progress);
                         ctx.fillStyle = bgColor;
                         ctx.fillRect(0, 0, canvas.width, canvas.height);
@@ -6792,7 +6780,7 @@ MemoryLimitsConfig._instance = null;
                         try {
                             frames.push(canvas.toDataURL('image/jpeg', 0.8));
                         } catch (e) {
-                            frames.push('cat_real_frame1.jpg');
+                            // Canvas変換失敗時はスキップ
                         }
                     }
                     
@@ -7854,9 +7842,9 @@ MemoryLimitsConfig._instance = null;
             _updateToken(token, hueHist, brightnessGrid, spatialVec, confidence = 1.0) {
                 if (!this.hypotheses.has(token)) {
                     this.hypotheses.set(token, {
-                        hue:        { sum: new Array(8).fill(0),    sumSq: new Array(8).fill(0),    samples: 0 },
-                        brightness: { sum: new Array(256).fill(0),  sumSq: new Array(256).fill(0),  samples: 0 },
-                        spatial:    { sum: new Array(2104).fill(0), sumSq: new Array(2104).fill(0), samples: 0 }, // [v5] +gabor32+lbp16
+                        hue:        { sum: new Float32Array(8),    sumSq: new Float32Array(8),    samples: 0 },
+                        brightness: { sum: new Float32Array(256),  sumSq: new Float32Array(256),  samples: 0 },
+                        spatial:    { sum: new Float32Array(2104), sumSq: new Float32Array(2104), samples: 0 }, // [v5] +gabor32+lbp16 ※Float32Array化(メモリ半減)
                         best_channel: null,
                         confidence: 0,
                         defined: false,
@@ -8480,13 +8468,14 @@ MemoryLimitsConfig._instance = null;
 
             // ---- [v3改善] プロトタイプ学習: 分散も蓄積する ----
             // sumSq を持つことで「この次元はサンプルごとにブレが大きい（＝信頼しない）」が分かる
+            // Float32Array化により JS Array(float64) 比でメモリを約半減
             learnPrototype(conceptLabel, vector) {
                 if (!this.prototypes.has(conceptLabel)) {
-                    this.prototypes.set(conceptLabel, {
-                        sum:   [...vector],
-                        sumSq: vector.map(v => v * v),
-                        count: 1
-                    });
+                    const len = vector.length;
+                    const s   = new Float32Array(len);
+                    const sq  = new Float32Array(len);
+                    for (let i = 0; i < len; i++) { s[i] = vector[i]; sq[i] = vector[i] * vector[i]; }
+                    this.prototypes.set(conceptLabel, { sum: s, sumSq: sq, count: 1 });
                 } else {
                     const proto = this.prototypes.get(conceptLabel);
                     for (let i = 0; i < vector.length; i++) {
@@ -8500,6 +8489,7 @@ MemoryLimitsConfig._instance = null;
             // ---- [v28] 空間プロトタイプ学習: セルごとに独立した統計を蓄積 ----
             // 猫の耳がセル(3,4)に安定して現れるなら、そのセルだけ高信頼になる
             // 猫の色がセルごとにバラバラなら、そのセルの色信頼度は低くなる
+            // ※Float32Array化: Float64Array比でメモリを半減（64KiB/概念 → 32KiB/概念）
             learnSpatialPrototype(conceptLabel, features) {
                 if (!features || !features.hog_blocks) return;
                 const CELLS = 16;
@@ -8510,12 +8500,13 @@ MemoryLimitsConfig._instance = null;
                 if (!this.spatialPrototypes) this.spatialPrototypes = new Map();
                 if (!this.spatialPrototypes.has(conceptLabel)) {
                     // cells[256]: 各セルにhue/brightness/hogを個別蓄積
+                    // Float32Array: float64比メモリ半減、精度は統計蓄積で十分
                     const cells = Array.from({ length: CELLS * CELLS }, () => ({
-                        hueSum:   new Float64Array(8),
-                        hueSumSq: new Float64Array(8),
+                        hueSum:   new Float32Array(8),
+                        hueSumSq: new Float32Array(8),
                         briSum:   0, briSumSq: 0,
-                        hogSum:   new Float64Array(8),
-                        hogSumSq: new Float64Array(8),
+                        hogSum:   new Float32Array(8),
+                        hogSumSq: new Float32Array(8),
                         n: 0
                     }));
                     this.spatialPrototypes.set(conceptLabel, { cells, count: 0 });
@@ -8937,6 +8928,22 @@ MemoryLimitsConfig._instance = null;
 
                         this.processing = false;
 
+                        // ── v2 高精細ルート：幾何学遠近法による4層分解・消失点検出 ──
+                        let v2Result = null;
+                        if (window.AoGPUV2Accelerator && window.ao?.activeVisionVersion === 'v2') {
+                            try {
+                                const gpuV2 = new window.AoGPUV2Accelerator();
+                                await gpuV2.init();
+                                const layers = gpuV2.decomposeLayers(imgData);
+                                const centerPoint = gpuV2.extractCenterPoint(layers.boundaryLayer, layers.brightnessLayer, SIZE, SIZE);
+                                const spatialObs = gpuV2.estimateSpatialObservation(layers, centerPoint, SIZE, SIZE);
+                                v2Result = { layers, centerPoint, spatialObservation: spatialObs };
+                                console.log('[v2 Pipeline] 高精細4層分解 完了', { layers: Object.keys(layers), vp: centerPoint });
+                            } catch(e) {
+                                console.warn('[v2 Pipeline Error] 幾何学遠近法処理に失敗:', e.message);
+                            }
+                        }
+
                         // ── AxisCodec: 画像特徴量を12軸に符号化 ──
                         if (window._aoAxisCodec) {
                             try {
@@ -8973,7 +8980,8 @@ MemoryLimitsConfig._instance = null;
                                 dominant_hue:    dominantHue,
                                 dominant_dir:    dominantDir,
                             },
-                            raw_descriptor: `色:${dominantHue} 明度:${(avgBrightness*100).toFixed(0)}% 輪郭:${dominantDir}`
+                            raw_descriptor: `色:${dominantHue} 明度:${(avgBrightness*100).toFixed(0)}% 輪郭:${dominantDir}`,
+                            v2: v2Result  // ← 🧠【重要】v2パイプラインの高精細データをここで供給。storeVisualLayersの条件が真になって、visualStoreに実際に保存される
                         });
                     };
 
@@ -18989,7 +18997,11 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                     textureReliability: 0, // [v28.1] 質感信頼度
                     confidence: 0.3,
                     lastUpdated: Date.now(),
-                    predictionError: 0
+                    predictionError: 0,
+                    // 概念に結び付いた単眼空間観測。positionとは区別し、
+                    // 絶対3D座標であるかのように扱わない。
+                    perspective: null,
+                    spatialObservations: []
                 };
             }
 
@@ -19051,6 +19063,46 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                     s.texture_latent[i] = (1 - K) * s.texture_latent[i] + K * gaborFeatures[i];
                 }
                 s.textureReliability = Math.min(1, (s.textureReliability || 0) + textureReliability * 0.08);
+            }
+
+            // ラベル付き画像から得た空間観測を、概念IDに直接ひも付けて蓄積する。
+            // 単眼のdepthProxyは相対値なので、位置・奥行きの根拠と信頼度を保ったまま残す。
+            observePerspective(conceptId, observation) {
+                if (!conceptId || !observation) return null;
+                if (!this.states.has(conceptId)) {
+                    this.states.set(conceptId, this._defaultState(conceptId));
+                }
+                const s = this.states.get(conceptId);
+                const conf = Math.max(0, Math.min(1, observation.confidence || 0));
+                const sample = { ...observation, timestamp: Date.now() };
+                s.spatialObservations.push(sample);
+                if (s.spatialObservations.length > 32) s.spatialObservations.shift();
+
+                const prev = s.perspective;
+                const blend = Math.max(0.12, Math.min(0.65, conf));
+                const imagePosition = observation.imagePosition || { x: 0.5, y: 0.5 };
+                const vp = observation.vanishingPoint || null;
+                s.perspective = {
+                    imagePosition: prev?.imagePosition ? {
+                        x: prev.imagePosition.x * (1 - blend) + imagePosition.x * blend,
+                        y: prev.imagePosition.y * (1 - blend) + imagePosition.y * blend
+                    } : { ...imagePosition },
+                    apparentScale: prev?.apparentScale != null
+                        ? prev.apparentScale * (1 - blend) + (observation.apparentScale || 0) * blend
+                        : (observation.apparentScale || 0),
+                    depthProxy: observation.depthProxy,
+                    vanishingPoint: vp,
+                    perspectiveConfidence: observation.perspectiveConfidence || 0,
+                    confidence: prev ? Math.min(1, prev.confidence + conf * 0.12) : conf,
+                    observationCount: s.spatialObservations.length,
+                    depthKind: observation.depthKind || 'relative-single-view'
+                };
+                // UI互換のpositionには画像座標と相対depthを写す。世界の実距離ではない。
+                s.position = [s.perspective.imagePosition.x, s.perspective.imagePosition.y,
+                    observation.depthProxy == null ? 0 : observation.depthProxy];
+                s.confidence = Math.min(1, s.confidence + conf * 0.08);
+                s.lastUpdated = Date.now();
+                return s.perspective;
             }
 
             // 等速直線運動で次状態を予測
@@ -24357,8 +24409,8 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
 
                     // 🧠 TypedMemoryBuffer (2368次元ベクトル・信用値記憶) の同時エクスポート接続
                     try {
-                        if (typeof window.typedMemory !== 'undefined' && window.typedMemory && typeof window.typedMemory.exportState === 'function') {
-                            exportData.coreState.typedMemory = window.typedMemory.exportState();
+                        if (typeof window.aoTypedMemory !== 'undefined' && window.aoTypedMemory && typeof window.aoTypedMemory.exportState === 'function') {
+                            exportData.coreState.typedMemory = window.aoTypedMemory.exportState();
                         }
                     } catch (e) {
                         console.error('TypedMemory export failed:', e);
@@ -24570,8 +24622,8 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
 
                     // 🧠 TypedMemoryBuffer (2368次元ベクトル・信用値記憶) の復元注入接続
                     try {
-                        if (core.typedMemory && typeof window.typedMemory !== 'undefined' && window.typedMemory && typeof window.typedMemory.importState === 'function') {
-                            window.typedMemory.importState(core.typedMemory);
+                        if (core.typedMemory && typeof window.aoTypedMemory !== 'undefined' && window.aoTypedMemory && typeof window.aoTypedMemory.importState === 'function') {
+                            window.aoTypedMemory.importState(core.typedMemory);
                             console.log('[IMPORT] ✅ TypedMemoryBuffer (2368次元ベクトル・信用値記憶) を完全にロード復元しました');
                         }
                     } catch (e) {
@@ -25049,23 +25101,21 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                         sensoryResults.push(imageResult);
                         this.addLog(`視覚野: ${imageResult.semantic_candidates.length}候補 [${imageResult.raw_descriptor}]`);
 
-                        // ── 🧠 認知推論結合 (Cognitive Grounding): 「猫だよー」等から本質概念「猫」を正規化抽出して一元記憶 ──
+                        // ── 🧠 認知推論結合 (Cognitive Grounding): テキストから本質概念を正規化抽出して一元記憶 ──
                         const normalizeConceptLabel = (rawText) => {
-                            if (!rawText) return '猫';
+                            if (!rawText) return '不明';
                             let txt = rawText.trim();
-                            // ひらがな・一般的な言い回しの正規化
-                            if (txt.includes('ねこ') || txt.includes('ネコ') || txt.includes('猫')) return '猫';
                             // 助詞・語尾・修飾語の除去 (「だよー」「です」「これ」「写真」等)
                             txt = txt.replace(/^(これ|それ|あれ|この|その|あの)(は|が|の|を)?/g, '');
                             txt = txt.replace(/(だよ|です|だね|だよー|だ|ちゃん|さん|の写真|の画像|です|画像|写真|見せて|描いて)$/g, '');
                             txt = txt.trim();
-                            return txt.length > 0 ? txt : '猫';
+                            return txt.length > 0 ? txt : '不明';
                         };
 
                         const activeLabels = []; // v27.1: 共起記録用ラベル収集
                         const textLabel = (inputs.text && inputs.text.trim().length > 0) ? normalizeConceptLabel(inputs.text) : null;
-                        const candidateLabel = (imageResult.semantic_candidates && imageResult.semantic_candidates.length > 0) ? imageResult.semantic_candidates[0].concept : '猫';
-                        const primaryLabel = textLabel || candidateLabel || '猫';
+                        const candidateLabel = (imageResult.semantic_candidates && imageResult.semantic_candidates.length > 0) ? imageResult.semantic_candidates[0].concept : '不明';
+                        const primaryLabel = textLabel || candidateLabel || '不明';
 
                         // 🧠【正規学習データバインド】テキストの有無に関わらず100%プロトタイプと空間グリッド特徴量を記憶蓄積させる
                         [primaryLabel, candidateLabel].forEach(label => {
@@ -25091,9 +25141,39 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                                     c.addModalityOrigin && c.addModalityOrigin('visual');
                                     c.visualData = imageData;
                                     c.imageSrc = imageData;
+                                    // V2の線遠近観測を概念自体にも保持する。
+                                    if (imageResult.v2?.spatialObservation) {
+                                        c.spatialGrounding = imageResult.v2.spatialObservation;
+                                    }
                                 }
                             }
                         });
+
+                        // 画像に付けられた語（例: 猫）をキーにして、空間野へ直接観測を蓄積する。
+                        // identityやファイル名をキーにせず、概念と同じIDを使うことで、複数画像の
+                        // 「この位置・遠近でも猫」という対応を比較できるようにする。
+                        const spatialObservation = imageResult.v2?.spatialObservation || null;
+                        if (spatialObservation && this.spatialState?.observePerspective) {
+                            const grounded = this.spatialState.observePerspective(primaryLabel, spatialObservation);
+                            if (this.causalInterventionReasoner && grounded) {
+                                this.causalInterventionReasoner.record(
+                                    `空間観測→概念:${primaryLabel}`,
+                                    { concept: primaryLabel, spatialObservationCount: Math.max(0, grounded.observationCount - 1) },
+                                    {
+                                        concept: primaryLabel,
+                                        conceptGrounded: true,
+                                        spatialObservationCount: grounded.observationCount,
+                                        perspective: grounded,
+                                        spatialEvidence: spatialObservation
+                                    }
+                                );
+                            }
+                        }
+                        // 概念ごとの視覚4野は圧縮記憶へ保存する。観測回数と遠近信頼度が
+                        // 条件を満たした概念だけ、64×64から高精細レイヤーへ自動昇格する。
+                        if (imageResult.v2 && window.aoTypedMemory?.storeVisualLayers) {
+                            window.aoTypedMemory.storeVisualLayers(primaryLabel, imageResult.v2);
+                        }
 
                         const hStats = this.imageAdapter.hypothesisTable.getStats();
                         this.addLog(`認知野: 「${primaryLabel}」に本物学習プロトタイプ・空間グリッド記憶完了 [定義:${hStats.defined}/${hStats.total}]`);
@@ -25174,13 +25254,12 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
 
                         // [v27.1] 音声共起学習 ＆ 🧠 認知推論結合回路 (Audio Cognitive Grounding)
                         const normalizeConceptLabel = (rawText) => {
-                            if (!rawText) return '猫';
+                            if (!rawText) return '不明';
                             let txt = rawText.trim();
-                            if (txt.includes('ねこ') || txt.includes('ネコ') || txt.includes('猫')) return '猫';
                             txt = txt.replace(/^(これ|それ|あれ|この|その|あの)(は|が|の|を)?/g, '');
                             txt = txt.replace(/(だよ|です|だね|だよー|だ|ちゃん|さん|の声|の音|の鳴き声|鳴き声|音|声|聴いて)$/g, '');
                             txt = txt.trim();
-                            return txt.length > 0 ? txt : '猫';
+                            return txt.length > 0 ? txt : '不明';
                         };
 
                         const audioLabels = [];
@@ -25300,13 +25379,12 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                         // [v27.1] 動画共起学習 ＆ 🧠 認知推論結合回路 (Video Cognitive Grounding)
                         if (videoResult.avg_features) {
                             const normalizeVideoConceptLabel = (rawText) => {
-                                if (!rawText) return '猫';
+                                if (!rawText) return '不明';
                                 let txt = rawText.trim();
-                                if (txt.includes('ねこ') || txt.includes('ネコ') || txt.includes('猫')) return '猫';
                                 txt = txt.replace(/^(これ|それ|あれ|この|その|あの)(は|が|の|を)?/g, '');
                                 txt = txt.replace(/(だよ|です|だね|だよー|だ|ちゃん|さん|の動画|の映像|のムービー|動画|映像|ムービー|見せて|再生して)$/g, '');
                                 txt = txt.trim();
-                                return txt.length > 0 ? txt : '猫';
+                                return txt.length > 0 ? txt : '不明';
                             };
 
                             const videoLabels = [];
@@ -30669,8 +30747,8 @@ HumanLikeLanguageAcquisitionEngine.prototype.learnFromInput = function(text) {
                     }
 
                     // 🧠 TypedMemoryBuffer (2368次元ベクトル・信用値記憶) の同期書き込み保存
-                    if (typeof window.typedMemory !== 'undefined' && window.typedMemory && typeof window.typedMemory._saveToDB === 'function') {
-                        try { window.typedMemory._saveToDB(); } catch(e) { console.warn('[SAVE] typedMemory save error:', e); }
+                    if (typeof window.aoTypedMemory !== 'undefined' && window.aoTypedMemory && typeof window.aoTypedMemory._saveToDB === 'function') {
+                        try { window.aoTypedMemory._saveToDB(); } catch(e) { console.warn('[SAVE] typedMemory save error:', e); }
                     }
 
                     // ④ 成功処理
@@ -33402,27 +33480,8 @@ class ImageRenderer {
             }
         }, 3000);
 
-        // ── [PhotoReconstruction Engine] 実写写真素材の自動プリロード (Blob/DataURL変換でTainted Canvas防止) ──
-        (async () => {
-            try {
-                const loadDataUrl = async (url) => {
-                    const r = await fetch(url);
-                    const b = await r.blob();
-                    return new Promise(resolve => {
-                        const fr = new FileReader();
-                        fr.onloadend = () => {
-                            const img = new Image();
-                            img.onload = () => resolve(img);
-                            img.src = fr.result;
-                        };
-                        fr.readAsDataURL(b);
-                    });
-                };
-                window._catRealImg1 = await loadDataUrl('cat_real_frame1.jpg');
-                window._catRealImg2 = await loadDataUrl('cat_real_frame2.jpg');
-                console.log('[PhotoEngine] 実写写真素材 (cat_real_frame1/2) データURLプリロード完了');
-            } catch(e) { console.warn('[PhotoEngine] Preload notice:', e); }
-        })();
+        // ── [PhotoReconstruction Engine] 実写写真素材のプリロードは撤去済み ──
+        // 学習済み画像(window._aoLastLearnedImg)を動的に使用する方式に移行
 
         } // ── _aoDoStartApp 関数の終わり ──────────────────────────────
 
@@ -35756,12 +35815,7 @@ class RenderIntent {
                     : 'explain';
 
         // 概念グラフや対話文脈からの出力意図の補正
-        if (this.being && this.being._lastInputText) {
-            const txt = String(this.being._lastInputText).toLowerCase();
-            if (txt.includes('猫') || txt.includes('ねこ')) {
-                purpose = 'reproduce'; // 学習した「猫」の再現・可視化
-            }
-        }
+        // (特定概念へのハードコード分岐は撤去済み — 概念グラフから動的に判断)
 
         this.intent = { target, viewpoint, granularity, purpose, state: s, concepts: topConcepts };
         return this.intent;
@@ -35914,7 +35968,7 @@ class ImageRenderer {
     render(snapshot, w = 640, h = 640) {
         const being = snapshot?.being || (window.ao || null);
         const textHint = snapshot?.conceptLabel || snapshot?.prompt || snapshot?.text || '';
-        const targetLabel = textHint || (being?.concepts?.concepts?.size > 0 ? Array.from(being.concepts.concepts.keys())[0] : '猫');
+        const targetLabel = textHint || (being?.concepts?.concepts?.size > 0 ? Array.from(being.concepts.concepts.keys())[0] : '不明');
 
         console.log(`[ImageRenderer] 🎨 本物画像生成エンジン起動: ターゲット概念 = "${targetLabel}"`);
 
@@ -36425,10 +36479,10 @@ function attachMultimodalRenderingEngine(being) {
             const text = String(inputText).toLowerCase();
             
             let detectedModality = null;
-            if (text.includes('画像') || text.includes('描') || text.includes('写真') || text.includes('見せ') || text.includes('見せて') || text.includes('絵') || text.includes('姿') || text.includes('視覚') || text.includes('生成') || text.includes('出力') || text.includes('猫') || text.includes('ねこ')) {
+            if (text.includes('画像') || text.includes('描') || text.includes('写真') || text.includes('見せ') || text.includes('見せて') || text.includes('絵') || text.includes('姿') || text.includes('視覚') || text.includes('生成') || text.includes('出力')) {
                 detectedModality = 'image';
             }
-            if (text.includes('音') || text.includes('声') || text.includes('鳴') || text.includes('聴') || text.includes('聴か') || text.includes('発声') || text.includes('ニャー') || text.includes('うなる')) {
+            if (text.includes('音') || text.includes('声') || text.includes('鳴') || text.includes('聴') || text.includes('聴か') || text.includes('発声') || text.includes('うなる')) {
                 detectedModality = 'audio';
             }
             if (text.includes('動') || text.includes('歩') || text.includes('走') || text.includes('動画') || text.includes('ムービー') || text.includes('アニメ') || text.includes('歩行')) {
@@ -36690,7 +36744,11 @@ window.mreRender = async function(modality) {
 
         // レンダリングエンジンの実行（前作った本物の videoGenerator 生成エンジンを直接呼び出し）
         if (being.videoGenerator && typeof being.videoGenerator.generateFromConcepts === 'function') {
-            const concepts = ['猫', '自然', '意識'];
+            // 学習済み概念から動的に取得（ハードコードしない）
+            const learnedConcepts = being.concepts?.concepts?.size > 0
+                ? Array.from(being.concepts.concepts.keys()).slice(0, 3)
+                : ['不明'];
+            const concepts = learnedConcepts;
             const res = await being.videoGenerator.generateFromConcepts(concepts, being.state || {}, modality === 'image' ? 1 : 5);
             if (modality === 'image') {
                 appendDirectToChat(`生成エンジンより「${res.description}」を出力`, `本物生成パイプライン (1080p/720p Canvas)`, { type: 'image', src: res.frames[0] });

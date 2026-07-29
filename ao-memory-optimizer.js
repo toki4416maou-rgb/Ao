@@ -21,13 +21,18 @@ class AoTypedMemoryBuffer {
         this.maxConcepts = initialConcepts;
         this.maxRelations = maxRelationsPerConcept;
 
+        // 特徴ベクトルを全概念分float32で先行確保すると約1.8GiBになるため廃止。
+        // 画像記憶は下記visualStoreへ、必要な解像度・量子化形式で概念ごとに保存する。
         const VECTOR_DIM = 2368;
         const EMOTION_DIM = 30;
         this.VECTOR_DIM = VECTOR_DIM;
         this.EMOTION_DIM = EMOTION_DIM;
 
-        // 初期RAM確保（約94.7MBの超軽量サイズで安全起動）
-        this.vectorBuffer   = new Float32Array(initialConcepts * VECTOR_DIM);
+        this.vectorStore    = new Map(); // id -> Uint8Array（旧setVector互換の量子化特徴）
+        this.visualStore    = new Map(); // concept -> 圧縮した4野
+        this.highResLimit   = 1000; // 高精細上限: 1概念≒960KiB × 1000 = ~0.92GiB (8GB環境の安全マージン)
+        this.promotionObservations = 5;
+        this.promotionPerspectiveConfidence = 0.65;
         this.relationIds    = new Int32Array(initialConcepts * maxRelationsPerConcept);
         this.relationWeights= new Float32Array(initialConcepts * maxRelationsPerConcept);
         this.emotionBuffer  = new Float32Array(initialConcepts * EMOTION_DIM);
@@ -42,7 +47,7 @@ class AoTypedMemoryBuffer {
         this._dirty = false;      // 前回保存後に変更が入ったか
         this._saveTimer = null;
 
-        console.log(`[AoMemoryOptimizer] Chunked SoA Shared TypedArray Allocated (Initial ${initialConcepts} Concepts / ~94.7MB RAM)`);
+        console.log(`[AoMemoryOptimizer] Quantized visual memory initialized (${initialConcepts} concepts, no giant float32 preallocation)`);
 
         this._initPersistence();
     }
@@ -64,15 +69,88 @@ class AoTypedMemoryBuffer {
 
     setVector(id, vector) {
         if (!vector) return;
-        const offset = (id % this.maxConcepts) * 2368;
-        const len = Math.min(vector.length, 2368);
-        this.vectorBuffer.set(vector.subarray(0, len), offset);
+        const len = Math.min(vector.length, this.VECTOR_DIM);
+        const packed = new Uint8Array(len);
+        for (let i = 0; i < len; i++) packed[i] = Math.max(0, Math.min(255, Math.round((vector[i] || 0) * 255)));
+        this.vectorStore.set(id, packed);
         this._scheduleSave();
     }
 
     getVector(id) {
-        const offset = (id % this.maxConcepts) * 2368;
-        return this.vectorBuffer.subarray(offset, offset + 2368);
+        const packed = this.vectorStore.get(id);
+        const out = new Float32Array(this.VECTOR_DIM);
+        if (packed) for (let i = 0; i < packed.length; i++) out[i] = packed[i] / 255;
+        return out;
+    }
+
+    _sample(src, srcW, srcH, x, y) {
+        const sx = Math.min(srcW - 1, Math.max(0, Math.floor(x * srcW)));
+        const sy = Math.min(srcH - 1, Math.max(0, Math.floor(y * srcH)));
+        return src[sy * srcW + sx] || 0;
+    }
+
+    _resample(src, srcW, srcH, size, scale = 1) {
+        const out = new Uint8Array(size * size);
+        for (let y = 0; y < size; y++) for (let x = 0; x < size; x++)
+            out[y * size + x] = Math.max(0, Math.min(255, Math.round(this._sample(src, srcW, srcH, x / size, y / size) * scale)));
+        return out;
+    }
+
+    // 4野をint8で保存。境界野は支配方向+強度の2byte/セル。
+    storeVisualLayers(concept, v2Result) {
+        if (!concept || !v2Result?.layers) return null;
+        const { layers, centerPoint, spatialObservation } = v2Result;
+        const width = layers.width || (Math.sqrt(layers.brightnessLayer.length) | 0);
+        const height = layers.height || width;
+        if (!width || width * height !== layers.brightnessLayer.length) return null;
+        const prev = this.visualStore.get(concept);
+        const observations = (prev?.observations || 0) + 1;
+        const perspectiveConfidence = spatialObservation?.perspectiveConfidence || centerPoint?.confidence || 0;
+        const shouldPromote = prev?.tier === 'high' || (observations >= this.promotionObservations && perspectiveConfidence >= this.promotionPerspectiveConfidence);
+        const tier = shouldPromote ? 'high' : 'low';
+        const sizes = tier === 'high' ? { spatial: 256, boundary: 512, luminance: 512, color: 256 } : { spatial: 64, boundary: 64, luminance: 64, color: 64 };
+        const edgeDir = new Uint8Array(sizes.boundary * sizes.boundary);
+        const edgeStrength = this._resample(layers.boundaryLayer, width, height, sizes.boundary, 1);
+        for (let y = 0; y < sizes.boundary; y++) for (let x = 0; x < sizes.boundary; x++) {
+            const nx = this._sample(layers.normalXLayer, width, height, x / sizes.boundary, y / sizes.boundary);
+            const ny = this._sample(layers.normalYLayer, width, height, x / sizes.boundary, y / sizes.boundary);
+            edgeDir[y * sizes.boundary + x] = Math.round(((Math.atan2(ny, nx) + Math.PI) / (2 * Math.PI)) * 255) & 255;
+        }
+        // 現段階の深度は線遠近からの相対幾何プロキシ。絶対距離ではない。
+        const depth = new Uint8Array(sizes.spatial * sizes.spatial);
+        const vpX = centerPoint?.normalizedX ?? 0.5, vpY = centerPoint?.normalizedY ?? 0.5;
+        for (let y = 0; y < sizes.spatial; y++) for (let x = 0; x < sizes.spatial; x++) {
+            depth[y * sizes.spatial + x] = Math.min(255, Math.round(Math.hypot(x / sizes.spatial - vpX, y / sizes.spatial - vpY) * 255));
+        }
+        const record = {
+            tier, observations, lastAccess: Date.now(), perspectiveConfidence, centerPoint,
+            sizes, depth, edgeDir, edgeStrength,
+            luminance: this._resample(layers.brightnessLayer, width, height, sizes.luminance, 1),
+            hue: this._resample(layers.hueLayer || layers.colorLayer, width, height, sizes.color, 1),
+            saturation: this._resample(layers.saturationLayer || layers.colorLayer, width, height, sizes.color, 1),
+            format: 'ao-visual-v1-int8'
+        };
+        this.visualStore.set(concept, record);
+        this._enforceHighResLimit();
+        this._scheduleSave();
+        return record;
+    }
+
+    _enforceHighResLimit() {
+        const high = [...this.visualStore.entries()].filter(([, r]) => r.tier === 'high');
+        if (high.length <= this.highResLimit) return;
+        high.sort((a, b) => (a[1].lastAccess || 0) - (b[1].lastAccess || 0));
+        for (const [name, record] of high.slice(0, high.length - this.highResLimit)) {
+            record.tier = 'low'; record.sizes = { spatial: 64, boundary: 64, luminance: 64, color: 64 };
+            // 高精細から低精細へは代表値を再サンプルして即時にメモリを解放する。
+            record.depth = this._resample(record.depth, 256, 256, 64, 1);
+            record.edgeDir = this._resample(record.edgeDir, 512, 512, 64, 1);
+            record.edgeStrength = this._resample(record.edgeStrength, 512, 512, 64, 1);
+            record.luminance = this._resample(record.luminance, 512, 512, 64, 1);
+            record.hue = this._resample(record.hue, 256, 256, 64, 1);
+            record.saturation = this._resample(record.saturation, 256, 256, 64, 1);
+            this.visualStore.set(name, record);
+        }
     }
 
     setRelations(id, relMap) {
@@ -119,7 +197,8 @@ class AoTypedMemoryBuffer {
             maxRelations: this.maxRelations,
             nextId: this.nextId,
             idPool: Array.from(this.idPool.entries()), // [[conceptName, id], ...]
-            vectorBuffer: this.vectorBuffer,
+            vectorStore: Array.from(this.vectorStore.entries()),
+            visualStore: Array.from(this.visualStore.entries()),
             relationIds: this.relationIds,
             relationWeights: this.relationWeights,
             emotionBuffer: this.emotionBuffer,
@@ -131,9 +210,8 @@ class AoTypedMemoryBuffer {
         if (!data) return false;
         try {
             // サイズ(次元数・上限概念数)が変わっていたら不整合復元を避けて何もしない
-            if (data.vectorBuffer && data.vectorBuffer.length === this.vectorBuffer.length) {
-                this.vectorBuffer.set(data.vectorBuffer);
-            }
+            if (Array.isArray(data.vectorStore)) this.vectorStore = new Map(data.vectorStore);
+            if (Array.isArray(data.visualStore)) this.visualStore = new Map(data.visualStore);
             if (data.relationIds && data.relationIds.length === this.relationIds.length) {
                 this.relationIds.set(data.relationIds);
             }

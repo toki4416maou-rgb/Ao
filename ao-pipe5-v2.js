@@ -196,6 +196,7 @@ class SensoryAssetBridgeV2 {
             avgEdge,
             avgTexture,
             centerPoint:  features.centerPoint,
+            spatialObservation: features.spatialObservation || null,
             cameraMotion: features.cameraMotion || 'still',
             motionDelta:  features.motionDelta  || { dx: 0, dy: 0 },
             // 感情マッピング
@@ -214,13 +215,12 @@ class SensoryAssetBridgeV2 {
 
         // 🧠 本家PIPE5: 概念正規化・認知推論結合回路 (Cognitive Grounding)
         const normalizeConceptLabel = (rawText) => {
-            if (!rawText) return '猫';
+            if (!rawText) return '不明';
             let txt = rawText.trim();
-            if (txt.includes('ねこ') || txt.includes('ネコ') || txt.includes('猫')) return '猫';
             txt = txt.replace(/^(これ|それ|あれ|この|その|あの)(は|が|の|を)?/g, '');
             txt = txt.replace(/(だよ|です|だね|だよー|だ|ちゃん|さん|の写真|の画像|の動画|の音|画|動画|音|見せて|描いて)$/g, '');
             txt = txt.trim();
-            return txt.length > 0 ? txt : '猫';
+            return txt.length > 0 ? txt : '不明';
         };
 
         const coreConcept = normalizeConceptLabel(text || name);
@@ -273,18 +273,13 @@ class SensoryAssetBridgeV2 {
 
         this.cir.record(action, stateBefore, stateAfter);
 
-        // 空間野（SpatialInteractionModel）へ投影
-        const sp = this.being.spatialState || this.being.spatialInteractionModel;
-        if (sp && sp.update) {
+        // 空間野へは、ファイル名ではなく概念名をキーにして観測を直接保存する。
+        // SpatialStateManager.update() はcanonical配列用なので、画像サマリを渡してはいけない。
+        const sp = this.being.spatialState;
+        if (sp && sp.observePerspective && summary.spatialObservation) {
             try {
-                sp.update(name, {
-                    motionType:    summary.cameraMotion,
-                    poseDiversity: summary.curiosity,
-                    avgBright:     summary.avgBright,
-                    centerPoint:   summary.centerPoint, // 消失点を渡す
-                    v2Enabled:     true
-                });
-                console.log(`[PIPE5-v2] 空間野アップデート完了: ${name} (消失点: ${summary.centerPoint.normalizedX.toFixed(2)}, ${summary.centerPoint.normalizedY.toFixed(2)})`);
+                sp.observePerspective(coreConcept, summary.spatialObservation);
+                console.log(`[PIPE5-v2] 空間野へ概念観測を保存: ${coreConcept} (消失点: ${summary.centerPoint.normalizedX.toFixed(2)}, ${summary.centerPoint.normalizedY.toFixed(2)})`);
             } catch(e) {
                 console.warn('[PIPE5-v2] 空間野アップデート失敗:', e);
             }
@@ -296,8 +291,8 @@ class SensoryAssetBridgeV2 {
         if (this.being && this.being.saveManager && typeof this.being.saveManager.markDirty === 'function') {
             this.being.saveManager.markDirty();
         }
-        if (typeof window.typedMemory !== 'undefined' && window.typedMemory && typeof window.typedMemory._scheduleSave === 'function') {
-            window.typedMemory._scheduleSave();
+        if (typeof window.aoTypedMemory !== 'undefined' && window.aoTypedMemory && typeof window.aoTypedMemory._scheduleSave === 'function') {
+            window.aoTypedMemory._scheduleSave();
         }
 
         this.being.addLog && this.being.addLog(

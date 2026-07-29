@@ -200,13 +200,13 @@ class AoGenerativeConceptSynthesizer {
     synthesizeUnseenConcept(conceptSpec) {
         const G = this.GCELLS;
         const {
-            category = 'cat',
+            category = 'object',
             pose = { yaw: 0, pitch: 0 },
-            color = { hue: 210, sat: 0.08, bright: 0.48 }, // 灰色 (スレートグレー)
-            bodyTrajectory = { slenderScale: 0.65, heightScale: 1.15 } // 細身の幾何経路
+            color = { hue: 210, sat: 0.08, bright: 0.48 },
+            bodyTrajectory = { slenderScale: 0.65, heightScale: 1.15 }
         } = conceptSpec;
 
-        console.log(`[AoGenerativeConceptSynthesizer] 🧠 抽象概念から未だ存在しない対象を合成中: Category=${category}, Pose=Frontal(yaw=${pose.yaw}°), Body=Slender(${bodyTrajectory.slenderScale}), Color=Grey`);
+        console.log(`[AoGenerativeConceptSynthesizer] 🧠 抽象概念から未だ存在しない対象を合成中: Category=${category}, Pose=(yaw=${pose.yaw}°), Body=Scale(${bodyTrajectory.slenderScale})`);
 
         const brightnessGrid = new Float32Array(G * G);
         const hueGrid        = new Float32Array(G * G);
@@ -228,48 +228,30 @@ class AoGenerativeConceptSynthesizer {
                 const u = gx / G;
                 const idx = gy * G + gx;
 
-                // 幾何形状・経路概念 (細い猫の正面シルエット ＋ 耳 ＋ 瞳)
+                // 幾何形状・経路概念 (概念パラメータからの汎用シルエット)
                 const faceDx = (u - cx) / widthScale;
                 const faceDy = (v - cy) / heightScale;
                 const faceDist2 = faceDx * faceDx + faceDy * faceDy;
 
-                // 1. 左右の三角耳の幾何経路 (Triangular Ear Geometry)
-                const earLeftDist = Math.hypot((u - (cx - 0.12)) / 0.08, (v - (cy - 0.22)) / 0.16);
-                const earRightDist = Math.hypot((u - (cx + 0.12)) / 0.08, (v - (cy - 0.22)) / 0.16);
-                const isEar = (earLeftDist < 1.0 && v < cy) || (earRightDist < 1.0 && v < cy);
-
-                // 2. 左右の瞳の幾何経路 (Eye/Iris Geometry)
-                const eyeLeftDist  = Math.hypot((u - (cx - 0.09)) / 0.045, (v - (cy - 0.04)) / 0.035);
-                const eyeRightDist = Math.hypot((u - (cx + 0.09)) / 0.045, (v - (cy - 0.04)) / 0.035);
-                const isEye = eyeLeftDist < 1.0 || eyeRightDist < 1.0;
-
-                // 色彩概念: 灰色 (Slate Grey) の統一
+                // 色彩概念: 指定色の統一
                 hueGrid[idx] = color.hue;
                 satGrid[idx] = color.sat;
 
-                if (isEye) {
-                    // 瞳: エメラルドグリーンの光沢
-                    hueGrid[idx] = 135;
-                    satGrid[idx] = 0.85;
-                    brightnessGrid[idx] = 0.75;
-                    edgeStrengths[idx]  = 0.95;
-                    textureEnergy[idx]  = 0.80;
-                    edgeAngles[idx]     = 0;
-                } else if (isEar || faceDist2 <= 1.0) {
-                    // 猫の細身胴体・頭部・耳領域
+                if (faceDist2 <= 1.0) {
+                    // 物体領域
                     const edgeDist = Math.sqrt(faceDist2);
                     const bVal = Math.max(0.18, Math.min(0.82, (1.0 - edgeDist * 0.55) * color.bright * 1.5));
                     brightnessGrid[idx] = bVal;
 
-                    if (edgeDist > 0.68 || isEar) {
-                        edgeStrengths[idx] = 0.85; // 強いシャープな輪郭
+                    if (edgeDist > 0.68) {
+                        edgeStrengths[idx] = 0.85;
                         textureEnergy[idx] = 0.60;
                     } else {
                         edgeStrengths[idx] = 0.20;
                         textureEnergy[idx] = 0.35;
                     }
 
-                    // 正面向きの毛流れ・角度経路
+                    // 方向・角度経路
                     const angleToCenter = Math.atan2(v - cy, u - cx);
                     edgeAngles[idx] = angleToCenter + Math.PI * 0.5;
                 } else {
@@ -285,7 +267,7 @@ class AoGenerativeConceptSynthesizer {
         return {
             spatial: { x: cx, y: cy },
             attributes: { hue: color.hue, saturation: color.sat, brightness: color.bright, roughness: 0.30 },
-            saliency: [{ concept: '概念合成による未存在の正面スレンダー灰猫', saliency: 0.99 }],
+            saliency: [{ concept: `概念合成による未存在の${category}`, saliency: 0.99 }],
             highResData: {
                 GCELLS: G,
                 centerPoint: { x: cx, y: cy },
@@ -301,6 +283,77 @@ class AoGenerativeConceptSynthesizer {
 }
 
 window.AoGenerativeConceptSynthesizer = AoGenerativeConceptSynthesizer;
+
+// 透視線（画像中の直線エッジ）から消失点を推定する共通ユーティリティ。
+// サンプルは { x, y, nx, ny, weight }。n=(nx,ny) は直線の法線で、
+// n・(p-[x,y])=0 を満たす。明度やエッジの「重心」は使用しない。
+window.AoPerspectiveGeometry = window.AoPerspectiveGeometry || {
+    estimateVanishingPoint(samples, width, height) {
+        const fallback = {
+            x: width * 0.5, y: height * 0.5, normalizedX: 0.5, normalizedY: 0.5,
+            detected: false, confidence: 0, method: 'no-line-consensus'
+        };
+        if (!samples || samples.length < 8) return fallback;
+
+        // 計算量を一定に保ちつつ、強い線を優先して均等に間引く。
+        const sorted = samples.filter(s => Number.isFinite(s.nx) && Number.isFinite(s.ny) && s.weight > 0)
+            .sort((a, b) => b.weight - a.weight);
+        const limit = 320;
+        const stride = Math.max(1, Math.ceil(sorted.length / limit));
+        const lines = [];
+        for (let i = 0; i < sorted.length && lines.length < limit; i += stride) {
+            const s = sorted[i];
+            const len = Math.hypot(s.nx, s.ny);
+            if (len < 0.5) continue;
+            const a = s.nx / len, b = s.ny / len;
+            lines.push({ a, b, c: a * s.x + b * s.y, weight: Math.min(255, s.weight) });
+        }
+        if (lines.length < 8) return fallback;
+
+        const diagonal = Math.hypot(width, height);
+        const maxDistance = Math.max(2, diagonal * 0.012);
+        const maxExtent = diagonal * 4; // 画面外の消失点も許す
+        let best = null;
+        const trials = Math.min(240, lines.length * 3);
+
+        // 決定的な組み合わせでRANSAC。実行ごとに結果が揺れない。
+        for (let t = 0; t < trials; t++) {
+            const l1 = lines[(t * 37 + 11) % lines.length];
+            const l2 = lines[(t * 97 + 29) % lines.length];
+            const det = l1.a * l2.b - l2.a * l1.b;
+            if (Math.abs(det) < 0.22) continue; // ほぼ平行な線は交点に使わない
+            const x = (l1.c * l2.b - l2.c * l1.b) / det;
+            const y = (l1.a * l2.c - l2.a * l1.c) / det;
+            if (!Number.isFinite(x) || !Number.isFinite(y) || Math.hypot(x - width * .5, y - height * .5) > maxExtent) continue;
+
+            let score = 0, support = 0, aa = 0, ab = 0, bb = 0, ac = 0, bc = 0;
+            for (const line of lines) {
+                const residual = Math.abs(line.a * x + line.b * y - line.c);
+                if (residual > maxDistance) continue;
+                const w = line.weight * (1 - residual / maxDistance);
+                score += w; support++;
+                aa += w * line.a * line.a; ab += w * line.a * line.b; bb += w * line.b * line.b;
+                ac += w * line.a * line.c; bc += w * line.b * line.c;
+            }
+            if (!best || score > best.score) best = { x, y, score, support, aa, ab, bb, ac, bc };
+        }
+        if (!best || best.support < 4) return fallback;
+
+        // 合意した直線全体に最小二乗フィットして、二線交点のノイズを除く。
+        const normalDet = best.aa * best.bb - best.ab * best.ab;
+        if (Math.abs(normalDet) > 1e-6) {
+            best.x = (best.ac * best.bb - best.ab * best.bc) / normalDet;
+            best.y = (best.aa * best.bc - best.ab * best.ac) / normalDet;
+        }
+        const totalWeight = lines.reduce((sum, line) => sum + line.weight, 0) || 1;
+        const confidence = Math.min(1, (best.score / totalWeight) * Math.min(1, best.support / 10));
+        if (confidence < 0.12) return fallback;
+        return {
+            x: best.x, y: best.y, normalizedX: best.x / width, normalizedY: best.y / height,
+            detected: true, confidence, support: best.support, method: 'edge-line-ransac-least-squares'
+        };
+    }
+};
 
 class AoHighResSpatialAnalyzer {
     constructor(gcells = 512) {
@@ -328,6 +381,7 @@ class AoHighResSpatialAnalyzer {
         const blockW = w / G;
         const blockH = h / G;
 
+        const perspectiveSamples = [];
         let totalEdgeX = 0, totalEdgeY = 0, totalEdgeWeight = 0.001;
         let brightX = 0, brightY = 0, totalBrightness = 0.001;
 
@@ -412,6 +466,11 @@ class AoHighResSpatialAnalyzer {
                     totalEdgeX += gx * mag;
                     totalEdgeY += gy * mag;
                     totalEdgeWeight += mag;
+                    // 勾配はエッジ直線の法線。画像座標へ変換して幾何推定に渡す。
+                    perspectiveSamples.push({
+                        x: (gx + 0.5) * blockW, y: (gy + 0.5) * blockH,
+                        nx: sumGradX / mag, ny: sumGradY / mag, weight: mag
+                    });
                 }
             }
         }
@@ -419,13 +478,18 @@ class AoHighResSpatialAnalyzer {
         const centerGx = (brightX / totalBrightness * 0.35) + (totalEdgeX / totalEdgeWeight * 0.65);
         const centerGy = (brightY / totalBrightness * 0.35) + (totalEdgeY / totalEdgeWeight * 0.65);
 
-        const centerPoint = {
+        const saliencyCenter = {
             x: Math.min(0.9, Math.max(0.1, centerGx / G)),
             y: Math.min(0.9, Math.max(0.1, centerGy / G))
         };
+        const vanishingPoint = window.AoPerspectiveGeometry.estimateVanishingPoint(perspectiveSamples, w, h);
+        // 描画互換用のcenterPointは維持するが、消失点が未検出なら注目中心に戻す。
+        const centerPoint = vanishingPoint.detected
+            ? { x: vanishingPoint.normalizedX, y: vanishingPoint.normalizedY }
+            : saliencyCenter;
 
-        // ── Predictive Coding: 猫の認知Prior（内部知識モデル）によるベイズ角度補正 ──
-        // 脳がノイズ混じりの入力データから「理想的な猫の毛並み流れ」を補完再現するように、
+        // ── Predictive Coding: 認知Prior（内部知識モデル）によるベイズ角度補正 ──
+        // 脳がノイズ混じりの入力データから「理想的な物体の表面流れ」を補完再現するように、
         // 消失点（中心）からの放射・流線ベクトル場（Prior）と観測エッジ角度（Observation）を統合する
         for (let gy = 0; gy < G; gy++) {
             const v = gy / G;
@@ -436,11 +500,11 @@ class AoHighResSpatialAnalyzer {
                 const obsAngle = edgeAngles[idx];
                 const eStr = edgeStrengths[idx];
 
-                // 消失点・中心 (FOE) からの放射・曲線ベクトル（猫の顔の幾何学Prior）
+                // 消失点・中心 (FOE) からの放射・曲線ベクトル（幾何学Prior）
                 const dx = u - centerPoint.x;
                 const dy = v - centerPoint.y;
 
-                // 額・耳に向かって立ち上がる毛流れ / 頬・口元から外側へ広がる毛流れPrior
+                // 上部に向かって立ち上がる表面流れ / 下部から外側へ広がる表面流れPrior
                 let priorAngle = 0;
                 if (v < centerPoint.y) {
                     priorAngle = Math.atan2(dy * 1.5, dx * 0.8) - Math.PI * 0.5;
@@ -467,6 +531,8 @@ class AoHighResSpatialAnalyzer {
         return {
             GCELLS: G,
             centerPoint,
+            vanishingPoint,
+            saliencyCenter,
             brightnessGrid,
             hueGrid,
             satGrid,
@@ -572,6 +638,12 @@ class AoHighResSpatialAnalyzer {
     _applyMicroDetailEnhancement(bGrid, eGrid, tGrid, G, edgeAngles, hGrid = null, sGrid = null) {
         // Gestalt 微細化補足 (Micro-structure & Ultra-fine Fur Grain Inpainting Pass)
         // [周囲補足] ➔ [境界補足] の後に呼び出され、Gabor/LBP高周波エネルギーからミクロな毛並み束感・皮下光線散乱・超解像ディテールを補足合成
+        //
+        // ⚠️ 修正: 以前は座標(gx,gy)だけで決まる固定のsin/cos模様を全画像・全セルに
+        // 一律で重ねていた（画像の中身を一切見ていない、常に同じモアレ状ノイズ）。
+        // ここを、①実際のエッジ方向(edgeAngles＝毛並みが流れる向き)に沿った異方性と、
+        // ②そのセル自身の明度変化（内容依存の擬似乱数シード）から作る粒状感に変更し、
+        // 画像の内容によって実際に変わる質感になるようにする。
         const copyB = new Float32Array(bGrid);
 
         for (let gy = 0; gy < G; gy++) {
@@ -581,16 +653,29 @@ class AoHighResSpatialAnalyzer {
                 const eStr   = eGrid[idx] || 0;
                 const angle  = edgeAngles ? edgeAngles[idx] || 0 : 0;
 
-                // 高周波ミクロ粒状ノイズ ＆ Gaborテクスチャエネルギーによる細部微細化
-                const microPattern = Math.sin(gx * 0.85 + gy * 0.65) * Math.cos(gx * 0.45 - gy * 0.95);
-                const microDetail = microPattern * (texEng * 0.18 + eStr * 0.08);
+                // エッジ接線方向の隣接セルとの明度差 → そのセル固有の「内容」を表す値
+                const nx = Math.min(G - 1, Math.max(0, Math.round(gx + Math.cos(angle))));
+                const ny = Math.min(G - 1, Math.max(0, Math.round(gy + Math.sin(angle))));
+                const localVariation = copyB[idx] - copyB[ny * G + nx];
+
+                // 内容依存の擬似乱数（座標だけでなくlocalVariationを種に混ぜるため、
+                // 同じ座標でも画像が変われば違う粒状感になる）
+                const seedRaw = Math.sin((idx + 1) * 12.9898 + localVariation * 78.233) * 43758.5453;
+                const grain = (seedRaw - Math.floor(seedRaw)) * 2 - 1; // -1..1
+
+                // エッジ接線方向(毛の流れ)に沿わせた異方性パターン
+                const tanPattern = Math.sin(
+                    gx * Math.cos(angle) * 1.2 + gy * Math.sin(angle) * 1.2 + localVariation * 20
+                );
+
+                const microDetail = (tanPattern * 0.6 + grain * 0.4) * (texEng * 0.18 + eStr * 0.08);
 
                 // 微細化した毛並み・キメの明暗・ツヤ補正
                 bGrid[idx] = Math.min(1.0, Math.max(0.0, copyB[idx] + microDetail));
 
                 // 彩度の微細ダイナミクス
                 if (sGrid && sGrid[idx] > 0) {
-                    sGrid[idx] = Math.min(1.0, Math.max(0.0, sGrid[idx] + microPattern * 0.04));
+                    sGrid[idx] = Math.min(1.0, Math.max(0.0, sGrid[idx] + tanPattern * 0.04));
                 }
             }
         }
@@ -704,18 +789,43 @@ class AoSpatialRendererV2 {
                     resolvedSrc = directConcept.visualData || directConcept.imageSrc;
                 }
             }
-            // ② 著名概念（「伏せた猫」「猫」）のフォールバック直接抽出
-            if (!resolvedSrc) {
-                if (textHint.includes('伏せた猫') || being.concepts.has('伏せた猫')) {
-                    const c = being.concepts.get('伏せた猫');
-                    if (c && (c.visualData || c.imageSrc)) resolvedSrc = c.visualData || c.imageSrc;
-                }
-            }
-            if (!resolvedSrc) {
-                if (textHint.includes('猫') || being.concepts.has('猫')) {
-                    const c = being.concepts.get('猫');
-                    if (c && (c.visualData || c.imageSrc)) resolvedSrc = c.visualData || c.imageSrc;
-                }
+            // ② 学習済み概念からのフォールバック直接抽出
+            // (特定概念へのハードコード分岐は撤去済み — textHintマッチで動的に取得)
+        }
+
+        // 🧠【新形式4野メモリ接続】
+        // ao-memory-optimizer.js が保存した uint8量子化済み visualStore を優先参照する。
+        // ①高精細(256/512)→float32アンパック → highResData として渡す。
+        // ② visualStore にデータがなければ従来の resolvedSrc / spatialVector ルートを使う。
+        let injectedHighResData = null;
+        if (textHint && window.aoTypedMemory?.visualStore) {
+            const vr = window.aoTypedMemory.visualStore.get(textHint.trim());
+            if (vr && vr.depth) {
+                // Uint8Array → Float32Array ([0,255] → [0,1]) アンパック
+                const G_lum  = vr.sizes.luminance;
+                const G_sp   = vr.sizes.spatial;
+                const G_bnd  = vr.sizes.boundary;
+                const G_col  = vr.sizes.color;
+                const unpack = (arr) => { const f = new Float32Array(arr.length); for (let i = 0; i < arr.length; i++) f[i] = arr[i] / 255; return f; };
+                // 境界野: edgeDir(方向0-255→0-2π) と edgeStrength(強度0-255→0-1)
+                const edgeAngles    = new Float32Array(G_bnd * G_bnd);
+                const edgeStrengths = unpack(vr.edgeStrength);
+                for (let i = 0; i < vr.edgeDir.length; i++) edgeAngles[i] = (vr.edgeDir[i] / 255) * Math.PI * 2;
+                // 解像度を luminance(512) 基準で統一（bicubic補間は render 内で実施）
+                injectedHighResData = {
+                    GCELLS:         G_lum,
+                    centerPoint:    vr.centerPoint || { x: 0.5, y: 0.45 },
+                    brightnessGrid: unpack(vr.luminance),
+                    edgeAngles:     edgeAngles,
+                    edgeStrengths:  edgeStrengths,
+                    textureEnergy:  null,
+                    hueGrid:        vr.hue ? unpack(vr.hue) : null,
+                    satGrid:        vr.saturation ? unpack(vr.saturation) : null,
+                    _tier:          vr.tier,
+                    _fromVisualStore: true,
+                };
+                // GCELLS が luminance サイズと合うよう調整
+                injectedHighResData.GCELLS = G_lum;
             }
         }
 
@@ -739,7 +849,11 @@ class AoSpatialRendererV2 {
 
         let highResData;
         let usedSyntheticCatFallback = false;
-        if (snapshot.highResData) {
+        if (injectedHighResData) {
+            // 【最優先】ao-memory-optimizer.js の uint8量子化済み visualStore から復元したデータ
+            // 高精細(512×512)または低精細(64×64)のどちらかが入っている
+            highResData = injectedHighResData;
+        } else if (snapshot.highResData) {
             // 呼び出し元が既に解析済みグリッドを渡している（例: aoRenderOutput が
             // 実写真canvasをanalyzeAndCompressした結果）→ そのまま使う
             highResData = snapshot.highResData;
@@ -776,6 +890,22 @@ class AoSpatialRendererV2 {
         const vpX = center.x * w;
         const vpY = center.y * h;
 
+        // G×G グリッド（実解析済みの明度・エッジ強度）をピクセル座標へ双線形サンプリング
+        // する簡易ヘルパー。以前はここで無視されていた実データ(brightnessGrid/edgeStrengths)を
+        // 深度場に反映させ、常に同心円状のドームになる問題を解消する。
+        const _sampleGrid = (grid, u, v) => {
+            const gx = Math.min(G - 1, Math.max(0, u * (G - 1)));
+            const gy = Math.min(G - 1, Math.max(0, v * (G - 1)));
+            const x0 = Math.floor(gx), y0 = Math.floor(gy);
+            const x1 = Math.min(G - 1, x0 + 1), y1 = Math.min(G - 1, y0 + 1);
+            const fx = gx - x0, fy = gy - y0;
+            const v00 = grid[y0 * G + x0] || 0;
+            const v10 = grid[y0 * G + x1] || 0;
+            const v01 = grid[y1 * G + x0] || 0;
+            const v11 = grid[y1 * G + x1] || 0;
+            return v00 * (1 - fx) * (1 - fy) + v10 * fx * (1 - fy) + v01 * (1 - fx) * fy + v11 * fx * fy;
+        };
+
         const depthMap = new Float32Array(w * h);
         const normalX  = new Float32Array(w * h);
         const normalY  = new Float32Array(w * h);
@@ -783,10 +913,24 @@ class AoSpatialRendererV2 {
 
         for (let py = 0; py < h; py++) {
             const dy = (py - vpY) / h;
+            const v = py / h;
             for (let px = 0; px < w; px++) {
                 const dx = (px - vpX) / w;
+                const u = px / w;
                 const rNorm = Math.hypot(dx, dy);
-                const depth = Math.min(1.0, Math.max(0.05, 0.15 + 0.85 * Math.pow(rNorm, 0.75)));
+
+                // ①消失点を軸としたシーン全体の遠近感（従来の同心円成分・全体の奥行きの目安）
+                const perspectiveDepth = 0.15 + 0.85 * Math.pow(rNorm, 0.75);
+
+                // ②実際の被写体の明度・輪郭から得られる「本物の凹凸」
+                //    明るい部分=手前・暗い部分=奥、というバンプマッピング的な直感で高さ場を作る
+                const localBrightness = brightnessGrid ? _sampleGrid(brightnessGrid, u, v) : 0.5;
+                const localEdge = edgeStrengths ? _sampleGrid(edgeStrengths, u, v) : 0;
+
+                // 遠近感(50%) + 実データの明暗による凹凸(35%) + 輪郭の強調(15%)
+                const depth = Math.min(1.0, Math.max(0.05,
+                    perspectiveDepth * 0.5 + (1.0 - localBrightness) * 0.35 + localEdge * 0.15
+                ));
                 depthMap[py * w + px] = depth;
             }
         }
@@ -840,8 +984,8 @@ class AoSpatialRendererV2 {
         };
 
         let gaborFeatures = new Float32Array(32).fill(0.5);
-        if (vec && vec.length >= 2368) {
-            gaborFeatures = vec.slice(2320, 2352);
+        if (vec && vec.length >= 36928) {
+            gaborFeatures = vec.slice(36880, 36912);
         }
         let maxGaborStr = Math.max(...gaborFeatures, 0.5);
 
@@ -1070,30 +1214,10 @@ class AoSpatialRendererV2 {
             ctx.putImageData(fieldImgData, 0, 0);
         }
 
-        // 口元からのリアルな猫のヒゲ (Whiskers Overlay)
-        // 以前はここが無条件に実行されており、実際の学習画像(decodedLearned)や
-        // 実写真解析(snapshot.highResData)を使った場合でも、猫でも何でもない
-        // 被写体に対して常にヒゲの白線が上書きされていた（アップロード画像の症状はこれが主因）。
-        // → 合成フォールバック（学習データが無い場合のプレースホルダー猫ジオメトリ）の時だけ描く。
-        if (usedSyntheticCatFallback) {
-            const mouthX = vpX;
-            const mouthY = vpY + h * 0.12;
-            ctx.lineWidth = 1.1;
-            ctx.strokeStyle = 'rgba(255, 255, 255, 0.85)';
-            for (let side = -1; side <= 1; side += 2) {
-                for (let wIdx = -2; wIdx <= 2; wIdx++) {
-                    const startX = mouthX + side * 20;
-                    const startY = mouthY + wIdx * 6;
-                    const endX   = mouthX + side * (130 + Math.abs(wIdx) * 15);
-                    const endY   = mouthY + wIdx * 18 + side * 5;
-
-                    ctx.beginPath();
-                    ctx.moveTo(startX, startY);
-                    ctx.quadraticCurveTo(startX + side * 55, startY + wIdx * 4, endX, endY);
-                    ctx.stroke();
-                }
-            }
-        }
+        // 🧠【ヒゲの決め打ち描画を撤去】以前はここで「猫のヒゲ」を合成フォールバック時に
+        // 描いていたが、これは汎用レンダラーの中に「猫専用」の決め打ちが残ったままの状態で、
+        // 今日直してきた他の箇所（フェイク法線・固定テクスチャパターンなど）と同じ問題だった。
+        // 実データに基づかない装飾は描かない方針に統一し、この処理は撤去する。
 
         ctx.restore();
 
@@ -1134,28 +1258,116 @@ class AoSpatialRendererV2 {
         const edgeAngles     = new Float32Array(G * G);
         const edgeStrengths  = new Float32Array(G * G);
         const textureEnergy  = new Float32Array(G * G);
+        const hueGrid        = new Float32Array(G * G);
+        const satGrid        = new Float32Array(G * G);
 
-        const srcG = 16;
-        const srcB = spatialVector ? spatialVector.slice(8, 264) : new Float32Array(256).fill(0.5);
-        const srcHog = spatialVector ? spatialVector.slice(272, 2320) : new Float32Array(2048);
+        // 🧠【49216次元レイアウト】
+        // [0-7]hue [8-4103]brightness(64×64) [4104-4111]gradient [4112-36879]hog(64×64×8)
+        // [36880-36911]gabor [36912-36927]lbp [36928-41023]hue_grid(64×64)
+        // [41024-45119]sat_grid(64×64) [45120-49215]texture_grid(64×64・新規: 局所分散ベース)
+        const srcG = 64;
+        const srcB   = spatialVector ? spatialVector.slice(8, 4104)       : new Float32Array(srcG * srcG).fill(0.5);
+        const srcHog = spatialVector ? spatialVector.slice(4112, 36880)   : new Float32Array(srcG * srcG * 8);
+        const hasColorGrid = spatialVector && spatialVector.length >= 45120;
+        const hasTextureGrid = spatialVector && spatialVector.length >= 49216;
+        const srcHue = hasColorGrid ? spatialVector.slice(36928, 41024) : null;
+        const srcSat = hasColorGrid ? spatialVector.slice(41024, 45120) : null;
+        const srcTex = hasTextureGrid ? spatialVector.slice(45120, 49216) : null;
+
+        // 64×64グリッドをバイリニア補間で128×128へ拡大するヘルパー。
+        // 以前は最近傍(ニアレストネイバー)で単純コピーしていたため、拡大結果が
+        // ブロック状のモザイクになっていた。
+        const _bilinear = (src, srcSize) => {
+            return (gx, gy) => {
+                const fx = (gx / (G - 1)) * (srcSize - 1);
+                const fy = (gy / (G - 1)) * (srcSize - 1);
+                const x0 = Math.floor(fx), y0 = Math.floor(fy);
+                const x1 = Math.min(srcSize - 1, x0 + 1), y1 = Math.min(srcSize - 1, y0 + 1);
+                const tx = fx - x0, ty = fy - y0;
+                const v00 = src[y0 * srcSize + x0] || 0;
+                const v10 = src[y0 * srcSize + x1] || 0;
+                const v01 = src[y1 * srcSize + x0] || 0;
+                const v11 = src[y1 * srcSize + x1] || 0;
+                return v00 * (1 - tx) * (1 - ty) + v10 * tx * (1 - ty) + v01 * (1 - tx) * ty + v11 * tx * ty;
+            };
+        };
+        const sampleB   = _bilinear(srcB, srcG);
+        const sampleHue = srcHue ? _bilinear(srcHue, srcG) : null;
+        const sampleSat = srcSat ? _bilinear(srcSat, srcG) : null;
+        const sampleTex = srcTex ? _bilinear(srcTex, srcG) : null;
+
+        // 🧠【複数回学習の信頼度を反映】snapshot.varianceVector があれば
+        // （imageAdapter.prototypes のように、同じ概念を複数回学習して蓄積した分散）、
+        // 分散が低い＝毎回安定していたセルほど強く・くっきり描画し、
+        // 分散が高い＝毎回バラバラだったセルほど中立値へ寄せてぼかす。
+        // 人間が同じものを何度も見るとブレが均されてはっきり見えてくる、という直感の実装。
+        const varVec = snapshot?.varianceVector || null;
+        let sampleBRel = null, sampleHRel = null, sampleSRel = null, sampleTRel = null, sampleShapeRel = null;
+        if (varVec && varVec.length >= spatialVector.length) {
+            const relFromVar = (v) => 1 / (1 + (v || 0) * 4); // 分散→信頼度(0-1)
+            const varB   = varVec.slice(8, 4104);
+            const varGrad = varVec.slice(4104, 4112);
+            const shapeVarAvg = varGrad.reduce((a, b) => a + b, 0) / Math.max(varGrad.length, 1);
+            const relB   = Float32Array.from(varB, relFromVar);
+            sampleBRel = _bilinear(relB, srcG);
+            sampleShapeRel = () => relFromVar(shapeVarAvg); // HOGの分散は勾配ヒストで代用（グローバル値）
+
+            if (hasColorGrid) {
+                const varHue = varVec.slice(36928, 41024);
+                const varSat = varVec.slice(41024, 45120);
+                sampleHRel = _bilinear(Float32Array.from(varHue, relFromVar), srcG);
+                sampleSRel = _bilinear(Float32Array.from(varSat, relFromVar), srcG);
+            }
+            if (hasTextureGrid) {
+                const varTex = varVec.slice(45120, 49216);
+                sampleTRel = _bilinear(Float32Array.from(varTex, relFromVar), srcG);
+            }
+        }
 
         for (let gy = 0; gy < G; gy++) {
             for (let gx = 0; gx < G; gx++) {
-                const srcGx = Math.floor((gx / G) * srcG);
-                const srcGy = Math.floor((gy / G) * srcG);
-                const srcIdx = srcGy * srcG + srcGx;
-
                 const idx = gy * G + gx;
-                brightnessGrid[idx] = srcB[srcIdx] || 0.5;
+                const rawB = sampleB(gx, gy);
 
+                if (sampleBRel) {
+                    // 信頼度が低いほど中立(0.5)へ寄せる＝ぼける
+                    const rel = sampleBRel(gx, gy);
+                    brightnessGrid[idx] = rawB * rel + 0.5 * (1 - rel);
+                } else {
+                    brightnessGrid[idx] = rawB;
+                }
+
+                if (sampleHue && sampleSat) {
+                    const rawHue = sampleHue(gx, gy);
+                    const rawSat = sampleSat(gx, gy);
+                    if (sampleHRel && sampleSRel) {
+                        const hRel = sampleHRel(gx, gy), sRel = sampleSRel(gx, gy);
+                        hueGrid[idx] = rawHue; // 色相自体はそのまま（角度量なので中立値への線形ブレンドは不適切）
+                        satGrid[idx] = rawSat * sRel; // 信頼度が低いほど彩度を落として無彩色寄りにする
+                        // ここでは hRel は彩度側の減衰に間接的に反映させる
+                        satGrid[idx] *= (0.5 + 0.5 * hRel);
+                    } else {
+                        hueGrid[idx] = rawHue;
+                        satGrid[idx] = rawSat;
+                    }
+                }
+
+                // HOGは64×64格子上の最寄りセルからビン分布を取り、支配方向を求める
+                // （方向ビンの補間はしない。角度の平均は循環量なので単純な線形補間が効かないため）
+                const srcGx = Math.min(srcG - 1, Math.floor((gx / G) * srcG));
+                const srcGy = Math.min(srcG - 1, Math.floor((gy / G) * srcG));
+                const srcIdx = srcGy * srcG + srcGx;
                 const hogBase = srcIdx * 8;
                 const hogSlice = srcHog.slice(hogBase, hogBase + 8);
                 const maxStr = Math.max(...hogSlice);
                 const domDir = hogSlice.indexOf(maxStr);
 
+                const shapeRel = sampleShapeRel ? sampleShapeRel() : 1;
                 edgeAngles[idx]    = (domDir / 8) * Math.PI * 2 + (Math.sin(gx * 0.1) * 0.05);
-                edgeStrengths[idx] = maxStr;
-                textureEnergy[idx] = maxStr * 0.5;
+                edgeStrengths[idx] = maxStr * shapeRel; // 形が毎回バラバラだったら輪郭を弱める(=ぼかす)
+
+                const rawTex = sampleTex ? sampleTex(gx, gy) : maxStr * 0.5;
+                textureEnergy[idx] = sampleTRel ? rawTex * sampleTRel(gx, gy) : rawTex;
             }
         }
 
@@ -1164,7 +1376,11 @@ class AoSpatialRendererV2 {
             y: snapshot?.spatial?.y ?? 0.45
         };
 
-        return { GCELLS: G, centerPoint, brightnessGrid, edgeAngles, edgeStrengths, textureEnergy };
+        return {
+            GCELLS: G, centerPoint, brightnessGrid, edgeAngles, edgeStrengths, textureEnergy,
+            hueGrid: hasColorGrid ? hueGrid : null,
+            satGrid: hasColorGrid ? satGrid : null
+        };
     }
 
     _hslToRgb(h, s, l) {

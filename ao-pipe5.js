@@ -389,8 +389,8 @@ class SensoryAssetBridge {
         if (this.being && this.being.saveManager && typeof this.being.saveManager.markDirty === 'function') {
             this.being.saveManager.markDirty();
         }
-        if (typeof window.typedMemory !== 'undefined' && window.typedMemory && typeof window.typedMemory._scheduleSave === 'function') {
-            window.typedMemory._scheduleSave();
+        if (typeof window.aoTypedMemory !== 'undefined' && window.aoTypedMemory && typeof window.aoTypedMemory._scheduleSave === 'function') {
+            window.aoTypedMemory._scheduleSave();
         }
 
         this.being.addLog && this.being.addLog(

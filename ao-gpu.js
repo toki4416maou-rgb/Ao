@@ -13,21 +13,21 @@
  *   自動的にCPUフォールバックし、既存動作をそのまま維持。
  *
  * GPU化対象:
- *   ・HOGブロック計算   2048次元 (16×16グリッド × 8方向)
- *   ・明度グリッド       256次元 (16×16セル)
+ *   ・HOGブロック計算   32768次元 (64×64グリッド × 8方向)
+ *   ・明度グリッド       4096次元 (64×64セル)
  *   ・色相ヒストグラム     8次元 (8 bin)
  *   ・Gaborフィルター     32次元 (4周波数 × 8角度)
  *   ・LBP特徴量          16次元
  *   ・グレースケール変換 (前処理)
  *   ・Sobelグラジェント  (前処理)
  *
- * visual_vector レイアウト(2368次元、既存コードと完全一致):
+ * visual_vector レイアウト(36928次元、64×64高解像度化後):
  *   [0-7]    hue_hist       (8)
- *   [8-263]  brightness_grid (256)
- *   [264-271] gradient_hist  (8)
- *   [272-2319] hog_blocks    (2048)
- *   [2320-2351] gabor_features (32)
- *   [2352-2367] lbp_features   (16)
+ *   [8-4103]  brightness_grid (4096)
+ *   [4104-4111] gradient_hist  (8)
+ *   [4112-36879] hog_blocks    (32768)
+ *   [36880-36911] gabor_features (32)
+ *   [36912-36927] lbp_features   (16)
  */
 
 (function () {
@@ -107,7 +107,7 @@ uniform int u_W;
 uniform int u_H;
 in vec2 v_uv;
 out vec4 o;
-const int GRID = 16;
+const int GRID = ${HOG_GRID};
 const int BINS = 8;
 void main() {
     int fx      = int(gl_FragCoord.x);        // 0~2047
@@ -147,7 +147,7 @@ uniform int u_W;
 uniform int u_H;
 in vec2 v_uv;
 out vec4 o;
-const int GCELLS = 16;
+const int GCELLS = ${HOG_GRID};
 void main() {
     int ci     = int(gl_FragCoord.x);   // 0~255
     int cx     = ci % GCELLS;
@@ -415,6 +415,129 @@ function _readR(gl, fbo, w, h) {
 }
 
 
+// FBOからR,Gチャンネルを2本のFloat32Arrayとして読み出し（色相・彩度グリッド用）
+function _readRG(gl, fbo, w, h) {
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+    const buf = new Float32Array(w * h * 4);
+    gl.readPixels(0, 0, w, h, gl.RGBA, gl.FLOAT, buf);
+    const r = new Float32Array(w * h);
+    const g = new Float32Array(w * h);
+    for (let i = 0; i < w * h; i++) { r[i] = buf[i * 4]; g[i] = buf[i * 4 + 1]; }
+    return { r, g };
+}
+
+
+// ---- Pass 4b: 色相・彩度グリッド (BRIGHT_DIM×1, RGBA32F: R=hue/360, G=sat) ----
+// 🧠【色情報の空間配置】明度グリッドと同じセル分割で、各セルの色相・彩度も保持する。
+// 以前は色相ヒストグラム(hue_hist)が画像全体のグローバル統計のみで、空間的な位置情報が
+// 無かったため、被写体と背景で色が混ざって単色化してしまっていた。ここでセル単位の
+// 色相(循環平均: sin/cos平均→atan2)・彩度を明度グリッドと同じ解像度で保持する。
+const FS_COLORGRID = `#version 300 es
+precision highp float;
+uniform sampler2D u_img;
+uniform int u_W;
+uniform int u_H;
+in vec2 v_uv;
+out vec4 o;
+const int GCELLS = ${HOG_GRID};
+void main() {
+    int ci     = int(gl_FragCoord.x);
+    int cx     = ci % GCELLS;
+    int cy     = ci / GCELLS;
+    int cellW  = u_W / GCELLS;
+    int cellH  = u_H / GCELLS;
+    int startX = cx * cellW;
+    int startY = cy * cellH;
+    float fw   = float(u_W);
+    float fh   = float(u_H);
+    float sumCos = 0.0, sumSin = 0.0, sumSat = 0.0, cnt = 0.0;
+    for (int py = 0; py < cellH; py++) {
+        for (int px = 0; px < cellW; px++) {
+            vec2 uv = vec2(
+                (float(startX + px) + 0.5) / fw,
+                (float(startY + py) + 0.5) / fh
+            );
+            vec4 c = texture(u_img, uv);
+            float r = c.r, g = c.g, b = c.b;
+            float mx = max(r, max(g, b));
+            float mn = min(r, min(g, b));
+            float d  = mx - mn;
+            float s  = mx > 0.0 ? d / mx : 0.0;
+            float hue = 0.0;
+            if (d > 0.0001) {
+                if      (mx == r) hue = 60.0 * mod((g - b) / d, 6.0);
+                else if (mx == g) hue = 60.0 * ((b - r) / d + 2.0);
+                else              hue = 60.0 * ((r - g) / d + 4.0);
+            }
+            if (hue < 0.0) hue += 360.0;
+            float rad = radians(hue);
+            sumCos += cos(rad) * s;
+            sumSin += sin(rad) * s;
+            sumSat += s;
+            cnt += 1.0;
+        }
+    }
+    float avgHue = degrees(atan(sumSin, sumCos));
+    if (avgHue < 0.0) avgHue += 360.0;
+    float avgSat = sumSat / max(cnt, 1.0);
+    o = vec4(avgHue / 360.0, avgSat, 0.0, 1.0);
+}`;
+
+// ---- Pass 4c: テクスチャ・エネルギーグリッド (BRIGHT_DIM×1, RGBA32F) ----
+// 🧠【テクスチャの本物化】以前はテクスチャ強度を「エッジ強度(HOG最大値)のコピー」で
+// 代用していたため、形状(輪郭)と独立したチャンネルになっていなかった。
+// ここでは古典的なテクスチャ解析の基本指標である「局所的な明度の分散(ばらつき)」を使う。
+// 芝生・毛並み・砂利のような、強い単一方向のエッジは無いが細かい変化が多い領域は
+// 分散が高く出るため、HOG(支配的な1方向のエッジ強度)とは本質的に別の情報になる。
+const FS_TEXTUREGRID = `#version 300 es
+precision highp float;
+uniform sampler2D u_gray;
+uniform int u_W;
+uniform int u_H;
+in vec2 v_uv;
+out vec4 o;
+const int GCELLS = ${HOG_GRID};
+void main() {
+    int ci     = int(gl_FragCoord.x);
+    int cx     = ci % GCELLS;
+    int cy     = ci / GCELLS;
+    int cellW  = u_W / GCELLS;
+    int cellH  = u_H / GCELLS;
+    int startX = cx * cellW;
+    int startY = cy * cellH;
+    float fw   = float(u_W);
+    float fh   = float(u_H);
+    float sum  = 0.0;
+    float cnt  = 0.0;
+    for (int py = 0; py < cellH; py++) {
+        for (int px = 0; px < cellW; px++) {
+            vec2 uv = vec2(
+                (float(startX + px) + 0.5) / fw,
+                (float(startY + py) + 0.5) / fh
+            );
+            sum += texture(u_gray, uv).r;
+            cnt += 1.0;
+        }
+    }
+    float mean = sum / max(cnt, 1.0);
+
+    float varSum = 0.0;
+    for (int py = 0; py < cellH; py++) {
+        for (int px = 0; px < cellW; px++) {
+            vec2 uv = vec2(
+                (float(startX + px) + 0.5) / fw,
+                (float(startY + py) + 0.5) / fh
+            );
+            float g = texture(u_gray, uv).r;
+            varSum += (g - mean) * (g - mean);
+        }
+    }
+    float variance = varSum / max(cnt, 1.0);
+    // 標準偏差(0付近〜)を扱いやすいレンジへ軽く正規化
+    float texEnergy = clamp(sqrt(variance) * 3.0, 0.0, 1.0);
+    o = vec4(texEnergy, 0.0, 0.0, 1.0);
+}`;
+
 // ================================================================
 // AoGPUAccelerator クラス
 // ================================================================
@@ -456,7 +579,8 @@ class AoGPUAccelerator {
 
             // シェーダープログラムをコンパイル
             const defs = { gray: FS_GRAY, sobel: FS_SOBEL, hog: FS_HOG,
-                           bright: FS_BRIGHT, hue: FS_HUE, gabor: FS_GABOR, lbp: FS_LBP };
+                           bright: FS_BRIGHT, hue: FS_HUE, gabor: FS_GABOR, lbp: FS_LBP,
+                           colorgrid: FS_COLORGRID, texturegrid: FS_TEXTUREGRID };
             for (const [key, fsSrc] of Object.entries(defs)) {
                 const prog = _mkProg(gl, VS, fsSrc);
                 // a_pos 頂点属性設定
@@ -543,6 +667,30 @@ class AoGPUAccelerator {
             const brightResult = _readR(gl, brightFBO, BRIGHT_DIM, 1);
 
             // =====================================================
+            // Step 5b: 色相・彩度グリッド (BRIGHT_DIM×1) — 明度グリッドと同じセル分割
+            // =====================================================
+            const colorTex = mk(BRIGHT_DIM, 1);
+            const colorFBO = mkFBO(colorTex);
+            _draw(gl, this._progs.colorgrid, this._vao,
+                [{ unit: 0, tex: imgTex, name: 'u_img' }],
+                { u_W: W, u_H: H },
+                colorFBO, BRIGHT_DIM, 1);
+            const { r: hueGridRaw, g: satGridRaw } = _readRG(gl, colorFBO, BRIGHT_DIM, 1);
+            const hueGridResult = Array.from(hueGridRaw).map(v => v * 360); // 0-1 → 度数に戻す
+            const satGridResult = Array.from(satGridRaw);
+
+            // =====================================================
+            // Step 5c: テクスチャエネルギーグリッド (BRIGHT_DIM×1) — 局所分散ベース
+            // =====================================================
+            const texGridTex = mk(BRIGHT_DIM, 1);
+            const texGridFBO = mkFBO(texGridTex);
+            _draw(gl, this._progs.texturegrid, this._vao,
+                [{ unit: 0, tex: grayTex, name: 'u_gray' }],
+                { u_W: W, u_H: H },
+                texGridFBO, BRIGHT_DIM, 1);
+            const textureGridResult = Array.from(_readR(gl, texGridFBO, BRIGHT_DIM, 1));
+
+            // =====================================================
             // Step 6: 色相ヒストグラム (8×1)
             // =====================================================
             const hueTex = mk(HUE_DIM, 1);
@@ -597,11 +745,14 @@ class AoGPUAccelerator {
 
             return {
                 hue_hist:        hueResult,                  //  8次元 Array
-                brightness_grid: Array.from(brightResult),  // 256次元
+                brightness_grid: Array.from(brightResult),  // 4096次元
                 gradient_hist:   gradResult,                 //  8次元
-                hog_blocks:      Array.from(hogResult),      // 2048次元
+                hog_blocks:      Array.from(hogResult),      // 32768次元
                 gabor_features:  gaborResult,                //  32次元
-                lbp_features:    Array.from(lbpResult)       //  16次元
+                lbp_features:    Array.from(lbpResult),      //  16次元
+                hue_grid:        hueGridResult,               // 4096次元（空間色相グリッド）
+                sat_grid:        satGridResult,               // 4096次元（空間彩度グリッド）
+                texture_grid:    textureGridResult            // 4096次元（新規: 空間テクスチャグリッド）
             };
 
         } catch (e) {
@@ -683,17 +834,20 @@ function _srcToImageData(src, size) {
 
 // ---- GPU特徴量 → extractMeaning 戻り値オブジェクト構築 ----
 function _buildResult(adapter, features, originalSrc, imgData) {
-    const { hue_hist, brightness_grid, gradient_hist, hog_blocks, gabor_features, lbp_features } = features;
+    const { hue_hist, brightness_grid, gradient_hist, hog_blocks, gabor_features, lbp_features, hue_grid, sat_grid, texture_grid } = features;
 
-    // visual_vector: 2368次元 (既存コードの layout と完全一致)
+    // visual_vector: 49216次元 (64×64高解像度化 + 空間色相・彩度・テクスチャグリッド追加後)
     const visual_vector = [
-        ...hue_hist,          //   8
-        ...brightness_grid,   // 256
-        ...gradient_hist,     //   8
-        ...hog_blocks,        // 2048
-        ...gabor_features,    //  32
-        ...lbp_features       //  16
-    ]; // 合計 2368
+        ...hue_hist,          //     8
+        ...brightness_grid,   //  4096
+        ...gradient_hist,     //     8
+        ...hog_blocks,        // 32768
+        ...gabor_features,    //    32
+        ...lbp_features,      //    16
+        ...(hue_grid || new Array(4096).fill(0)),     // 4096
+        ...(sat_grid || new Array(4096).fill(0)),     // 4096
+        ...(texture_grid || new Array(4096).fill(0))  // 4096（新規）
+    ]; // 合計 49216
 
     // 既存コードが参照するグローバルバッファを更新
     window._aoRawFeaturesBuf = {
@@ -753,16 +907,16 @@ function _buildResult(adapter, features, originalSrc, imgData) {
     // 明暗とエッジから「中心点 (center_point)」を動的算出（消失点割り出し）
     let sumBrightX = 0, sumBrightY = 0, totalBright = 0.001;
     let sumEdgeX = 0, sumEdgeY = 0, totalEdge = 0.001;
-    for (let gy = 0; gy < 16; gy++) {
-        for (let gx = 0; gx < 16; gx++) {
-            const idx = gy * 16 + gx;
+    for (let gy = 0; gy < HOG_GRID; gy++) {
+        for (let gx = 0; gx < HOG_GRID; gx++) {
+            const idx = gy * HOG_GRID + gx;
             const b = brightness_grid[idx] || 0;
             sumBrightX += gx * b;
             sumBrightY += gy * b;
             totalBright += b;
 
-            const hogBase = idx * 8;
-            const maxHog = Math.max(...hog_blocks.slice(hogBase, hogBase + 8));
+            const hogBase = idx * HOG_BINS;
+            const maxHog = Math.max(...hog_blocks.slice(hogBase, hogBase + HOG_BINS));
             if (maxHog > 0.05) {
                 sumEdgeX += gx * maxHog;
                 sumEdgeY += gy * maxHog;
@@ -771,8 +925,8 @@ function _buildResult(adapter, features, originalSrc, imgData) {
         }
     }
     const centerPoint = {
-        x: ((sumBrightX / totalBright * 0.4) + (sumEdgeX / totalEdge * 0.6)) / 16,
-        y: ((sumBrightY / totalBright * 0.4) + (sumEdgeY / totalEdge * 0.6)) / 16
+        x: ((sumBrightX / totalBright * 0.4) + (sumEdgeX / totalEdge * 0.6)) / HOG_GRID,
+        y: ((sumBrightY / totalBright * 0.4) + (sumEdgeY / totalEdge * 0.6)) / HOG_GRID
     };
 
     return {

@@ -3,7 +3,7 @@
  *
  * 概要:
  *   画像を「色」「明度」「境界」「質感(多次元スペクトル)」の4層高精度レイヤーに分解。
- *   境界線・明度勾配の収束方向から「中心点 (消失点 / Focus of Expansion)」を精密算出し、
+ *   直線エッジの交点合意から「消失点 (Vanishing Point)」を推定し、
  *   立体感の基盤となる「3D Perspective Depth Field」と「Surface Normal Field」を直接構築。
  *   AoSpatialRendererV2 (Photo-PBR Renderer) へ高解像度フィードバックを供給。
  */
@@ -35,6 +35,8 @@ class AoGPUV2Accelerator {
 
         // 各レイヤーバッファ
         const colorLayer      = new Uint8ClampedArray(width * height);
+        const hueLayer        = new Uint8Array(width * height);
+        const saturationLayer = new Uint8Array(width * height);
         const brightnessLayer = new Uint8ClampedArray(width * height);
         const boundaryLayer   = new Uint8ClampedArray(width * height);
         const textureLayer    = new Uint8ClampedArray(width * height);
@@ -57,6 +59,16 @@ class AoGPUV2Accelerator {
             const minVal = Math.min(r, g, b);
             const chroma = maxVal - minVal;
             colorLayer[idx] = Math.min(255, chroma * 2);
+            const sat = maxVal ? chroma / maxVal : 0;
+            let hue = 0;
+            if (chroma) {
+                if (maxVal === r) hue = ((g - b) / chroma) % 6;
+                else if (maxVal === g) hue = (b - r) / chroma + 2;
+                else hue = (r - g) / chroma + 4;
+                hue = (hue * 60 + 360) % 360;
+            }
+            hueLayer[idx] = Math.round(hue / 360 * 255);
+            saturationLayer[idx] = Math.round(sat * 255);
         }
 
         // 境界 (Sobel エッジ検出) ＆ 質感 (LBP + 局所法線勾配)
@@ -98,18 +110,19 @@ class AoGPUV2Accelerator {
             }
         }
 
-        return { colorLayer, brightnessLayer, boundaryLayer, textureLayer, normalXLayer, normalYLayer };
+        return { width, height, colorLayer, hueLayer, saturationLayer, brightnessLayer, boundaryLayer, textureLayer, normalXLayer, normalYLayer };
     }
 
     // ─────────────────────────────────────────────────────────────────
-    // ② 中心点 (消失点 Focus of Expansion) の精密検出
+    // ② 消失点 (Vanishing Point) の幾何学的検出
     // ─────────────────────────────────────────────────────────────────
     extractCenterPoint(boundaryLayer, brightnessLayer, width, height) {
-        const acc = new Int32Array(width * height);
-        const step = 6;
-
-        for (let y = step; y < height - step; y += step) {
-            for (let x = step; x < width - step; x += step) {
+        const samples = [];
+        // Sobel勾配は「直線エッジの法線」。各エッジを ax+by=c の直線として扱い、
+        // 複数直線の交点をRANSACで合意させる。エッジ量の重心は用いない。
+        const step = Math.max(2, Math.floor(Math.min(width, height) / 160));
+        for (let y = 1; y < height - 1; y += step) {
+            for (let x = 1; x < width - 1; x += step) {
                 const idx = y * width + x;
                 const edge = boundaryLayer[idx];
                 if (edge < 80) continue;
@@ -118,40 +131,57 @@ class AoGPUV2Accelerator {
                 const dy = brightnessLayer[(y+1)*width + x] - brightnessLayer[(y-1)*width + x];
                 if (Math.abs(dx) < 2 && Math.abs(dy) < 2) continue;
 
-                const angle = Math.atan2(dy, dx);
-                const cos = Math.cos(angle + Math.PI/2);
-                const sin = Math.sin(angle + Math.PI/2);
-
-                for (let d = -150; d <= 150; d += 3) {
-                    const px = Math.round(x + cos * d);
-                    const py = Math.round(y + sin * d);
-                    if (px >= 0 && px < width && py >= 0 && py < height) {
-                        acc[py * width + px] += edge;
-                    }
-                }
+                const length = Math.hypot(dx, dy);
+                samples.push({ x, y, nx: dx / length, ny: dy / length, weight: edge });
             }
         }
+        const geometry = window.AoPerspectiveGeometry;
+        if (geometry && geometry.estimateVanishingPoint) {
+            return geometry.estimateVanishingPoint(samples, width, height);
+        }
+        // 通常は ao-spatial-renderer.js が先に読み込まれる。未読込時も「未検出」を
+        // 明示し、画面中央を正しい消失点であるかのようには扱わない。
+        return {
+            x: width / 2, y: height / 2, normalizedX: 0.5, normalizedY: 0.5,
+            detected: false, confidence: 0, method: 'geometry-helper-unavailable'
+        };
+    }
 
-        let maxVal = -1;
-        let bestX = Math.round(width / 2);
-        let bestY = Math.round(height * 0.45);
-
-        for (let y = 10; y < height - 10; y += 2) {
-            for (let x = 10; x < width - 10; x += 2) {
-                const idx = y * width + x;
-                const distToCenter = Math.hypot(x - width/2, y - height/2);
-                const weight = Math.exp(-distToCenter * distToCenter / (width * width * 0.18));
-                const val = acc[idx] * weight;
-
-                if (val > maxVal) {
-                    maxVal = val;
-                    bestX = x;
-                    bestY = y;
-                }
+    // 単眼画像から得られる「空間観測」を明示的に構成する。
+    // ここでの depthProxy は絶対距離ではない。線遠近と見かけの大きさから得る
+    // 相対的な奥行き手掛かりであり、概念学習時に複数観測を比較するために使う。
+    estimateSpatialObservation(layers, centerPoint, width, height) {
+        const boundary = layers.boundaryLayer;
+        let minX = width, minY = height, maxX = -1, maxY = -1;
+        let sumX = 0, sumY = 0, sumW = 0, count = 0;
+        const step = Math.max(2, Math.floor(Math.min(width, height) / 160));
+        for (let y = 1; y < height - 1; y += step) {
+            for (let x = 1; x < width - 1; x += step) {
+                const edge = boundary[y * width + x];
+                if (edge < 80) continue;
+                minX = Math.min(minX, x); minY = Math.min(minY, y);
+                maxX = Math.max(maxX, x); maxY = Math.max(maxY, y);
+                sumX += x * edge; sumY += y * edge; sumW += edge; count++;
             }
         }
-
-        return { x: bestX, y: bestY, normalizedX: bestX / width, normalizedY: bestY / height };
+        const hasRegion = count >= 6 && maxX >= minX && maxY >= minY;
+        const regionW = hasRegion ? (maxX - minX + step) / width : 0;
+        const regionH = hasRegion ? (maxY - minY + step) / height : 0;
+        const scale = hasRegion ? Math.min(1, Math.max(regionW, regionH)) : 0;
+        const imageX = hasRegion ? (sumX / sumW) / width : 0.5;
+        const imageY = hasRegion ? (sumY / sumW) / height : 0.5;
+        const perspectiveConfidence = centerPoint.detected ? (centerPoint.confidence || 0) : 0;
+        return {
+            imagePosition: { x: imageX, y: imageY },
+            edgeRegion: hasRegion ? { x: minX / width, y: minY / height, width: regionW, height: regionH } : null,
+            apparentScale: scale,
+            depthProxy: scale > 0 ? 1 / Math.max(scale, 0.05) : null,
+            vanishingPoint: centerPoint,
+            perspectiveConfidence,
+            confidence: Math.min(1, 0.25 + Math.min(0.5, count / 80) + perspectiveConfidence * 0.25),
+            depthKind: 'relative-single-view',
+            note: '単眼画像のため絶対距離ではなく、見かけの大きさと線遠近による相対手掛かり'
+        };
     }
 
     // ─────────────────────────────────────────────────────────────────
@@ -248,6 +278,7 @@ class AoGPUV2Accelerator {
 
             // 2. 消失点 (FOE) 精密抽出
             const centerPoint = this.extractCenterPoint(layers.boundaryLayer, layers.brightnessLayer, width, height);
+            const spatialObservation = this.estimateSpatialObservation(layers, centerPoint, width, height);
 
             // 3. 3D 遠近幾何グリッド生成
             const perspectiveGrid = this.generatePerspectiveGrid(centerPoint, width, height);
@@ -259,8 +290,8 @@ class AoGPUV2Accelerator {
             this._stats.totalMs += duration;
 
             // 🧠 記憶バッファ・自動保存マネージャーへ即時フック接続
-            if (typeof window.typedMemory !== 'undefined' && window.typedMemory && typeof window.typedMemory._scheduleSave === 'function') {
-                window.typedMemory._scheduleSave();
+            if (typeof window.aoTypedMemory !== 'undefined' && window.aoTypedMemory && typeof window.aoTypedMemory._scheduleSave === 'function') {
+                window.aoTypedMemory._scheduleSave();
             }
             if (typeof window.ao !== 'undefined' && window.ao && window.ao.saveManager && typeof window.ao.saveManager.markDirty === 'function') {
                 window.ao.saveManager.markDirty();
@@ -269,6 +300,7 @@ class AoGPUV2Accelerator {
             return {
                 layers,
                 centerPoint,
+                spatialObservation,
                 perspectiveGrid,
                 highResData,
                 processingTimeMs: duration
@@ -354,7 +386,7 @@ function _buildResultV1(adapter, features, originalSrc) {
 
     window._aoRawFeaturesBuf = { visualVector: visual_vector, hogBlocks: hog_blocks };
 
-    const avgBrightness = brightness_grid.reduce((a, b) => a + b, 0) / 16;
+    const avgBrightness = brightness_grid.reduce((a, b) => a + b, 0) / brightness_grid.length;
     const dominantHue = (adapter.hueLabels || ['赤','橙','黄','黄緑','緑','水色','青','紫'])[hue_hist.indexOf(Math.max(...hue_hist))];
     const dominantDir = (adapter.dirLabels || ['水平','斜め右下','垂直','斜め左下','水平','斜め右上','垂直','斜め左上'])[gradient_hist.indexOf(Math.max(...gradient_hist))];
 
